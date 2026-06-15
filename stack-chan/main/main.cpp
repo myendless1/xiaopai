@@ -1566,7 +1566,7 @@ static bool handle_ws_text_message(esp_transport_handle_t ws, const char* data, 
     if (type == "hello") {
         std::string transport = json_string_value(root, "transport");
         xiaozhi_config.session_id = json_string_value(root, "session_id");
-        got_hello = transport == "websocket";
+        got_hello = transport == "websocket" || !xiaozhi_config.session_id.empty();
         ESP_LOGI(TAG, "WS hello transport=%s session_id=%s", transport.c_str(), xiaozhi_config.session_id.c_str());
     } else if (type == "stt") {
         stt_text = json_string_value(root, "text");

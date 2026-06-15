@@ -436,6 +436,7 @@ class RealtimeManager:
         self._register_session(session)
         try:
             hello = json_dumps(build_hello(session.session_id))
+            hello_resent_after_device_hello = False
             await websocket.send(hello)
             self.logger(f"Xiaozhi realtime server hello sent: device_id={session.device_id} bytes={len(hello)}")
             await self._send_device_state(session, "sleep")
@@ -452,6 +453,12 @@ class RealtimeManager:
                 if message.get("type") == "hello":
                     device_id = extract_device_id_from_hello(message, session.device_id)
                     self.logger(f"Xiaozhi realtime hello received: device_id={device_id} type={message.get('type')!r}")
+                    if not hello_resent_after_device_hello:
+                        await websocket.send(hello)
+                        hello_resent_after_device_hello = True
+                        self.logger(
+                            f"Xiaozhi realtime server hello resent after device hello: device_id={session.device_id} bytes={len(hello)}"
+                        )
                     continue
                 session.last_seen = time.time()
                 await self._handle_json(session, message)
