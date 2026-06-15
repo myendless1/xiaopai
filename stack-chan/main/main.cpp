@@ -56,6 +56,8 @@ static void apply_speaker_volume();
 static bool execute_speak_command(const char* text);
 static bool execute_speak_command_internal(const char* text, bool pause_voice_listener, const char* cache_name = nullptr);
 static void request_speak_preempt(const char* reason);
+static bool run_find_owner_command(int rounds, const char* reply, float gain_x, float gain_y, float stop_pixels,
+                                   bool preserve_speech_playback, bool wait_for_speech);
 
 extern const uint8_t calm_face_png_start[] asm("_binary_calm_face_png_start");
 extern const uint8_t calm_face_png_end[] asm("_binary_calm_face_png_end");
@@ -120,7 +122,10 @@ static constexpr int kRealtimeSttDrainTimeoutMs = 1800;
 static constexpr int kTtsStreamSampleRate = 16000;
 static constexpr size_t kTtsStreamBufferSamples = 2048;
 static constexpr int kSpeakerDmaTailDrainMs = 384;
-static constexpr int kPostSpeechEchoGuardMs = 800;
+static constexpr int kPostSpeechEchoGuardMs = 0;
+static constexpr int kWakeFindOwnerServerGraceMs = 1200;
+static constexpr int kWakeFindOwnerDuplicateGuardMs = 5000;
+static constexpr int kWakeFindOwnerPendingMaxMs = 8000;
 static constexpr int kLauncherAppCount = 5;
 static constexpr bool kShowAppStatusScreens = false;
 static constexpr uint32_t kWifiTaskStackBytes = 8 * 1024;
@@ -168,6 +173,7 @@ static constexpr int kServoYawZeroRaw = 460;
 static constexpr int kServoPitchZeroRaw = 620;
 static constexpr float kServoStepsPerDegree = 3.2f;
 static constexpr uint8_t kPy32Address = 0x6f;
+static constexpr uint8_t kPy32VersionReg = 0x02;
 static constexpr uint8_t kPy32ServoPowerPin = 0;
 static constexpr uint8_t kPy32RgbPin = 13;
 static constexpr uint8_t kPy32LedConfigReg = 0x24;
@@ -242,6 +248,7 @@ volatile bool app1_stop_requested = false;
 volatile bool app2_stop_requested = false;
 volatile bool tracking_stop_requested = false;
 volatile bool voice_listener_paused = false;
+volatile int voice_listener_pause_count = 0;
 volatile bool voice_status_screen_suppressed = false;
 volatile bool speech_playback_active = false;
 volatile bool realtime_tts_playback_active = false;
@@ -250,9 +257,22 @@ volatile bool speak_animation_running = false;
 volatile bool expression_animation_running = false;
 volatile bool speak_command_active = false;
 volatile uint32_t speech_output_finished_ms = 0;
+enum class LocalVoiceState : uint8_t {
+    Idle,
+    Listening,
+    Speaking,
+};
+volatile LocalVoiceState local_voice_state = LocalVoiceState::Idle;
+volatile LocalVoiceState local_voice_return_state = LocalVoiceState::Idle;
+volatile int local_voice_speaking_depth = 0;
+volatile uint32_t local_voice_generation = 0;
+volatile bool wake_find_owner_pending = false;
+volatile uint32_t wake_find_owner_requested_ms = 0;
+volatile uint32_t wake_find_owner_last_run_ms = 0;
 bool light_strip_ready = false;
 bool light_strip_missing = false;
 bool light_strip_listening_after_speech = false;
+uint32_t light_strip_last_probe_ms = 0;
 int light_strip_state = 0;
 bool camera_initialized = false;
 volatile bool camera_owns_internal_i2c = false;
@@ -439,8 +459,152 @@ static void mark_speech_output_finished()
 
 static bool post_speech_echo_guard_active()
 {
+    if (kPostSpeechEchoGuardMs <= 0) {
+        return false;
+    }
     uint32_t finished_ms = speech_output_finished_ms;
     return finished_ms != 0 && static_cast<uint32_t>(M5.millis() - finished_ms) < kPostSpeechEchoGuardMs;
+}
+
+static const char* local_voice_state_name(LocalVoiceState state)
+{
+    switch (state) {
+        case LocalVoiceState::Idle:
+            return "idle";
+        case LocalVoiceState::Listening:
+            return "listening";
+        case LocalVoiceState::Speaking:
+            return "speaking";
+    }
+    return "unknown";
+}
+
+static bool local_voice_is_speaking()
+{
+    return local_voice_state == LocalVoiceState::Speaking;
+}
+
+static bool local_voice_can_sample_mic()
+{
+    return local_voice_state != LocalVoiceState::Speaking;
+}
+
+static void apply_local_voice_state_outputs(LocalVoiceState state)
+{
+    if (state == LocalVoiceState::Idle) {
+        set_light_strip_sleeping();
+    } else if (state == LocalVoiceState::Listening) {
+        set_light_strip_listening();
+    } else {
+        set_light_strip_speaking();
+    }
+}
+
+static void maybe_mark_wake_find_owner_pending(LocalVoiceState old_state, LocalVoiceState new_state, const char* reason)
+{
+    if (old_state != LocalVoiceState::Idle || new_state != LocalVoiceState::Listening) {
+        return;
+    }
+
+    uint32_t now = M5.millis();
+    if (wake_find_owner_last_run_ms != 0 &&
+        static_cast<uint32_t>(now - wake_find_owner_last_run_ms) < kWakeFindOwnerDuplicateGuardMs) {
+        ESP_LOGI(TAG, "Wake find-owner suppressed by duplicate guard reason=%s",
+                 reason != nullptr ? reason : "");
+        return;
+    }
+
+    wake_find_owner_pending = true;
+    wake_find_owner_requested_ms = now;
+    ESP_LOGI(TAG, "Wake find-owner pending reason=%s", reason != nullptr ? reason : "");
+}
+
+static void local_voice_request_state(LocalVoiceState new_state, const char* reason)
+{
+    LocalVoiceState old_state = local_voice_state;
+    if (old_state == LocalVoiceState::Speaking && new_state != LocalVoiceState::Speaking &&
+        local_voice_speaking_depth > 0) {
+        local_voice_return_state = new_state;
+        ESP_LOGI(TAG, "Local voice state deferred while speaking: return=%s reason=%s",
+                 local_voice_state_name(new_state), reason != nullptr ? reason : "");
+        return;
+    }
+    if (old_state == new_state) {
+        apply_local_voice_state_outputs(new_state);
+        return;
+    }
+
+    local_voice_state = new_state;
+    local_voice_generation = local_voice_generation + 1;
+    ESP_LOGI(TAG, "Local voice state: %s -> %s reason=%s", local_voice_state_name(old_state),
+             local_voice_state_name(new_state), reason != nullptr ? reason : "");
+    maybe_mark_wake_find_owner_pending(old_state, new_state, reason);
+    apply_local_voice_state_outputs(new_state);
+}
+
+static void local_voice_begin_speaking(const char* reason)
+{
+    local_voice_speaking_depth = local_voice_speaking_depth + 1;
+    if (local_voice_speaking_depth > 1) {
+        ESP_LOGI(TAG, "Local voice speaking nested depth=%d reason=%s", local_voice_speaking_depth,
+                 reason != nullptr ? reason : "");
+        return;
+    }
+
+    LocalVoiceState old_state = local_voice_state;
+    local_voice_return_state = old_state == LocalVoiceState::Speaking ? LocalVoiceState::Listening : old_state;
+    local_voice_state = LocalVoiceState::Speaking;
+    local_voice_generation = local_voice_generation + 1;
+    ESP_LOGI(TAG, "Local voice state: %s -> speaking reason=%s", local_voice_state_name(old_state),
+             reason != nullptr ? reason : "");
+    apply_local_voice_state_outputs(LocalVoiceState::Speaking);
+}
+
+static void local_voice_end_speaking(const char* reason)
+{
+    if (local_voice_speaking_depth > 0) {
+        local_voice_speaking_depth = local_voice_speaking_depth - 1;
+    }
+    if (local_voice_speaking_depth > 0) {
+        ESP_LOGI(TAG, "Local voice speaking still nested depth=%d reason=%s", local_voice_speaking_depth,
+                 reason != nullptr ? reason : "");
+        return;
+    }
+
+    LocalVoiceState return_state = local_voice_return_state;
+    if (return_state == LocalVoiceState::Speaking) {
+        return_state = LocalVoiceState::Listening;
+    }
+    LocalVoiceState old_state = local_voice_state;
+    local_voice_state = return_state;
+    local_voice_generation = local_voice_generation + 1;
+    ESP_LOGI(TAG, "Local voice state: %s -> %s reason=%s", local_voice_state_name(old_state),
+             local_voice_state_name(return_state), reason != nullptr ? reason : "");
+    apply_local_voice_state_outputs(return_state);
+}
+
+static void handle_pending_wake_find_owner()
+{
+    if (!wake_find_owner_pending) {
+        return;
+    }
+    uint32_t now = M5.millis();
+    if (static_cast<uint32_t>(now - wake_find_owner_requested_ms) > kWakeFindOwnerPendingMaxMs) {
+        ESP_LOGI(TAG, "Wake find-owner pending expired");
+        wake_find_owner_pending = false;
+        return;
+    }
+    if (static_cast<uint32_t>(now - wake_find_owner_requested_ms) < kWakeFindOwnerServerGraceMs) {
+        return;
+    }
+    if (local_voice_state != LocalVoiceState::Listening || voice_listener_paused || speech_output_is_busy()) {
+        return;
+    }
+
+    wake_find_owner_pending = false;
+    wake_find_owner_last_run_ms = now;
+    ESP_LOGI(TAG, "Wake find-owner running locally");
+    run_find_owner_command(1, "", kFindOwnerYawGain, kFindOwnerPitchGain, kFindOwnerStopPixels, true, false);
 }
 
 struct App1Status {
@@ -1234,6 +1398,7 @@ static bool start_realtime_tts_playback()
         return true;
     }
 
+    local_voice_begin_speaking("realtime tts");
     while (M5.Mic.isRecording()) {
         vTaskDelay(pdMS_TO_TICKS(1));
     }
@@ -1251,6 +1416,7 @@ static bool start_realtime_tts_playback()
             xSemaphoreGive(audio_mutex);
             realtime_tts_audio_mutex_taken = false;
         }
+        local_voice_end_speaking("realtime tts begin failed");
         return false;
     }
 
@@ -1267,6 +1433,7 @@ static bool start_realtime_tts_playback()
             xSemaphoreGive(audio_mutex);
             realtime_tts_audio_mutex_taken = false;
         }
+        local_voice_end_speaking("realtime opus decoder failed");
         return false;
     }
 
@@ -1301,6 +1468,7 @@ static void finish_realtime_tts_playback()
     stop_speaking_animation();
     speech_playback_active = false;
     realtime_tts_playback_active = false;
+    local_voice_end_speaking("realtime tts finished");
     if (realtime_opus_decoder != nullptr) {
         esp_opus_dec_close(realtime_opus_decoder);
         realtime_opus_decoder = nullptr;
@@ -1631,11 +1799,11 @@ static bool handle_ws_text_message(esp_transport_handle_t ws, const char* data, 
         std::string state = json_string_value(root, "state");
         ESP_LOGI(TAG, "Device state=%s", state.c_str());
         if (state == "sleep" || state == "sleeping" || state == "idle") {
-            set_light_strip_sleeping();
+            local_voice_request_state(LocalVoiceState::Idle, "ws device_state");
         } else if (state == "wake" || state == "awake" || state == "listen" || state == "listening") {
-            set_light_strip_listening();
+            local_voice_request_state(LocalVoiceState::Listening, "ws device_state");
         } else if (state == "speak" || state == "speaking") {
-            set_light_strip_speaking();
+            local_voice_request_state(LocalVoiceState::Speaking, "ws device_state");
         }
     } else if (!type.empty()) {
         ESP_LOGI(TAG, "Unhandled WS message type=%s", type.c_str());
@@ -3017,10 +3185,11 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     int32_t stop_smooth_level = average_abs_level(first_samples, first_count);
     bool got_hello = true;
     std::string stt_text;
+    uint32_t state_generation = local_voice_generation;
 
     auto append_and_send = [&](const int16_t* samples, int count) -> bool {
         int offset = 0;
-        while (offset < count) {
+        while (offset < count && local_voice_generation == state_generation && !local_voice_is_speaking()) {
             int n = std::min(count - offset, encoder_frame_samples - frame_pos);
             memcpy(frame.data() + frame_pos, samples + offset, n * sizeof(int16_t));
             frame_pos += n;
@@ -3044,7 +3213,8 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     }
 
     std::vector<int16_t> chunk(kVoiceProbeSamples);
-    while (!app1_stop_requested && !voice_listener_paused && elapsed_ms < kRecordMaxMs) {
+    while (!app1_stop_requested && !voice_listener_paused && local_voice_generation == state_generation &&
+           !local_voice_is_speaking() && elapsed_ms < kRecordMaxMs) {
         if (!mic_record_blocking(chunk.data(), chunk.size(), kAudioSampleRate)) {
             ESP_LOGW(TAG, "Mic record returned false while recording");
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -3065,7 +3235,9 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
         }
     }
 
-    if (frame_pos > 0) {
+    bool interrupted = voice_listener_paused || local_voice_generation != state_generation || local_voice_is_speaking();
+
+    if (!interrupted && frame_pos > 0) {
         memset(frame.data() + frame_pos, 0, (encoder_frame_samples - frame_pos) * sizeof(int16_t));
         if (!send_opus_frame(ws, encoder, frame.data(), encoder_frame_samples, encoder_outbuf_size)) {
             return false;
@@ -3076,8 +3248,11 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     ESP_LOGI(TAG, "WS send listen stop: %s", stop.c_str());
     send_ws_text(ws, stop, "listen stop");
 
-    if (voice_listener_paused) {
-        ESP_LOGI(TAG, "Recognition interrupted by voice listener pause");
+    if (interrupted) {
+        ESP_LOGI(TAG, "Recognition interrupted by local state: paused=%d state=%s gen=%u->%u",
+                 voice_listener_paused, local_voice_state_name(local_voice_state),
+                 static_cast<unsigned>(state_generation), static_cast<unsigned>(local_voice_generation));
+        set_app1_status("Interrupted", "Local speech or command", "Listening resumes soon", "", true, false);
         return true;
     }
 
@@ -3414,8 +3589,10 @@ static void run_local_record_upload_loop()
 
 static void pause_voice_listener_for_shared_peripherals(const char* reason)
 {
+    voice_listener_pause_count = voice_listener_pause_count + 1;
     voice_listener_paused = true;
-    ESP_LOGI(TAG, "Voice listener pause requested: %s", reason != nullptr ? reason : "shared peripheral use");
+    ESP_LOGI(TAG, "Voice listener pause requested: %s depth=%d",
+             reason != nullptr ? reason : "shared peripheral use", voice_listener_pause_count);
 
     if (xTaskGetCurrentTaskHandle() == xiaozhi_task_handle) {
         while (M5.Mic.isRecording()) {
@@ -3437,7 +3614,11 @@ static void pause_voice_listener_for_shared_peripherals(const char* reason)
 
 static void resume_voice_listener_after_shared_peripherals()
 {
-    voice_listener_paused = false;
+    if (voice_listener_pause_count > 0) {
+        voice_listener_pause_count = voice_listener_pause_count - 1;
+    }
+    voice_listener_paused = voice_listener_pause_count > 0;
+    ESP_LOGI(TAG, "Voice listener pause released depth=%d", voice_listener_pause_count);
 }
 
 class VoiceListenerPauseGuard {
@@ -3491,30 +3672,39 @@ static void run_xiaozhi_speech_loop()
     esp_transport_handle_t ws = open_xiaozhi_websocket(parent);
     if (ws == nullptr) {
         esp_opus_enc_close(encoder);
-        set_light_strip_sleeping();
+        local_voice_request_state(LocalVoiceState::Idle, "websocket open failed");
         return;
     }
 
-    set_light_strip_sleeping();
+    local_voice_request_state(LocalVoiceState::Idle, "speech loop start");
     std::vector<int16_t> probe(kVoiceProbeSamples);
     uint32_t last_status_ms = 0;
     bool got_hello = true;
     std::string stt_text;
     while (!app1_stop_requested) {
-        if (voice_listener_paused) {
+        handle_pending_wake_find_owner();
+
+        if (voice_listener_paused || local_voice_is_speaking()) {
             while (M5.Mic.isRecording()) {
                 vTaskDelay(pdMS_TO_TICKS(1));
             }
             if (M5.Mic.isEnabled()) {
                 M5.Mic.end();
             }
-            set_app1_status("Paused", "Speaking", "Listening resumes soon", "", true, false);
-            while (voice_listener_paused && !app1_stop_requested) {
+            if (local_voice_is_speaking()) {
+                set_app1_status("Speaking", "Local speech output", "Mic is gated", "", true, false);
+            } else {
+                set_app1_status("Paused", "Shared peripheral", "Listening resumes soon", "", true, false);
+            }
+            while ((voice_listener_paused || local_voice_is_speaking()) && !app1_stop_requested) {
                 receive_ws_once(ws, 50, got_hello, stt_text);
                 vTaskDelay(pdMS_TO_TICKS(20));
             }
             if (app1_stop_requested) {
                 break;
+            }
+            if (!local_voice_can_sample_mic()) {
+                continue;
             }
             M5.Mic.config(mic_cfg);
             if (!M5.Mic.begin()) {
@@ -3524,8 +3714,12 @@ static void run_xiaozhi_speech_loop()
             }
             last_status_ms = 0;
             stt_text.clear();
-            set_app1_status("Listening", "Resumed", "Speak to recognize", "", true, false);
-            set_light_strip_listening();
+            if (local_voice_state == LocalVoiceState::Idle) {
+                set_app1_status("Idle", "Wake word only", "Say 小派同学", "", true, false);
+            } else {
+                set_app1_status("Listening", "Resumed", "Speak to recognize", "", true, false);
+            }
+            apply_local_voice_state_outputs(local_voice_state);
             continue;
         }
         if (realtime_tts_playback_active) {
@@ -3550,7 +3744,11 @@ static void run_xiaozhi_speech_loop()
         if (now - last_status_ms > 700) {
             char level_line[64];
             snprintf(level_line, sizeof(level_line), "level=%ld threshold=%d", static_cast<long>(level), kVoiceStartThreshold);
-            set_app1_status("Listening", level_line, "Speak to recognize", "", true, false);
+            if (local_voice_state == LocalVoiceState::Idle) {
+                set_app1_status("Idle", level_line, "Say 小派同学", "", true, false);
+            } else {
+                set_app1_status("Listening", level_line, "Speak to recognize", "", true, false);
+            }
             last_status_ms = now;
         }
 
@@ -3562,8 +3760,9 @@ static void run_xiaozhi_speech_loop()
             }
             continue;
         }
-        if (level >= kVoiceStartThreshold) {
-            ESP_LOGI(TAG, "Voice threshold triggered: level=%ld threshold=%d", static_cast<long>(level), kVoiceStartThreshold);
+        if (local_voice_can_sample_mic() && level >= kVoiceStartThreshold) {
+            ESP_LOGI(TAG, "Voice threshold triggered: level=%ld threshold=%d state=%s",
+                     static_cast<long>(level), kVoiceStartThreshold, local_voice_state_name(local_voice_state));
             if (!run_one_speech_recognition(ws, encoder, encoder_frame_samples, encoder_outbuf_size, probe.data(),
                                             probe.size())) {
                 ESP_LOGW(TAG, "Speech recognition round failed; reconnecting websocket");
@@ -3573,17 +3772,17 @@ static void run_xiaozhi_speech_loop()
                 parent = nullptr;
                 ws = open_xiaozhi_websocket(parent);
                 if (ws == nullptr) {
-                    set_light_strip_sleeping();
+                    local_voice_request_state(LocalVoiceState::Idle, "websocket reconnect failed");
                     break;
                 }
-                set_light_strip_sleeping();
+                local_voice_request_state(LocalVoiceState::Idle, "websocket reconnected");
             }
             last_status_ms = 0;
         }
     }
 
     set_app1_status("Stopped", "Voice stopped", "", "", false, false);
-    set_light_strip_sleeping();
+    local_voice_request_state(LocalVoiceState::Idle, "speech loop stopped");
     esp_transport_close(ws);
     esp_transport_destroy(ws);
     if (parent != nullptr) {
@@ -3722,6 +3921,7 @@ static void release_camera_driver()
     }
     M5.In_I2C.begin();
     camera_owns_internal_i2c = false;
+    apply_local_voice_state_outputs(local_voice_state);
 }
 
 static camera_fb_t* get_fresh_camera_frame(const char* context)
@@ -3874,6 +4074,48 @@ static bool py32_write_bit(uint8_t low_reg, uint8_t high_reg, uint8_t pin, bool 
     return M5.In_I2C.writeRegister8(kPy32Address, reg, value, kPy32I2cFreq);
 }
 
+static bool py32_wait_ready_locked(uint8_t* version_out)
+{
+    uint8_t version = 0;
+    const uint32_t start_ms = M5.millis();
+    while (true) {
+        version = M5.In_I2C.readRegister8(kPy32Address, kPy32VersionReg, kPy32I2cFreq);
+        if (version != 0 && version != 0xff) {
+            if (version_out != nullptr) {
+                *version_out = version;
+            }
+            return true;
+        }
+        if (static_cast<uint32_t>(M5.millis() - start_ms) > 1200) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    uint32_t now = M5.millis();
+    if (light_strip_last_probe_ms == 0 ||
+        static_cast<uint32_t>(now - light_strip_last_probe_ms) > 5000) {
+        ESP_LOGW(TAG, "PY32 IO expander not ready; will retry");
+        light_strip_last_probe_ms = now;
+    }
+    light_strip_missing = true;
+    return false;
+}
+
+static void py32_enable_vm_power_locked()
+{
+    if (servo_power_ready) {
+        return;
+    }
+
+    py32_write_bit(0x03, 0x04, kPy32ServoPowerPin, true);  // direction output
+    py32_write_bit(0x0b, 0x0c, kPy32ServoPowerPin, false); // pull-down off
+    py32_write_bit(0x09, 0x0a, kPy32ServoPowerPin, true);  // pull-up on
+    py32_write_bit(0x05, 0x06, kPy32ServoPowerPin, true);  // VM power on
+    servo_power_ready = true;
+    vTaskDelay(pdMS_TO_TICKS(200));
+}
+
 static uint16_t rgb888_to_rgb565(uint8_t r, uint8_t g, uint8_t b)
 {
     return static_cast<uint16_t>(((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3));
@@ -3884,13 +4126,15 @@ static bool py32_write_light_strip_color_locked(uint8_t r, uint8_t g, uint8_t b)
     const uint16_t color565 = rgb888_to_rgb565(r, g, b);
     const uint8_t low = static_cast<uint8_t>(color565 & 0xff);
     const uint8_t high = static_cast<uint8_t>((color565 >> 8) & 0xff);
+    uint8_t data[kLightStripLedCount * 2] = {};
 
     for (uint8_t i = 0; i < kLightStripLedCount; ++i) {
-        const uint8_t reg = kPy32LedRamStartReg + i * 2;
-        if (!M5.In_I2C.writeRegister8(kPy32Address, reg, low, kPy32I2cFreq) ||
-            !M5.In_I2C.writeRegister8(kPy32Address, reg + 1, high, kPy32I2cFreq)) {
-            return false;
-        }
+        data[i * 2] = low;
+        data[i * 2 + 1] = high;
+    }
+
+    if (!M5.In_I2C.writeRegister(kPy32Address, kPy32LedRamStartReg, data, sizeof(data), kPy32I2cFreq)) {
+        return false;
     }
 
     uint8_t config = M5.In_I2C.readRegister8(kPy32Address, kPy32LedConfigReg, kPy32I2cFreq);
@@ -3903,22 +4147,25 @@ static bool ensure_light_strip_ready_locked()
     if (light_strip_ready) {
         return true;
     }
-    if (light_strip_missing || camera_owns_internal_i2c) {
+    if (camera_owns_internal_i2c) {
         return false;
     }
 
-    uint8_t version = M5.In_I2C.readRegister8(kPy32Address, 0x02, kPy32I2cFreq);
-    if (version == 0 || version == 0xff) {
-        ESP_LOGW(TAG, "PY32 IO expander not detected; RGB light strip disabled");
-        light_strip_missing = true;
+    uint8_t version = 0;
+    if (!py32_wait_ready_locked(&version)) {
         return false;
     }
 
+    light_strip_missing = false;
+    py32_enable_vm_power_locked();
     py32_write_bit(0x03, 0x04, kPy32RgbPin, true);   // direction output
     py32_write_bit(0x0b, 0x0c, kPy32RgbPin, false);  // pull-down off
     py32_write_bit(0x09, 0x0a, kPy32RgbPin, true);   // pull-up on
     py32_write_bit(0x13, 0x14, kPy32RgbPin, false);  // push-pull
     M5.In_I2C.writeRegister8(kPy32Address, kPy32LedConfigReg, kLightStripLedCount & 0x3f, kPy32I2cFreq);
+    py32_write_light_strip_color_locked(0, 0, 0);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    py32_write_light_strip_color_locked(0, 0, 0);
     light_strip_ready = true;
     ESP_LOGI(TAG, "RGB light strip ready via PY32 version=0x%02x", version);
     return true;
@@ -3959,6 +4206,13 @@ static void set_light_strip_sleeping()
     set_light_strip_color(0, 0, 0, 3);
 }
 
+static void run_light_strip_boot_probe()
+{
+    set_light_strip_color(0, 0, 32, 4);
+    vTaskDelay(pdMS_TO_TICKS(150));
+    apply_local_voice_state_outputs(local_voice_state);
+}
+
 static void enable_servo_power()
 {
     if (servo_power_ready) {
@@ -3969,17 +4223,12 @@ static void enable_servo_power()
         return;
     }
     M5Lock lock;
-    uint8_t version = M5.In_I2C.readRegister8(kPy32Address, 0x02, kPy32I2cFreq);
-    if (version == 0 || version == 0xff) {
-        ESP_LOGW(TAG, "PY32 IO expander not detected; servo power may already be on");
-        servo_power_ready = true;
+    uint8_t version = 0;
+    if (!py32_wait_ready_locked(&version)) {
+        ESP_LOGW(TAG, "PY32 IO expander not ready; servo power not enabled yet");
         return;
     }
-    py32_write_bit(0x03, 0x04, kPy32ServoPowerPin, true);  // direction output
-    py32_write_bit(0x0b, 0x0c, kPy32ServoPowerPin, false); // pull-down off
-    py32_write_bit(0x09, 0x0a, kPy32ServoPowerPin, true);  // pull-up on
-    py32_write_bit(0x05, 0x06, kPy32ServoPowerPin, true);  // power on
-    servo_power_ready = true;
+    py32_enable_vm_power_locked();
     ESP_LOGI(TAG, "Servo power enabled via PY32 version=0x%02x", version);
 }
 
@@ -4365,6 +4614,7 @@ static bool capture_face_at_current_pose(const char* stage, const char* line1, c
 
     bool detected = upload_tracking_frame(frame, target);
     esp_camera_fb_return(frame);
+    release_camera_driver();
     return detected;
 }
 
@@ -5146,6 +5396,7 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
         return true;
     }
 
+    local_voice_begin_speaking("speak command");
     bool should_pause_listener = pause_voice_listener || xiaozhi_task_handle != nullptr;
     VoiceListenerPauseGuard* voice_pause =
         should_pause_listener ? new VoiceListenerPauseGuard("speak command") : nullptr;
@@ -5159,6 +5410,7 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
             xSemaphoreGive(audio_mutex);
         }
         delete voice_pause;
+        local_voice_end_speaking("speak begin failed");
         return false;
     }
     apply_speaker_volume();
@@ -5177,6 +5429,7 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
         xSemaphoreGive(audio_mutex);
     }
     delete voice_pause;
+    local_voice_end_speaking("speak command finished");
     return ok;
 }
 
@@ -5491,6 +5744,17 @@ static bool execute_command_object(const cJSON* command)
         return true;
     }
     if (type == "find_owner" || type == "locate_owner") {
+        uint32_t now = M5.millis();
+        if (wake_find_owner_pending &&
+            static_cast<uint32_t>(now - wake_find_owner_requested_ms) < kWakeFindOwnerPendingMaxMs) {
+            ESP_LOGI(TAG, "Server find-owner consumes wake pending request");
+            wake_find_owner_pending = false;
+            wake_find_owner_last_run_ms = now;
+        } else if (wake_find_owner_last_run_ms != 0 &&
+                   static_cast<uint32_t>(now - wake_find_owner_last_run_ms) < kWakeFindOwnerDuplicateGuardMs) {
+            ESP_LOGI(TAG, "Skipping duplicate wake find-owner command");
+            return true;
+        }
         int rounds = static_cast<int>(json_number_value(payload, "rounds", kFindOwnerMaxRounds));
         float gain_x = static_cast<float>(json_number_value(payload, "gain_x", kFindOwnerYawGain));
         float gain_y = static_cast<float>(json_number_value(payload, "gain_y", kFindOwnerPitchGain));
@@ -5556,19 +5820,19 @@ static bool execute_command_object(const cJSON* command)
         app2_stop_requested = true;
         M5.Speaker.stop();
         show_expression("stopped");
-        set_light_strip_sleeping();
+        local_voice_request_state(LocalVoiceState::Idle, "stop command");
         return true;
     }
     if (type == "sleep") {
         app2_stop_requested = true;
         M5.Speaker.stop();
         show_expression("stopped");
-        set_light_strip_sleeping();
+        local_voice_request_state(LocalVoiceState::Idle, "sleep command");
         return true;
     }
     if (type == "wake" || type == "listen" || type == "listening") {
         show_expression(kDefaultExpression);
-        set_light_strip_listening();
+        local_voice_request_state(LocalVoiceState::Listening, "command");
         return true;
     }
     if (type == "play_audio") {
@@ -5678,6 +5942,7 @@ static void start_background_services()
         enable_servo_power();
         if (init_camera_once()) {
             ESP_LOGI(TAG, "Camera pre-initialized for find-owner flow");
+            release_camera_driver();
         } else {
             ESP_LOGW(TAG, "Camera pre-initialization failed; will retry on demand");
         }
@@ -5725,6 +5990,7 @@ extern "C" void app_main(void)
     M5.Display.setRotation(1);
     M5.Touch.setHoldThresh(500);
     M5.Touch.setFlickThresh(12);
+    run_light_strip_boot_probe();
 
     start_background_services();
 
