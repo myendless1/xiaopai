@@ -22,8 +22,10 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_audio_enc.h"
+#include "esp_audio_dec.h"
 #include "esp_camera.h"
 #include "esp_opus_enc.h"
+#include "esp_opus_dec.h"
 #include "esp_audio_types.h"
 #include "driver/uart.h"
 #include "nvs.h"
@@ -45,6 +47,9 @@ void run_camera_upload_app();
 void run_tracking_user_demo();
 static bool wifi_is_connected();
 static void show_expression(const char* expression);
+static void start_speaking_animation();
+static void stop_speaking_animation();
+static void apply_speaker_volume();
 static bool execute_speak_command(const char* text);
 static bool execute_speak_command_internal(const char* text, bool pause_voice_listener, const char* cache_name = nullptr);
 static void request_speak_preempt(const char* reason);
@@ -225,6 +230,7 @@ volatile bool tracking_stop_requested = false;
 volatile bool voice_listener_paused = false;
 volatile bool voice_status_screen_suppressed = false;
 volatile bool speech_playback_active = false;
+volatile bool realtime_tts_playback_active = false;
 volatile bool speech_expression_overridden = false;
 volatile bool speak_animation_running = false;
 volatile bool expression_animation_running = false;
@@ -385,6 +391,8 @@ struct XiaozhiConfig {
 };
 
 XiaozhiConfig xiaozhi_config;
+void* realtime_opus_decoder = nullptr;
+bool realtime_tts_audio_mutex_taken = false;
 
 struct App1Status {
     char stage[32] = "Idle";
@@ -1171,6 +1179,142 @@ static bool mic_record_blocking(int16_t* samples, size_t count, uint32_t sample_
     return true;
 }
 
+static bool start_realtime_tts_playback()
+{
+    if (realtime_tts_playback_active) {
+        return true;
+    }
+
+    while (M5.Mic.isRecording()) {
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    if (M5.Mic.isEnabled()) {
+        M5.Mic.end();
+    }
+
+    if (audio_mutex != nullptr) {
+        xSemaphoreTake(audio_mutex, portMAX_DELAY);
+        realtime_tts_audio_mutex_taken = true;
+    }
+    if (!M5.Speaker.begin()) {
+        ESP_LOGE(TAG, "M5.Speaker.begin failed for realtime TTS");
+        if (realtime_tts_audio_mutex_taken && audio_mutex != nullptr) {
+            xSemaphoreGive(audio_mutex);
+            realtime_tts_audio_mutex_taken = false;
+        }
+        return false;
+    }
+
+    esp_opus_dec_cfg_t opus_cfg = {};
+    opus_cfg.sample_rate = ESP_AUDIO_SAMPLE_RATE_16K;
+    opus_cfg.channel = ESP_AUDIO_MONO;
+    opus_cfg.frame_duration = ESP_OPUS_DEC_FRAME_DURATION_60_MS;
+    opus_cfg.self_delimited = false;
+    esp_audio_err_t ret = esp_opus_dec_open(&opus_cfg, sizeof(opus_cfg), &realtime_opus_decoder);
+    if (ret != ESP_AUDIO_ERR_OK || realtime_opus_decoder == nullptr) {
+        ESP_LOGE(TAG, "esp_opus_dec_open failed: %d", ret);
+        M5.Speaker.end();
+        if (realtime_tts_audio_mutex_taken && audio_mutex != nullptr) {
+            xSemaphoreGive(audio_mutex);
+            realtime_tts_audio_mutex_taken = false;
+        }
+        return false;
+    }
+
+    apply_speaker_volume();
+    app2_stop_requested = false;
+    M5.Speaker.stop();
+    speech_playback_active = true;
+    realtime_tts_playback_active = true;
+    speech_expression_overridden = false;
+    start_speaking_animation();
+    set_app1_status("Realtime TTS", "Playing server audio", "WebSocket Opus stream", "");
+    return true;
+}
+
+static void finish_realtime_tts_playback()
+{
+    if (!realtime_tts_playback_active) {
+        return;
+    }
+    while (M5.Speaker.isPlaying() && !app2_stop_requested) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    if (!app2_stop_requested) {
+        vTaskDelay(pdMS_TO_TICKS(80));
+    }
+    M5.Speaker.stop();
+    M5.Speaker.end();
+    stop_speaking_animation();
+    speech_playback_active = false;
+    realtime_tts_playback_active = false;
+    if (realtime_opus_decoder != nullptr) {
+        esp_opus_dec_close(realtime_opus_decoder);
+        realtime_opus_decoder = nullptr;
+    }
+    if (realtime_tts_audio_mutex_taken && audio_mutex != nullptr) {
+        xSemaphoreGive(audio_mutex);
+        realtime_tts_audio_mutex_taken = false;
+    }
+}
+
+static bool play_realtime_opus_frame(const uint8_t* data, size_t len)
+{
+    if (data == nullptr || len == 0) {
+        return true;
+    }
+    if (!start_realtime_tts_playback()) {
+        return false;
+    }
+
+    static std::vector<std::vector<int16_t>> pcm_buffers(3, std::vector<int16_t>(kOpusFrameSamples));
+    static int pcm_buffer_index = 0;
+    std::vector<uint8_t> decode_bytes(kOpusFrameSamples * sizeof(int16_t));
+
+    esp_audio_dec_in_raw_t raw = {};
+    raw.buffer = const_cast<uint8_t*>(data);
+    raw.len = static_cast<uint32_t>(len);
+    raw.consumed = 0;
+    esp_audio_dec_out_frame_t out_frame = {};
+    out_frame.buffer = decode_bytes.data();
+    out_frame.len = decode_bytes.size();
+    out_frame.needed_size = 0;
+    out_frame.decoded_size = 0;
+    esp_audio_dec_info_t info = {};
+
+    esp_audio_err_t ret = esp_opus_dec_decode(realtime_opus_decoder, &raw, &out_frame, &info);
+    if (ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH && out_frame.needed_size > out_frame.len) {
+        decode_bytes.resize(out_frame.needed_size);
+        out_frame.buffer = decode_bytes.data();
+        out_frame.len = decode_bytes.size();
+        out_frame.needed_size = 0;
+        out_frame.decoded_size = 0;
+        raw.buffer = const_cast<uint8_t*>(data);
+        raw.len = static_cast<uint32_t>(len);
+        raw.consumed = 0;
+        ret = esp_opus_dec_decode(realtime_opus_decoder, &raw, &out_frame, &info);
+    }
+    if (ret != ESP_AUDIO_ERR_OK || out_frame.decoded_size == 0) {
+        ESP_LOGE(TAG, "Realtime Opus decode failed: ret=%d decoded=%u consumed=%u len=%u", ret,
+                 static_cast<unsigned>(out_frame.decoded_size), static_cast<unsigned>(raw.consumed),
+                 static_cast<unsigned>(len));
+        return false;
+    }
+
+    size_t sample_count = out_frame.decoded_size / sizeof(int16_t);
+    auto& pcm = pcm_buffers[pcm_buffer_index];
+    if (pcm.size() < sample_count) {
+        pcm.resize(sample_count);
+    }
+    memcpy(pcm.data(), out_frame.buffer, sample_count * sizeof(int16_t));
+    pcm_buffer_index = (pcm_buffer_index + 1) % pcm_buffers.size();
+    if (!M5.Speaker.playRaw(pcm.data(), sample_count, kTtsStreamSampleRate, false, 1, 0, false)) {
+        ESP_LOGE(TAG, "Realtime TTS playRaw failed");
+        return false;
+    }
+    return true;
+}
+
 static std::string json_string_value(const cJSON* root, const char* key)
 {
     cJSON* item = cJSON_GetObjectItem(root, key);
@@ -1218,8 +1362,13 @@ static bool handle_ws_text_message(const char* data, size_t len, bool& got_hello
         std::string state = json_string_value(root, "state");
         std::string text = json_string_value(root, "text");
         ESP_LOGI(TAG, "TTS state=%s text=%s", state.c_str(), text.c_str());
+        if (state == "start" || state == "sentence_start") {
+            start_realtime_tts_playback();
+        } else if (state == "stop") {
+            finish_realtime_tts_playback();
+        }
         if (!text.empty()) {
-            set_app1_status("TTS Text", text.c_str(), "Speech recognition already worked", "", false, true);
+            set_app1_status("TTS Text", text.c_str(), "Streaming audio over WebSocket", "", false, true);
         }
     } else if (type == "llm") {
         std::string text = json_string_value(root, "text");
@@ -1256,8 +1405,8 @@ static bool receive_ws_once(esp_transport_handle_t ws, int timeout_ms, bool& got
         return handle_ws_text_message(buffer, read_len, got_hello, stt_text);
     }
     if (opcode == WS_TRANSPORT_OPCODES_BINARY) {
-        ESP_LOGI(TAG, "WS binary audio from server ignored (%d bytes)", read_len);
-        return true;
+        ESP_LOGD(TAG, "WS binary audio from server (%d bytes)", read_len);
+        return play_realtime_opus_frame(reinterpret_cast<const uint8_t*>(buffer), read_len);
     }
     if (opcode == WS_TRANSPORT_OPCODES_CLOSE) {
         ESP_LOGW(TAG, "WS close frame received");
@@ -2145,6 +2294,32 @@ static bool ensure_network_ready()
     return true;
 }
 
+static bool configure_local_xiaozhi_websocket()
+{
+    std::string base = active_server_base;
+    const bool tls = base.rfind("https://", 0) == 0;
+    const char* prefix = tls ? "https://" : "http://";
+    if (base.rfind(prefix, 0) == 0) {
+        base = base.substr(strlen(prefix));
+    }
+    size_t slash = base.find('/');
+    std::string host_port = slash == std::string::npos ? base : base.substr(0, slash);
+    size_t colon = host_port.rfind(':');
+    std::string host = colon == std::string::npos ? host_port : host_port.substr(0, colon);
+    int port = colon == std::string::npos ? (tls ? 443 : 80) : atoi(host_port.substr(colon + 1).c_str());
+    if (host.empty() || port <= 0) {
+        return false;
+    }
+    int ws_port = port + 1;
+    xiaozhi_config.websocket_url =
+        std::string(tls ? "wss://" : "ws://") + host + ":" + std::to_string(ws_port) + "/xiaozhi/ws";
+    xiaozhi_config.websocket_token = "";
+    xiaozhi_config.session_id.clear();
+    ESP_LOGI(TAG, "Local Xiaozhi WS configured: %s", xiaozhi_config.websocket_url.c_str());
+    set_app1_status("Realtime", xiaozhi_config.websocket_url.c_str(), "Streaming ASR/TTS", "", false, true);
+    return true;
+}
+
 static std::string make_system_info_json()
 {
     const esp_app_desc_t* app = esp_app_get_description();
@@ -2300,6 +2475,74 @@ static bool request_xiaozhi_ota_config()
     return !xiaozhi_config.websocket_url.empty() && !xiaozhi_config.websocket_token.empty();
 }
 
+static bool request_local_xiaozhi_ota_config()
+{
+    std::string url = make_server_url("/xiaozhi/ota");
+    set_app1_status("Realtime", "GET local Xiaozhi OTA", url.c_str(), "", true, false);
+    ESP_LOGI(TAG, "Local OTA URL: %s", url.c_str());
+
+    esp_http_client_config_t config = {};
+    config.url = url.c_str();
+    config.method = HTTP_METHOD_GET;
+    config.timeout_ms = 5000;
+    config.buffer_size = kHttpBufferSize;
+    config.buffer_size_tx = kHttpBufferSize;
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == nullptr) {
+        return false;
+    }
+    esp_http_client_set_header(client, "Device-Id", mac_address().c_str());
+    esp_http_client_set_header(client, "Client-Id", client_id);
+
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Local OTA open failed: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        return false;
+    }
+    int content_length = esp_http_client_fetch_headers(client);
+    int status = esp_http_client_get_status_code(client);
+    if (err != ESP_OK || status < 200 || status >= 300) {
+        ESP_LOGW(TAG, "Local OTA failed: err=%s status=%d", esp_err_to_name(err), status);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    std::string response;
+    if (content_length > 0) {
+        response.resize(content_length);
+        size_t offset = 0;
+        while (offset < response.size()) {
+            int read_len = esp_http_client_read(client, response.data() + offset, response.size() - offset);
+            if (read_len <= 0) {
+                break;
+            }
+            offset += read_len;
+        }
+        if (offset < response.size()) {
+            response.resize(offset);
+        }
+    } else {
+        char buffer[512];
+        while (true) {
+            int read_len = esp_http_client_read(client, buffer, sizeof(buffer) - 1);
+            if (read_len <= 0) {
+                break;
+            }
+            response.append(buffer, read_len);
+        }
+    }
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    if (response.empty()) {
+        return false;
+    }
+    summarize_ota_response(response);
+    return !xiaozhi_config.websocket_url.empty();
+}
+
 static void* create_opus_encoder(int& frame_size_samples, int& outbuf_size)
 {
     esp_opus_enc_config_t cfg = {};
@@ -2353,12 +2596,14 @@ static esp_transport_handle_t open_xiaozhi_websocket(esp_transport_handle_t& par
         return nullptr;
     }
 
-    std::string auth = "Bearer " + xiaozhi_config.websocket_token;
     std::string headers = std::string("Protocol-Version: 1\r\n") +
                           "Device-Id: " + mac_address() + "\r\n" +
                           "Client-Id: " + client_id + "\r\n";
     esp_transport_ws_set_path(ws, parsed.path.c_str());
-    esp_transport_ws_set_auth(ws, auth.c_str());
+    if (!xiaozhi_config.websocket_token.empty()) {
+        std::string auth = "Bearer " + xiaozhi_config.websocket_token;
+        esp_transport_ws_set_auth(ws, auth.c_str());
+    }
     esp_transport_ws_set_headers(ws, headers.c_str());
     esp_transport_ws_set_user_agent(ws, "xiaopai-m5unified");
 
@@ -2867,12 +3112,18 @@ public:
 
 static void run_xiaozhi_speech_loop()
 {
-    if (xiaozhi_config.websocket_url.empty() || xiaozhi_config.websocket_token.empty()) {
+    if (xiaozhi_config.websocket_url.empty()) {
         set_app1_status("No WS", "OTA did not return websocket config", "Cannot recognize speech", "", false, false);
         return;
     }
 
     M5.Speaker.end();
+    auto mic_cfg = M5.Mic.config();
+    mic_cfg.sample_rate = kAudioSampleRate;
+    mic_cfg.magnification = CONFIG_STACKCHAN_MIC_MAGNIFICATION;
+    mic_cfg.noise_filter_level = 0;
+    mic_cfg.task_pinned_core = 1;
+    M5.Mic.config(mic_cfg);
     if (!M5.Mic.isEnabled() && !M5.Mic.begin()) {
         set_app1_status("Mic Fail", "M5.Mic.begin failed", "", "", false, false);
         ESP_LOGE(TAG, "M5.Mic.begin failed");
@@ -2902,6 +3153,18 @@ static void run_xiaozhi_speech_loop()
     bool got_hello = true;
     std::string stt_text;
     while (!app1_stop_requested) {
+        if (realtime_tts_playback_active) {
+            receive_ws_once(ws, 100, got_hello, stt_text);
+            continue;
+        }
+        if (!M5.Mic.isEnabled() && !realtime_tts_playback_active) {
+            M5.Mic.config(mic_cfg);
+            if (!M5.Mic.begin()) {
+                set_app1_status("Mic Fail", "M5.Mic.begin failed", "", "", false, false);
+                ESP_LOGE(TAG, "M5.Mic.begin failed while resuming realtime listener");
+                break;
+            }
+        }
         if (!mic_record_blocking(probe.data(), probe.size(), kAudioSampleRate)) {
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
@@ -2950,9 +3213,17 @@ static void run_xiaozhi_speech_loop()
 
 void run_xiaozhi_ota_probe()
 {
-    ESP_LOGI(TAG, "Starting local voice recording upload demo over USB serial debug");
-    set_app1_status("Probe", "Preparing local recorder");
-    run_local_record_upload_loop();
+    ESP_LOGI(TAG, "Starting realtime Xiaozhi speech loop over WebSocket");
+    set_app1_status("Realtime", "Preparing streaming speech", "Waiting for local server", "", true, false);
+    ensure_client_id();
+    if (!ensure_network_ready()) {
+        return;
+    }
+    if (!request_local_xiaozhi_ota_config() && !configure_local_xiaozhi_websocket()) {
+        set_app1_status("No WS", "Could not build local WebSocket URL", active_server_base.c_str(), "", false, false);
+        return;
+    }
+    run_xiaozhi_speech_loop();
 }
 
 static std::string url_encode(const char* value)
@@ -4378,6 +4649,9 @@ static void request_speak_preempt(const char* reason)
     app2_stop_requested = true;
     M5.Speaker.stop();
     speak_animation_running = false;
+    if (realtime_tts_playback_active) {
+        finish_realtime_tts_playback();
+    }
     ESP_LOGI(TAG, "Speak preempt requested: %s", reason != nullptr ? reason : "unspecified");
 }
 
@@ -4406,9 +4680,7 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
     speech_playback_active = true;
     speech_expression_overridden = false;
     start_speaking_animation();
-    const char* selected_cache_name = cache_name != nullptr && cache_name[0] != '\0'
-                                          ? cache_name
-                                          : cached_wake_reply_name_for_text(text);
+    const char* selected_cache_name = cache_name != nullptr && cache_name[0] != '\0' ? cache_name : "";
     bool ok = selected_cache_name[0] != '\0' ? stream_cached_reply_pcm(selected_cache_name, text)
                                              : stream_tts_pcm_for_text(text);
     M5.Speaker.end();

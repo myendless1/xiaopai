@@ -986,7 +986,7 @@ class Handler(BaseHTTPRequestHandler):
                 wake_reply_name, wake_reply_text = random.choice(WAKE_REPLY_EVENTS)
                 wake_reply_command = make_command(
                     "speak",
-                    {"text": wake_reply_text, "pause_listener": True, "cache_name": wake_reply_name},
+                    {"text": wake_reply_text, "pause_listener": True},
                     priority=95,
                     interrupt=True,
                     ttl_seconds=8,
@@ -2587,12 +2587,6 @@ def main():
     httpd.last_seen = {}
     httpd.device_order = []
     httpd.dialog_awake_until = {}
-
-    for wake_reply_name, _ in WAKE_REPLY_EVENTS:
-        try:
-            ensure_event_audio_cache(httpd, wake_reply_name)
-        except Exception as exc:
-            log_print(f"Wake reply audio pre-cache failed for {wake_reply_name}: {exc}", file=sys.stderr)
 
     if args.realtime_enabled:
         realtime_config = RealtimeConfig(

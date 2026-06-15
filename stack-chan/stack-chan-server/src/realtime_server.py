@@ -2,6 +2,8 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 import json
+import random
+import re
 from queue import Empty, Queue
 import threading
 import time
@@ -23,6 +25,45 @@ from xiaozhi_protocol import (
     make_request_id,
     parse_json_message,
 )
+
+REALTIME_WAKE_WORDS = (
+    "小派同学",
+    "小派同學",
+    "小派",
+    "小胖",
+    "小盼",
+    "小潘",
+    "小排",
+    "小白",
+    "小坏",
+    "小壞",
+    "小蔡",
+    "小外",
+    "小机器",
+    "机器人",
+    "小盘",
+    "小泡",
+    "xiaopai",
+)
+REALTIME_WAKE_ONLY_FILLERS = ("你好", "您好", "在吗", "在嗎", "醒醒", "hello", "hi", "嗨", "哈喽", "哈囉")
+REALTIME_WAKE_REPLIES = ("我在。", "有什么要帮忙的", "你好呀", "我在呢", "小派在呢")
+
+
+def has_realtime_wake_word(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(word in lowered for word in REALTIME_WAKE_WORDS)
+
+
+def is_realtime_wake_only_text(text: str) -> bool:
+    compact = re.sub(r"[\s,，。.!！?？、~～：:；;\"'“”‘’]+", "", str(text or "").lower())
+    for wake_word in REALTIME_WAKE_WORDS:
+        wake = re.sub(r"[\s,，。.!！?？、~～：:；;\"'“”‘’]+", "", wake_word.lower())
+        if wake and wake in compact:
+            compact = compact.replace(wake, "", 1)
+            break
+    for filler in REALTIME_WAKE_ONLY_FILLERS:
+        compact = compact.replace(filler.lower(), "")
+    return compact == ""
 
 
 @dataclass
@@ -469,6 +510,10 @@ class RealtimeManager:
             bridge.stop()
 
     async def _handle_final_text(self, session: RealtimeDeviceSession, text: str) -> None:
+        if has_realtime_wake_word(text) and is_realtime_wake_only_text(text):
+            self._mark(session, "wake_reply_start")
+            await self._speak(session, random.choice(REALTIME_WAKE_REPLIES))
+            return
         if not self._openclaw.enabled:
             await self._speak(session, "我没听清，可以再说一遍吗")
             return

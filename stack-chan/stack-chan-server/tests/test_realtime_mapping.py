@@ -16,6 +16,7 @@ from mcp_client import (
     STACKCHAN_TOOL_VOLUME_SET,
     command_to_mcp_calls,
 )
+from realtime_server import has_realtime_wake_word, is_realtime_wake_only_text
 from xiaozhi_protocol import build_hello, build_mcp_tools_call, build_stt
 
 
@@ -59,6 +60,11 @@ class RealtimeMappingTest(unittest.TestCase):
 
     def test_sentence_split(self):
         self.assertEqual(split_sentences("你好。我们开始吧！"), ["你好。", "我们开始吧！"])
+
+    def test_realtime_wake_only_text(self):
+        self.assertTrue(has_realtime_wake_word("你好，小派。"))
+        self.assertTrue(is_realtime_wake_only_text("你好，小派。"))
+        self.assertFalse(is_realtime_wake_only_text("小派，今天深圳天气怎么样"))
 
     def test_tts_iter_pcm_chunks_streams_binary_frames(self):
         class FakeWebSocket:
