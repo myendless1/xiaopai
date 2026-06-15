@@ -7,7 +7,7 @@ import unittest
 SRC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "src")
 sys.path.insert(0, SRC_DIR)
 
-from aliyun_streaming_asr import parse_asr_event
+from aliyun_streaming_asr import parse_asr_event, wait_for_transcription_started
 from aliyun_streaming_tts import AliyunStreamingTtsClient, split_sentences
 from mcp_client import (
     STACKCHAN_TOOL_FACE_ACTION,
@@ -57,6 +57,41 @@ class RealtimeMappingTest(unittest.TestCase):
         )
         self.assertTrue(event["is_final"])
         self.assertEqual(event["text"], "你好小派")
+
+    def test_wait_for_aliyun_asr_started(self):
+        class FakeWebSocket:
+            def __init__(self, frames):
+                self.frames = list(frames)
+                self.timeout = None
+
+            def gettimeout(self):
+                return self.timeout
+
+            def settimeout(self, timeout):
+                self.timeout = timeout
+
+            def recv(self):
+                if not self.frames:
+                    raise TimeoutError("timeout")
+                return self.frames.pop(0)
+
+        started = wait_for_transcription_started(
+            FakeWebSocket(
+                [
+                    '{"header":{"name":"TaskStarted","status":20000000}}',
+                    '{"header":{"name":"TranscriptionStarted","status":20000000,"task_id":"t1"}}',
+                ]
+            )
+        )
+        self.assertEqual(started["name"], "TranscriptionStarted")
+
+        with self.assertRaisesRegex(RuntimeError, "Aliyun ASR failed"):
+            wait_for_transcription_started(
+                FakeWebSocket(['{"header":{"name":"TaskFailed","status":40000002}}'])
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "Timed out"):
+            wait_for_transcription_started(FakeWebSocket([]), timeout_s=0.01)
 
     def test_sentence_split(self):
         self.assertEqual(split_sentences("你好。我们开始吧！"), ["你好。", "我们开始吧！"])

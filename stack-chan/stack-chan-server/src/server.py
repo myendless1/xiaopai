@@ -542,6 +542,18 @@ def command_coalesce_key(command: dict) -> str:
     return ""
 
 
+def command_contains_speech(command: dict) -> bool:
+    command_type = str(command.get("type") or "")
+    if command_type == "speak":
+        return True
+    payload = command.get("payload")
+    if command_type == "sequence" and isinstance(payload, list):
+        for step in payload:
+            if isinstance(step, dict) and command_contains_speech(step):
+                return True
+    return False
+
+
 class DeviceCommandQueue:
     def __init__(self, max_size: int = COMMAND_QUEUE_MAX_SIZE):
         self.max_size = max(1, int(max_size))
@@ -1293,7 +1305,8 @@ class Handler(BaseHTTPRequestHandler):
     def _enqueue_command(self, device_id: str, command: dict) -> bool:
         device_id = safe_device_id(device_id)
         manager = getattr(self.server, "realtime_manager", None)
-        if manager and manager.has_device(device_id):
+        prefer_http_queue = command_contains_speech(command)
+        if manager and manager.has_device(device_id) and not prefer_http_queue:
             sent = manager.enqueue_command(device_id, command)
             detail = ""
             if command.get("type") == "face" and isinstance(command.get("payload"), dict):
@@ -1313,6 +1326,8 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 return True
             self._log_info(f"Realtime command fallback to queue: {command['type']}{detail}")
+        elif manager and manager.has_device(device_id) and prefer_http_queue:
+            self._log_info(f"Realtime speech command queued for device playback: {command['type']}")
         queue = self._queue_for(device_id)
         stats = queue.put(command)
         detail = ""

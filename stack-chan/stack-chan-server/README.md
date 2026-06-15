@@ -19,6 +19,7 @@ This project uses Python 3 and creates its own virtual environment at `.venv`.
 
 ```bash
 cd stack-chan-server
+sudo apt-get update && sudo apt-get install -y libopus0
 cat > .env <<'EOF'
 ALIYUN_AK_ID='your-access-key-id'
 ALIYUN_AK_SECRET='your-access-key-secret'
@@ -30,6 +31,8 @@ EOF
 ```
 
 The server can also use `ALIYUN_NLS_TOKEN` directly. With `ALIYUN_AK_ID` and `ALIYUN_AK_SECRET`, it creates and refreshes the NLS token automatically. The default ASR/TTS/command server uses only Python standard library modules.
+
+Realtime Xiaozhi speech uses Opus audio frames, so the OS must provide `libopus` in addition to the Python packages installed by `start.sh`.
 
 By default, logs are concise and omit device IDs, task IDs, client IPs, ports, and full API bodies. Start with debug logging only when you need those details:
 

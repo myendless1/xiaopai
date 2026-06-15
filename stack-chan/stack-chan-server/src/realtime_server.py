@@ -397,6 +397,9 @@ class RealtimeManager:
             payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
             await self._speak(session, str(payload.get("text") or ""))
             return True
+        return await self._send_mcp_command(session, command)
+
+    async def _send_mcp_command(self, session: RealtimeDeviceSession, command: dict) -> bool:
         sent = False
         for call in command_to_mcp_calls(command):
             request_id = make_request_id("mcp")
@@ -602,7 +605,19 @@ class RealtimeManager:
             return
         await self._abort_session_tts(session)
         self._mark(session, "device_tts_start")
-        session.tts_task = asyncio.create_task(self._run_tts(session, text))
+        await session.websocket.send(json_dumps(build_llm(text, session_id=session.session_id)))
+        command = {
+            "cmd_id": make_request_id("cmd"),
+            "type": "sequence",
+            "payload": [
+                {"type": "speak", "text": text},
+                {"type": "face", "expression": "calm"},
+            ],
+        }
+        if await self._send_mcp_command(session, command):
+            self._mark(session, "device_speak_command_sent")
+        else:
+            self.logger(f"Realtime speak command not sent: device_id={session.device_id}")
 
     async def _abort_session_tts(self, session: RealtimeDeviceSession) -> None:
         task = session.tts_task

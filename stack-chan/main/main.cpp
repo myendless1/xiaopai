@@ -1338,11 +1338,13 @@ static std::string json_string_value(const cJSON* root, const char* key)
     return cJSON_IsString(item) ? std::string(item->valuestring) : std::string();
 }
 
+static bool execute_command_object(const cJSON* command);
+
 static std::string make_ws_hello_message()
 {
     char message[256];
     snprintf(message, sizeof(message),
-             "{\"type\":\"hello\",\"version\":1,\"features\":{\"mcp\":false},"
+             "{\"type\":\"hello\",\"version\":1,\"features\":{\"mcp\":true},"
              "\"transport\":\"websocket\",\"audio_params\":{\"format\":\"opus\","
              "\"sample_rate\":%d,\"channels\":1,\"frame_duration\":%d}}",
              kAudioSampleRate, kOpusFrameDurationMs);
@@ -1377,7 +1379,180 @@ static bool send_ws_text(esp_transport_handle_t ws, const std::string& text, con
     return send_ws_frame(ws, WS_TRANSPORT_OPCODES_TEXT, text.c_str(), text.size(), label);
 }
 
-static bool handle_ws_text_message(const char* data, size_t len, bool& got_hello, std::string& stt_text)
+static cJSON* duplicate_json_or_empty_object(const cJSON* item)
+{
+    if (cJSON_IsObject(item) || cJSON_IsArray(item)) {
+        cJSON* copy = cJSON_Duplicate(item, true);
+        if (copy != nullptr) {
+            return copy;
+        }
+    }
+    return cJSON_CreateObject();
+}
+
+static cJSON* create_command_with_payload(const char* type, cJSON* payload)
+{
+    cJSON* command = cJSON_CreateObject();
+    if (command == nullptr) {
+        if (payload != nullptr) {
+            cJSON_Delete(payload);
+        }
+        return nullptr;
+    }
+    cJSON_AddStringToObject(command, "type", type);
+    cJSON_AddItemToObject(command, "payload", payload != nullptr ? payload : cJSON_CreateObject());
+    return command;
+}
+
+static cJSON* create_mcp_tool_command(const std::string& tool_name, const cJSON* arguments)
+{
+    if (tool_name == "self.stackchan.sequence.run") {
+        const cJSON* steps = cJSON_GetObjectItemCaseSensitive(arguments, "steps");
+        return create_command_with_payload("sequence", duplicate_json_or_empty_object(steps));
+    }
+    if (tool_name == "self.stackchan.face.set_expression") {
+        cJSON* payload = cJSON_CreateObject();
+        cJSON_AddStringToObject(payload, "expression", json_string_value(arguments, "expression").c_str());
+        return create_command_with_payload("face", payload);
+    }
+    if (tool_name == "self.stackchan.face.play_action") {
+        cJSON* payload = cJSON_CreateObject();
+        std::string action = json_string_value(arguments, "action");
+        if (action.empty()) {
+            action = json_string_value(arguments, "expression");
+        }
+        cJSON_AddStringToObject(payload, "expression", action.c_str());
+        return create_command_with_payload("face", payload);
+    }
+    if (tool_name == "self.stackchan.head.move" || tool_name == "self.stackchan.head.set_pose") {
+        return create_command_with_payload("motion", duplicate_json_or_empty_object(arguments));
+    }
+    if (tool_name == "self.stackchan.head.find_owner") {
+        return create_command_with_payload("find_owner", duplicate_json_or_empty_object(arguments));
+    }
+    if (tool_name == "self.stackchan.camera.capture") {
+        return create_command_with_payload("capture_image", duplicate_json_or_empty_object(arguments));
+    }
+    if (tool_name == "self.stackchan.volume.set") {
+        cJSON* payload = duplicate_json_or_empty_object(arguments);
+        cJSON_AddStringToObject(payload, "mode", "set");
+        return create_command_with_payload("volume", payload);
+    }
+    if (tool_name == "self.stackchan.volume.adjust") {
+        return create_command_with_payload("volume", duplicate_json_or_empty_object(arguments));
+    }
+    if (tool_name == "self.stackchan.stop") {
+        return create_command_with_payload("stop", cJSON_CreateObject());
+    }
+    return nullptr;
+}
+
+static bool send_mcp_response(esp_transport_handle_t ws, const cJSON* request_payload, bool ok, const char* message)
+{
+    if (ws == nullptr) {
+        return false;
+    }
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON* payload = cJSON_CreateObject();
+    if (root == nullptr || payload == nullptr) {
+        cJSON_Delete(root);
+        cJSON_Delete(payload);
+        return false;
+    }
+    cJSON_AddStringToObject(root, "type", "mcp");
+    cJSON_AddItemToObject(root, "payload", payload);
+    cJSON_AddStringToObject(payload, "jsonrpc", "2.0");
+
+    const cJSON* request_id = cJSON_GetObjectItemCaseSensitive(request_payload, "id");
+    if (cJSON_IsString(request_id)) {
+        cJSON_AddStringToObject(payload, "id", request_id->valuestring);
+    } else if (cJSON_IsNumber(request_id)) {
+        cJSON_AddNumberToObject(payload, "id", request_id->valuedouble);
+    } else {
+        cJSON_AddNullToObject(payload, "id");
+    }
+
+    if (ok) {
+        cJSON* result = cJSON_CreateObject();
+        cJSON_AddBoolToObject(result, "ok", true);
+        cJSON_AddItemToObject(payload, "result", result);
+    } else {
+        cJSON* error = cJSON_CreateObject();
+        cJSON_AddNumberToObject(error, "code", -32000);
+        cJSON_AddStringToObject(error, "message", message != nullptr && message[0] != '\0' ? message : "tool call failed");
+        cJSON_AddItemToObject(payload, "error", error);
+    }
+
+    char* text = cJSON_PrintUnformatted(root);
+    bool sent = false;
+    if (text != nullptr) {
+        sent = send_ws_text(ws, std::string(text), "mcp response");
+        cJSON_free(text);
+    }
+    cJSON_Delete(root);
+    return sent;
+}
+
+static bool handle_mcp_message(esp_transport_handle_t ws, const cJSON* root)
+{
+    const cJSON* payload = cJSON_GetObjectItemCaseSensitive(root, "payload");
+    if (!cJSON_IsObject(payload)) {
+        ESP_LOGW(TAG, "MCP message without payload");
+        return true;
+    }
+
+    std::string method = json_string_value(payload, "method");
+    if (method.empty()) {
+        ESP_LOGI(TAG, "MCP response/notification received");
+        return true;
+    }
+    if (method != "tools/call") {
+        ESP_LOGW(TAG, "Unsupported MCP method: %s", method.c_str());
+        send_mcp_response(ws, payload, false, "unsupported MCP method");
+        return true;
+    }
+
+    const cJSON* params = cJSON_GetObjectItemCaseSensitive(payload, "params");
+    const cJSON* arguments = nullptr;
+    std::string tool_name;
+    if (cJSON_IsObject(params)) {
+        tool_name = json_string_value(params, "name");
+        arguments = cJSON_GetObjectItemCaseSensitive(params, "arguments");
+    }
+    if (!cJSON_IsObject(arguments)) {
+        arguments = nullptr;
+    }
+
+    cJSON* command = create_mcp_tool_command(tool_name, arguments);
+    if (command == nullptr) {
+        ESP_LOGW(TAG, "Unsupported MCP tool: %s", tool_name.c_str());
+        send_mcp_response(ws, payload, false, "unsupported MCP tool");
+        return true;
+    }
+
+    ESP_LOGI(TAG, "MCP tool call: %s", tool_name.c_str());
+    bool ok = execute_command_object(command);
+    cJSON_Delete(command);
+    send_mcp_response(ws, payload, ok, ok ? "" : "command execution failed");
+    return true;
+}
+
+static bool handle_ws_command_message(const cJSON* root)
+{
+    const cJSON* command = cJSON_GetObjectItemCaseSensitive(root, "command");
+    if (!cJSON_IsObject(command)) {
+        ESP_LOGW(TAG, "WS command message without command object");
+        return true;
+    }
+    std::string cmd_type = json_string_value(command, "type");
+    ESP_LOGI(TAG, "WS command received: type=%s", cmd_type.c_str());
+    execute_command_object(command);
+    return true;
+}
+
+static bool handle_ws_text_message(esp_transport_handle_t ws, const char* data, size_t len, bool& got_hello,
+                                   std::string& stt_text)
 {
     ESP_LOGI(TAG, "WS text (%u bytes): %.*s", static_cast<unsigned>(len), static_cast<int>(len), data);
 
@@ -1412,6 +1587,10 @@ static bool handle_ws_text_message(const char* data, size_t len, bool& got_hello
     } else if (type == "llm") {
         std::string text = json_string_value(root, "text");
         ESP_LOGI(TAG, "LLM text=%s", text.c_str());
+    } else if (type == "mcp") {
+        handle_mcp_message(ws, root);
+    } else if (type == "command") {
+        handle_ws_command_message(root);
     } else if (type == "device_state" || type == "state") {
         std::string state = json_string_value(root, "state");
         ESP_LOGI(TAG, "Device state=%s", state.c_str());
@@ -1451,7 +1630,7 @@ static bool receive_ws_once(esp_transport_handle_t ws, int timeout_ms, bool& got
     ws_transport_opcodes_t opcode = esp_transport_ws_get_read_opcode(ws);
     if (opcode == WS_TRANSPORT_OPCODES_TEXT) {
         buffer[read_len] = '\0';
-        return handle_ws_text_message(buffer, read_len, got_hello, stt_text);
+        return handle_ws_text_message(ws, buffer, read_len, got_hello, stt_text);
     }
     if (opcode == WS_TRANSPORT_OPCODES_BINARY) {
         ESP_LOGD(TAG, "WS binary audio from server (%d bytes)", read_len);

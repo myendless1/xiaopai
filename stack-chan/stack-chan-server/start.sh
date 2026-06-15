@@ -34,6 +34,18 @@ fi
 ALIYUN_AK_ID="${ALIYUN_AK_ID:-}"
 ALIYUN_AK_SECRET="${ALIYUN_AK_SECRET:-}"
 ALIYUN_NLS_APPKEY="${ALIYUN_NLS_APPKEY:-}"
+REALTIME_ENABLED="${STACKCHAN_REALTIME_ENABLED:-true}"
+
+for arg in "${SERVER_ARGS[@]}"; do
+  case "$arg" in
+    --no-realtime-enabled)
+      REALTIME_ENABLED=false
+      ;;
+    --realtime-enabled)
+      REALTIME_ENABLED=true
+      ;;
+  esac
+done
 
 if [ ! -x "$VENV/bin/python" ]; then
   python3 -m venv "$VENV"
@@ -61,6 +73,24 @@ fi
 
 if has_requirements requirements-yunet.txt; then
   pip_install requirements-yunet.txt
+fi
+
+if [[ ! "$REALTIME_ENABLED" =~ ^(0|false|False|FALSE|no|No|NO|off|Off|OFF)$ ]]; then
+  if ! "$VENV/bin/python" - <<'PY' >/dev/null 2>&1
+import sys
+sys.path.insert(0, "src")
+from opus_codec import OpusCodec
+codec = OpusCodec(sample_rate=16000)
+pcm = b"\x00\x00" * codec.samples_per_frame
+codec.decode(codec.encode(pcm))
+PY
+  then
+    echo "Realtime Xiaozhi audio requires Python opuslib and system libopus." >&2
+    echo "Python packages are installed from requirements.txt; install the system library, then restart:" >&2
+    echo "  sudo apt-get update && sudo apt-get install -y libopus0" >&2
+    echo "To run without realtime speech, set STACKCHAN_REALTIME_ENABLED=false or pass --no-realtime-enabled." >&2
+    exit 1
+  fi
 fi
 
 if ! "$VENV/bin/python" - <<'PY' >/dev/null 2>&1
@@ -106,11 +136,19 @@ echo
 mkdir -p "$(dirname "$LOG_FILE")"
 echo "---- stack-chan-server start $(date '+%Y-%m-%d %H:%M:%S') ----" >> "$LOG_FILE"
 
-PYTHONUNBUFFERED=1 "$VENV/bin/python" src/server.py \
-  --host "$HOST" \
-  --port "$PORT" \
-  "${DEBUG_ARGS[@]}" \
-  "${SERVER_ARGS[@]}" \
-  2>&1 | tee -a "$LOG_FILE" &
+SERVER_CMD=(
+  "$VENV/bin/python" src/server.py
+  --host "$HOST"
+  --port "$PORT"
+  "${DEBUG_ARGS[@]}"
+  "${SERVER_ARGS[@]}"
+)
+
+if command -v setsid >/dev/null 2>&1; then
+  setsid env PYTHONUNBUFFERED=1 "${SERVER_CMD[@]}" >> "$LOG_FILE" 2>&1 < /dev/null &
+else
+  nohup env PYTHONUNBUFFERED=1 "${SERVER_CMD[@]}" >> "$LOG_FILE" 2>&1 < /dev/null &
+fi
+echo "Started server pid: $!"
 
 echo "Use \`pkill -f -9 server.py\` to stop the server."
