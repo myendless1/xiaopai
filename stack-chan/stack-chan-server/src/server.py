@@ -65,19 +65,26 @@ DIALOG_WAKE_WORDS = (
     "小泡",
     "xiaopai",
 )
-DIALOG_SLEEP_WORDS = (
-    "退下",
-    "退一下",
-    "退一下吧",
-    "退一退",
+DIALOG_SLEEP_BYE_WORDS = (
     "拜拜",
     "再见",
     "再會",
     "再会",
-    "不用了",
+)
+DIALOG_SLEEP_REST_WORDS = (
+    "退下吧",
+    "退下",
+    "退一下",
+    "退一下吧",
+    "退一退",
+    "休息",
+    "睡觉",
+    "睡覺",
+    "睡眠",
     "先这样",
     "先這樣",
 )
+DIALOG_SLEEP_WORDS = DIALOG_SLEEP_REST_WORDS + DIALOG_SLEEP_BYE_WORDS
 DIALOG_WAKE_ONLY_FILLERS = ("你好", "您好", "在吗", "在嗎", "醒醒", "hello", "hi", "嗨", "哈喽", "哈囉")
 
 AVAILABLE_EXPRESSIONS = (
@@ -149,8 +156,22 @@ WAKE_REPLY_EVENTS = (
     ("wake_reply_here", "我在呢"),
     ("wake_reply_xiaopai_here", "小派在呢"),
 )
+SLEEP_REPLY_BYE_EVENTS = (
+    ("sleep_reply_bye", "拜拜"),
+    ("sleep_reply_goodbye", "再见"),
+)
+SLEEP_REPLY_REST_EVENTS = (
+    ("sleep_reply_ok", "好的"),
+    ("sleep_reply_ok_master", "好的主人"),
+    ("sleep_reply_bye", "拜拜"),
+    ("sleep_reply_obey", "遵命"),
+)
+SLEEP_REPLY_EVENTS = tuple({name: text for name, text in SLEEP_REPLY_BYE_EVENTS + SLEEP_REPLY_REST_EVENTS}.items())
+PREWARM_EVENT_AUDIO_NAMES = tuple(name for name, _text in WAKE_REPLY_EVENTS + SLEEP_REPLY_EVENTS)
+EVENT_AUDIO_CACHE_META_VERSION = 2
 
 HEAD_TOUCH_EVENT_TEXT = {name: text for name, text in WAKE_REPLY_EVENTS}
+HEAD_TOUCH_EVENT_TEXT.update({name: text for name, text in SLEEP_REPLY_EVENTS})
 HEAD_TOUCH_EVENT_TEXT.update(
     {
         "press": "按压",
@@ -454,6 +475,15 @@ def has_dialog_wake_word(text: str) -> bool:
 def has_dialog_sleep_word(text: str) -> bool:
     normalized = normalize_voice_command_text(text)
     return any(normalize_voice_command_text(word) in normalized for word in DIALOG_SLEEP_WORDS)
+
+
+def sleep_reply_event_for_text(text: str) -> tuple[str, str]:
+    normalized = normalize_voice_command_text(text)
+    if any(normalize_voice_command_text(word) in normalized for word in DIALOG_SLEEP_BYE_WORDS):
+        return random.choice(SLEEP_REPLY_BYE_EVENTS)
+    if any(normalize_voice_command_text(word) in normalized for word in DIALOG_SLEEP_REST_WORDS):
+        return random.choice(SLEEP_REPLY_REST_EVENTS)
+    return random.choice(SLEEP_REPLY_REST_EVENTS)
 
 
 def is_wake_only_text(text: str) -> bool:
@@ -987,9 +1017,22 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             if has_dialog_sleep_word(text):
+                sleep_reply_name, sleep_reply_text = sleep_reply_event_for_text(text)
+                sleep_reply_command = make_command(
+                    "speak",
+                    {"text": sleep_reply_text, "cache_name": sleep_reply_name, "pause_listener": True},
+                    priority=95,
+                    interrupt=True,
+                    ttl_seconds=8,
+                    discardable=False,
+                    coalesce_key="sleep_reply",
+                )
+                self._enqueue_command(device_id, sleep_reply_command)
                 self._sleep_dialog(device_id, reason=text)
                 response["handled_as"] = "sleep"
                 response["dialog_awake"] = False
+                response["queued_command"] = sleep_reply_command["cmd_id"]
+                response["sleep_reply"] = {"name": sleep_reply_name, "text": sleep_reply_text}
                 self._send_json(response)
                 return
 
@@ -1000,7 +1043,7 @@ class Handler(BaseHTTPRequestHandler):
                 wake_reply_name, wake_reply_text = random.choice(WAKE_REPLY_EVENTS)
                 wake_reply_command = make_command(
                     "speak",
-                    {"text": wake_reply_text, "pause_listener": True},
+                    {"text": wake_reply_text, "cache_name": wake_reply_name, "pause_listener": True},
                     priority=95,
                     interrupt=True,
                     ttl_seconds=8,
@@ -1462,49 +1505,12 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        cache_dir = os.path.join(self.server.static_dir, "event-audio")
-        os.makedirs(cache_dir, exist_ok=True)
-        pcm_path = os.path.join(cache_dir, f"{name}.pcm")
-        wav_path = os.path.join(cache_dir, f"{name}.wav")
-        meta_path = os.path.join(cache_dir, f"{name}.txt")
-        text = HEAD_TOUCH_EVENT_TEXT[name]
-        cached_text = ""
-        if os.path.exists(meta_path):
-            try:
-                cached_text = read_binary_file(meta_path).decode("utf-8")
-            except UnicodeDecodeError:
-                cached_text = ""
-        if cached_text != text:
-            for stale_path in (pcm_path, wav_path):
-                try:
-                    os.remove(stale_path)
-                except FileNotFoundError:
-                    pass
-            if cached_text:
-                self._log_info(f"Event audio text changed: {name} {cached_text!r} -> {text!r}")
-        if not os.path.exists(pcm_path) or os.path.getsize(pcm_path) == 0:
-            self._log_info(f"Event audio cache miss: {name} -> {text!r}")
-            try:
-                audio = aliyun_tts_pcm_with_retries_for_server(self.server, text)
-            except Exception as exc:
-                self._log_error(f"Event audio TTS failed: {exc}")
-                self._send_json({"type": "error", "message": str(exc)}, HTTPStatus.BAD_GATEWAY)
-                return
-            tmp_path = f"{pcm_path}.tmp"
-            with open(tmp_path, "wb") as fp:
-                fp.write(audio)
-            os.replace(tmp_path, pcm_path)
-            tmp_meta_path = f"{meta_path}.tmp"
-            with open(tmp_meta_path, "w", encoding="utf-8") as fp:
-                fp.write(text)
-            os.replace(tmp_meta_path, meta_path)
-            self._log_info(f"Event audio cached: {pcm_path} bytes={len(audio)}")
-        if not os.path.exists(wav_path) or os.path.getsize(wav_path) == 0:
-            pcm = read_binary_file(pcm_path)
-            tmp_path = f"{wav_path}.tmp"
-            with open(tmp_path, "wb") as fp:
-                fp.write(pcm_to_wav(pcm, self.server.sample_rate))
-            os.replace(tmp_path, wav_path)
+        try:
+            pcm_path, wav_path = ensure_event_audio_cache(self.server, name, logger=self._log_info)
+        except Exception as exc:
+            self._log_error(f"Event audio TTS failed: {exc}")
+            self._send_json({"type": "error", "message": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            return
 
         path = wav_path if audio_ext == "wav" else pcm_path
 
@@ -2091,7 +2097,43 @@ def aliyun_tts_pcm_with_retries_for_server(server: AliyunVoiceServer, text: str)
     raise RuntimeError(f"Aliyun TTS failed after {server.tts_retries + 1} attempt(s): {last_error}")
 
 
-def ensure_event_audio_cache(server: AliyunVoiceServer, name: str) -> None:
+def event_audio_cache_meta(server: AliyunVoiceServer, text: str) -> dict:
+    return {
+        "version": EVENT_AUDIO_CACHE_META_VERSION,
+        "text": str(text or ""),
+        "format": "pcm_s16le",
+        "sample_rate": int(getattr(server, "sample_rate", 0) or 0),
+        "voice": str(getattr(server, "voice", "") or ""),
+        "volume": int(getattr(server, "volume", 0) or 0),
+        "speech_rate": int(getattr(server, "speech_rate", 0) or 0),
+        "pitch_rate": int(getattr(server, "pitch_rate", 0) or 0),
+        "tts_url": str(getattr(server, "tts_url", "") or ""),
+        "appkey": str(getattr(server, "appkey", "") or ""),
+    }
+
+
+def read_event_audio_cache_meta(meta_path: str) -> dict:
+    if not os.path.exists(meta_path):
+        return {}
+    try:
+        raw = read_binary_file(meta_path).decode("utf-8")
+    except UnicodeDecodeError:
+        return {}
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"text": raw}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def write_event_audio_cache_meta(meta_path: str, meta: dict) -> None:
+    tmp_meta_path = f"{meta_path}.tmp"
+    with open(tmp_meta_path, "w", encoding="utf-8") as fp:
+        fp.write(json.dumps(meta, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    os.replace(tmp_meta_path, meta_path)
+
+
+def ensure_event_audio_cache(server: AliyunVoiceServer, name: str, *, logger=log_print) -> tuple[str, str]:
     if name not in HEAD_TOUCH_EVENT_TEXT:
         raise ValueError(f"unknown event audio: {name}")
     cache_dir = os.path.join(server.static_dir, "event-audio")
@@ -2100,35 +2142,45 @@ def ensure_event_audio_cache(server: AliyunVoiceServer, name: str) -> None:
     wav_path = os.path.join(cache_dir, f"{name}.wav")
     meta_path = os.path.join(cache_dir, f"{name}.txt")
     text = HEAD_TOUCH_EVENT_TEXT[name]
-    cached_text = ""
-    if os.path.exists(meta_path):
-        try:
-            cached_text = read_binary_file(meta_path).decode("utf-8")
-        except UnicodeDecodeError:
-            cached_text = ""
-    if cached_text != text:
+    expected_meta = event_audio_cache_meta(server, text)
+    cached_meta = read_event_audio_cache_meta(meta_path)
+    if cached_meta != expected_meta:
         for stale_path in (pcm_path, wav_path):
             try:
                 os.remove(stale_path)
             except FileNotFoundError:
                 pass
+        if cached_meta:
+            previous_text = str(cached_meta.get("text") or "")
+            if previous_text and previous_text != text:
+                logger(f"Event audio text changed: {name} {previous_text!r} -> {text!r}")
+            else:
+                logger(f"Event audio TTS config changed: {name}")
     if not os.path.exists(pcm_path) or os.path.getsize(pcm_path) == 0:
+        logger(f"Event audio cache miss: {name} -> {text!r}")
         audio = aliyun_tts_pcm_with_retries_for_server(server, text)
         tmp_path = f"{pcm_path}.tmp"
         with open(tmp_path, "wb") as fp:
             fp.write(audio)
         os.replace(tmp_path, pcm_path)
-        tmp_meta_path = f"{meta_path}.tmp"
-        with open(tmp_meta_path, "w", encoding="utf-8") as fp:
-            fp.write(text)
-        os.replace(tmp_meta_path, meta_path)
-        log_print(f"Event audio cached: {pcm_path} bytes={len(audio)}")
+        write_event_audio_cache_meta(meta_path, expected_meta)
+        logger(f"Event audio cached: {pcm_path} bytes={len(audio)}")
     if not os.path.exists(wav_path) or os.path.getsize(wav_path) == 0:
         pcm = read_binary_file(pcm_path)
         tmp_path = f"{wav_path}.tmp"
         with open(tmp_path, "wb") as fp:
             fp.write(pcm_to_wav(pcm, server.sample_rate))
         os.replace(tmp_path, wav_path)
+    return pcm_path, wav_path
+
+
+def prewarm_event_audio_cache(server: AliyunVoiceServer, names: tuple[str, ...] | None = None) -> None:
+    selected_names = names or tuple(HEAD_TOUCH_EVENT_TEXT)
+    for name in selected_names:
+        try:
+            ensure_event_audio_cache(server, name)
+        except Exception as exc:
+            log_print(f"Event audio prewarm failed: {name}: {exc}", file=sys.stderr)
 
 
 def safe_device_id(device_id: str) -> str:
@@ -2384,7 +2436,7 @@ def main():
     parser.add_argument("--tts-prefetch-workers", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_TTS_PREFETCH_WORKERS", "2")))
     parser.add_argument("--tts-request-timeout", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_TTS_REQUEST_TIMEOUT", "12")))
     parser.add_argument("--tts-retries", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_TTS_RETRIES", "2")))
-    parser.add_argument("--tts-tail-silence-ms", type=int, default=int(os.environ.get("STACKCHAN_TTS_TAIL_SILENCE_MS", "350")))
+    parser.add_argument("--tts-tail-silence-ms", type=int, default=int(os.environ.get("STACKCHAN_TTS_TAIL_SILENCE_MS", "0")))
     parser.add_argument("--command-queue-max-size", type=int, default=int(os.environ.get("STACKCHAN_COMMAND_QUEUE_MAX_SIZE", str(COMMAND_QUEUE_MAX_SIZE))))
     parser.add_argument("--capture-dir", default=os.environ.get("STACKCHAN_CAPTURE_DIR", "captures"))
     parser.add_argument(
@@ -2609,6 +2661,8 @@ def main():
     httpd.device_order = []
     httpd.dialog_awake_until = {}
 
+    prewarm_event_audio_cache(httpd, PREWARM_EVENT_AUDIO_NAMES)
+
     if args.realtime_enabled:
         realtime_config = RealtimeConfig(
             host=args.host,
@@ -2633,6 +2687,9 @@ def main():
             openclaw_timeout=args.openclaw_timeout,
             openclaw_session_prefix=args.openclaw_session_prefix,
             openclaw_max_completion_tokens=args.openclaw_max_completion_tokens,
+            find_owner_gain_x=args.find_owner_gain_x,
+            find_owner_gain_y=args.find_owner_gain_y,
+            find_owner_stop_pixels=args.find_owner_stop_pixels,
             debug=args.debug,
         )
         httpd.realtime_manager = RealtimeManager(realtime_config, logger=log_print)

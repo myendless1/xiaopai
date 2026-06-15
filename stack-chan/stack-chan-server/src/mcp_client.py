@@ -115,15 +115,19 @@ def command_to_mcp_calls(command: dict) -> list[McpToolCall]:
 
     if command_type in ("find_owner", "locate_owner"):
         args = dict(payload) if isinstance(payload, dict) else {}
+        tool_args = {
+            "rounds": int(args.get("rounds", 1)),
+            "gain_x": float(args.get("gain_x", 0.45)),
+            "gain_y": float(args.get("gain_y", 0.55)),
+            "stop_pixels": float(args.get("stop_pixels", 32)),
+        }
+        for key in ("reply", "preserve_speech", "wait_for_speech"):
+            if key in args:
+                tool_args[key] = args[key]
         return [
             McpToolCall(
                 STACKCHAN_TOOL_HEAD_FIND_OWNER,
-                {
-                    "rounds": int(args.get("rounds", 1)),
-                    "gain_x": float(args.get("gain_x", 0.45)),
-                    "gain_y": float(args.get("gain_y", 0.55)),
-                    "stop_pixels": float(args.get("stop_pixels", 32)),
-                },
+                tool_args,
             )
         ]
 

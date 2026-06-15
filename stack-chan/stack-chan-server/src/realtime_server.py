@@ -47,22 +47,35 @@ REALTIME_WAKE_WORDS = (
 )
 REALTIME_WAKE_ONLY_FILLERS = ("你好", "您好", "在吗", "在嗎", "醒醒", "hello", "hi", "嗨", "哈喽", "哈囉")
 REALTIME_WAKE_REPLIES = ("我在。", "有什么要帮忙的", "你好呀", "我在呢", "小派在呢")
-REALTIME_SLEEP_WORDS = (
-    "退下",
-    "退一下",
-    "退一下吧",
-    "退一退",
+REALTIME_SLEEP_BYE_WORDS = (
     "拜拜",
     "再见",
     "再會",
     "再会",
-    "不用了",
-    "先这样",
-    "先這樣",
+)
+REALTIME_SLEEP_REST_WORDS = (
+    "退下吧",
+    "退下",
+    "退一下",
+    "退一下吧",
+    "退一退",
+    "休息",
     "睡觉",
     "睡覺",
     "睡眠",
-    "休息",
+    "先这样",
+    "先這樣",
+)
+REALTIME_SLEEP_WORDS = REALTIME_SLEEP_REST_WORDS + REALTIME_SLEEP_BYE_WORDS
+REALTIME_SLEEP_REPLY_BYE_EVENTS = (
+    ("sleep_reply_bye", "拜拜"),
+    ("sleep_reply_goodbye", "再见"),
+)
+REALTIME_SLEEP_REPLY_REST_EVENTS = (
+    ("sleep_reply_ok", "好的"),
+    ("sleep_reply_ok_master", "好的主人"),
+    ("sleep_reply_bye", "拜拜"),
+    ("sleep_reply_obey", "遵命"),
 )
 
 
@@ -78,6 +91,15 @@ def has_realtime_wake_word(text: str) -> bool:
 def has_realtime_sleep_word(text: str) -> bool:
     normalized = normalize_realtime_command_text(text)
     return any(normalize_realtime_command_text(word) in normalized for word in REALTIME_SLEEP_WORDS)
+
+
+def realtime_sleep_reply_event_for_text(text: str) -> tuple[str, str]:
+    normalized = normalize_realtime_command_text(text)
+    if any(normalize_realtime_command_text(word) in normalized for word in REALTIME_SLEEP_BYE_WORDS):
+        return random.choice(REALTIME_SLEEP_REPLY_BYE_EVENTS)
+    if any(normalize_realtime_command_text(word) in normalized for word in REALTIME_SLEEP_REST_WORDS):
+        return random.choice(REALTIME_SLEEP_REPLY_REST_EVENTS)
+    return random.choice(REALTIME_SLEEP_REPLY_REST_EVENTS)
 
 
 def is_realtime_wake_only_text(text: str) -> bool:
@@ -116,6 +138,9 @@ class RealtimeConfig:
     openclaw_timeout: int = 45
     openclaw_session_prefix: str = "xiaopai"
     openclaw_max_completion_tokens: int = 512
+    find_owner_gain_x: float = 1.0
+    find_owner_gain_y: float = 0.8
+    find_owner_stop_pixels: float = 32.0
     debug: bool = False
 
 
@@ -395,7 +420,11 @@ class RealtimeManager:
             await self._abort_session_tts(session)
         if command.get("type") == "speak":
             payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
-            await self._speak(session, str(payload.get("text") or ""))
+            await self._speak(
+                session,
+                str(payload.get("text") or ""),
+                cache_name=str(payload.get("cache_name") or ""),
+            )
             return True
         return await self._send_mcp_command(session, command)
 
@@ -578,17 +607,25 @@ class RealtimeManager:
 
     async def _handle_final_text(self, session: RealtimeDeviceSession, text: str) -> None:
         if has_realtime_sleep_word(text):
+            reply_name, reply_text = realtime_sleep_reply_event_for_text(text)
+            self._mark(session, "sleep_reply_start")
+            await self._speak(session, reply_text, cache_name=reply_name)
             session.dialog_awake = False
             self._mark(session, "dialog_sleep")
             await self._send_device_state(session, "sleep")
             return
         if has_realtime_wake_word(text):
+            was_awake = session.dialog_awake
             session.dialog_awake = True
             await self._send_device_state(session, "listening")
             if is_realtime_wake_only_text(text):
                 self._mark(session, "wake_reply_start")
                 await self._speak(session, random.choice(REALTIME_WAKE_REPLIES))
+                if not was_awake:
+                    await self._send_wake_find_owner(session)
                 return
+            if not was_awake:
+                await self._send_wake_find_owner(session)
         elif not session.dialog_awake:
             self._mark(session, "dialog_sleeping_ignore")
             await self._send_device_state(session, "sleep")
@@ -610,18 +647,42 @@ class RealtimeManager:
             await session.websocket.send(json_dumps(build_llm(reply, session_id=session.session_id)))
             self.logger("Realtime OpenClaw reply left to command playback")
 
-    async def _speak(self, session: RealtimeDeviceSession, text: str) -> None:
+    async def _send_wake_find_owner(self, session: RealtimeDeviceSession) -> None:
+        command = {
+            "cmd_id": make_request_id("cmd"),
+            "type": "find_owner",
+            "payload": {
+                "rounds": 1,
+                "reply": "",
+                "preserve_speech": True,
+                "wait_for_speech": False,
+                "gain_x": self.config.find_owner_gain_x,
+                "gain_y": self.config.find_owner_gain_y,
+                "stop_pixels": self.config.find_owner_stop_pixels,
+            },
+        }
+        if await self._send_mcp_command(session, command):
+            self._mark(session, "wake_find_owner_sent")
+            self.logger(f"Realtime wake find-owner sent: device_id={session.device_id}")
+        else:
+            self.logger(f"Realtime wake find-owner not sent: device_id={session.device_id}")
+
+    async def _speak(self, session: RealtimeDeviceSession, text: str, *, cache_name: str = "") -> None:
         text = str(text or "").strip()
         if not text:
             return
         await self._abort_session_tts(session)
         self._mark(session, "device_tts_start")
         await session.websocket.send(json_dumps(build_llm(text, session_id=session.session_id)))
+        speak_step = {"type": "speak", "text": text, "pause_listener": True}
+        cache_name = str(cache_name or "").strip()
+        if cache_name:
+            speak_step["cache_name"] = cache_name
         command = {
             "cmd_id": make_request_id("cmd"),
             "type": "sequence",
             "payload": [
-                {"type": "speak", "text": text, "pause_listener": True},
+                speak_step,
                 {"type": "face", "expression": "calm"},
             ],
         }

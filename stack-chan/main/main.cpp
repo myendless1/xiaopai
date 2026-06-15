@@ -116,7 +116,6 @@ static constexpr int kVoiceStartThreshold = CONFIG_STACKCHAN_VOICE_START_THRESHO
 static constexpr int kVoiceStopThreshold = CONFIG_STACKCHAN_VOICE_STOP_THRESHOLD;
 static constexpr int kRecordMaxMs = CONFIG_STACKCHAN_RECORD_MAX_MS;
 static constexpr int kSilenceStopMs = CONFIG_STACKCHAN_SILENCE_STOP_MS;
-static constexpr int kVoiceListenerReleaseWaitMs = 1000;
 static constexpr int kRealtimeSttDrainTimeoutMs = 1800;
 static constexpr int kTtsStreamSampleRate = 16000;
 static constexpr size_t kTtsStreamBufferSamples = 2048;
@@ -272,9 +271,12 @@ static constexpr const char* kWifiNvsPasswordKey = "wifi_password";
 static constexpr const char* kServerNvsBaseKey = "server_base";
 static constexpr const char* kProvisioningApPassword = "12345678";
 static constexpr int kProvisioningMaxScanResults = 16;
+static constexpr uint32_t kProvisioningStopDelayMs = 700;
+static constexpr uint32_t kProvisioningStopTaskStackBytes = 4 * 1024;
 bool wifi_sta_netif_created = false;
 bool wifi_ap_netif_created = false;
 bool provisioning_started = false;
+bool provisioning_stop_pending = false;
 httpd_handle_t provisioning_httpd = nullptr;
 
 enum class HeadTouchEvent : uint8_t {
@@ -410,6 +412,22 @@ struct XiaozhiConfig {
 XiaozhiConfig xiaozhi_config;
 void* realtime_opus_decoder = nullptr;
 bool realtime_tts_audio_mutex_taken = false;
+
+static bool speech_output_is_busy()
+{
+    if (speech_playback_active || realtime_tts_playback_active || speak_command_active ||
+        speak_animation_running || M5.Speaker.isPlaying()) {
+        return true;
+    }
+    if (audio_mutex == nullptr) {
+        return false;
+    }
+    if (xSemaphoreTake(audio_mutex, 0) == pdTRUE) {
+        xSemaphoreGive(audio_mutex);
+        return false;
+    }
+    return true;
+}
 
 struct App1Status {
     char stage[32] = "Idle";
@@ -1680,6 +1698,7 @@ static void wifi_event_handler(void*, esp_event_base_t event_base, int32_t event
 
 static std::string get_saved_wifi_password(const std::string& ssid);
 static bool http_health_ok(const std::string& base_url);
+static bool wifi_is_connected();
 
 static bool ensure_wifi_stack_started()
 {
@@ -1848,6 +1867,49 @@ static bool load_saved_server_base(std::string& base)
     return !base.empty();
 }
 
+static void stop_provisioning_portal()
+{
+    httpd_handle_t httpd = provisioning_httpd;
+    provisioning_httpd = nullptr;
+    provisioning_started = false;
+    provisioning_stop_pending = false;
+
+    if (httpd != nullptr) {
+        esp_err_t err = httpd_stop(httpd);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Provisioning HTTP stop failed: %s", esp_err_to_name(err));
+        }
+    }
+
+    if (wifi_started && wifi_is_connected()) {
+        esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "Provisioning AP stopped; WiFi mode is STA");
+        } else {
+            ESP_LOGW(TAG, "Failed to switch WiFi mode to STA: %s", esp_err_to_name(err));
+        }
+    } else {
+        ESP_LOGI(TAG, "Provisioning portal stopped without STA connection");
+    }
+}
+
+static void schedule_stop_provisioning_portal()
+{
+    if (!provisioning_started || provisioning_stop_pending) {
+        return;
+    }
+    provisioning_stop_pending = true;
+    BaseType_t created = xTaskCreatePinnedToCore([](void*) {
+        vTaskDelay(pdMS_TO_TICKS(kProvisioningStopDelayMs));
+        stop_provisioning_portal();
+        vTaskDelete(nullptr);
+    }, "prov_stop", kProvisioningStopTaskStackBytes, nullptr, 2, nullptr, 0);
+    if (created != pdPASS) {
+        provisioning_stop_pending = false;
+        ESP_LOGW(TAG, "Failed to schedule provisioning portal stop");
+    }
+}
+
 static bool select_server_base(const std::string& requested_base, bool persist)
 {
     std::string base = normalize_server_base(requested_base);
@@ -1861,6 +1923,7 @@ static bool select_server_base(const std::string& requested_base, bool persist)
             }
             ESP_LOGI(TAG, "Server selected: %s", active_server_base.c_str());
             show_expression("calm");
+            schedule_stop_provisioning_portal();
             return true;
         }
 
@@ -3331,18 +3394,10 @@ static void pause_voice_listener_for_shared_peripherals(const char* reason)
         return;
     }
 
-    const int max_wait_ms = kVoiceListenerReleaseWaitMs;
-    int waited_ms = 0;
-    while (xiaozhi_task_handle != nullptr && M5.Mic.isEnabled() && waited_ms < max_wait_ms) {
-        vTaskDelay(pdMS_TO_TICKS(20));
-        waited_ms += 20;
+    while (M5.Mic.isRecording()) {
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
-
     if (M5.Mic.isEnabled()) {
-        ESP_LOGW(TAG, "Voice listener did not release mic in %dms; forcing mic end", max_wait_ms);
-        while (M5.Mic.isRecording()) {
-            vTaskDelay(pdMS_TO_TICKS(1));
-        }
         M5.Mic.end();
     }
 }
@@ -4303,7 +4358,7 @@ static bool run_find_owner_command(int rounds, const char* reply, float gain_x =
     if (wait_for_speech) {
         const int max_wait_ms = 3000;
         int waited_ms = 0;
-        while ((speak_command_active || speech_playback_active || speak_animation_task_handle != nullptr ||
+        while ((speech_output_is_busy() ||
                 (speak_command_queue != nullptr && uxQueueMessagesWaiting(speak_command_queue) > 0)) &&
                waited_ms < max_wait_ms) {
             vTaskDelay(pdMS_TO_TICKS(20));
@@ -5370,7 +5425,7 @@ static bool execute_command_object(const cJSON* command)
 
     if (type == "face") {
         std::string expression = json_string_value(payload, "expression");
-        if (speak_command_active || speak_animation_running || speech_playback_active) {
+        if (speech_output_is_busy()) {
             speech_expression_overridden = true;
             speak_animation_running = false;
         }
