@@ -47,11 +47,37 @@ REALTIME_WAKE_WORDS = (
 )
 REALTIME_WAKE_ONLY_FILLERS = ("你好", "您好", "在吗", "在嗎", "醒醒", "hello", "hi", "嗨", "哈喽", "哈囉")
 REALTIME_WAKE_REPLIES = ("我在。", "有什么要帮忙的", "你好呀", "我在呢", "小派在呢")
+REALTIME_SLEEP_WORDS = (
+    "退下",
+    "退一下",
+    "退一下吧",
+    "退一退",
+    "拜拜",
+    "再见",
+    "再會",
+    "再会",
+    "不用了",
+    "先这样",
+    "先這樣",
+    "睡觉",
+    "睡覺",
+    "睡眠",
+    "休息",
+)
+
+
+def normalize_realtime_command_text(text: str) -> str:
+    return re.sub(r"[\s,_\-，。.!！?？/（）()]+", "", str(text or "").strip().lower())
 
 
 def has_realtime_wake_word(text: str) -> bool:
-    lowered = str(text or "").lower()
-    return any(word in lowered for word in REALTIME_WAKE_WORDS)
+    normalized = normalize_realtime_command_text(text)
+    return any(normalize_realtime_command_text(word) in normalized for word in REALTIME_WAKE_WORDS)
+
+
+def has_realtime_sleep_word(text: str) -> bool:
+    normalized = normalize_realtime_command_text(text)
+    return any(normalize_realtime_command_text(word) in normalized for word in REALTIME_SLEEP_WORDS)
 
 
 def is_realtime_wake_only_text(text: str) -> bool:
@@ -101,6 +127,7 @@ class RealtimeDeviceSession:
         self.connected_at = time.time()
         self.last_seen = self.connected_at
         self.last_stt = ""
+        self.dialog_awake = False
         self.tts_task: asyncio.Task | None = None
         self.asr_bridge: RealtimeAsrBridge | None = None
         self.latency_started_at = time.perf_counter()
@@ -114,6 +141,7 @@ class RealtimeDeviceSession:
             "last_seen_seconds_ago": round(time.time() - self.last_seen, 1),
             "online": True,
             "last_stt": self.last_stt,
+            "dialog_awake": self.dialog_awake,
             "asr_active": bool(self.asr_bridge and self.asr_bridge.active),
             "latency_ms": self.latency_snapshot(),
         }
@@ -409,6 +437,7 @@ class RealtimeManager:
                     )
                     self._register_session(session)
                     await websocket.send(json_dumps(build_hello(session.session_id)))
+                    await self._send_device_state(session, "sleep")
                     continue
                 session.last_seen = time.time()
                 await self._handle_json(session, message)
@@ -509,10 +538,27 @@ class RealtimeManager:
         if bridge is not None:
             bridge.stop()
 
+    async def _send_device_state(self, session: RealtimeDeviceSession, state: str) -> None:
+        await session.websocket.send(
+            json_dumps({"type": "device_state", "state": state, "session_id": session.session_id})
+        )
+
     async def _handle_final_text(self, session: RealtimeDeviceSession, text: str) -> None:
-        if has_realtime_wake_word(text) and is_realtime_wake_only_text(text):
-            self._mark(session, "wake_reply_start")
-            await self._speak(session, random.choice(REALTIME_WAKE_REPLIES))
+        if has_realtime_sleep_word(text):
+            session.dialog_awake = False
+            self._mark(session, "dialog_sleep")
+            await self._send_device_state(session, "sleep")
+            return
+        if has_realtime_wake_word(text):
+            session.dialog_awake = True
+            await self._send_device_state(session, "listening")
+            if is_realtime_wake_only_text(text):
+                self._mark(session, "wake_reply_start")
+                await self._speak(session, random.choice(REALTIME_WAKE_REPLIES))
+                return
+        elif not session.dialog_awake:
+            self._mark(session, "dialog_sleeping_ignore")
+            await self._send_device_state(session, "sleep")
             return
         if not self._openclaw.enabled:
             await self._speak(session, "我没听清，可以再说一遍吗")

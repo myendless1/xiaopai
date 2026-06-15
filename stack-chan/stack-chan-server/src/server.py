@@ -922,7 +922,9 @@ class Handler(BaseHTTPRequestHandler):
         port = int(first_value(query, "ws_port") or getattr(self.server, "xiaozhi_ws_port", 0) or self.server.server_port)
         path = getattr(self.server, "xiaozhi_ws_path", "/xiaozhi/ws")
         token = getattr(self.server, "xiaozhi_local_token", "")
-        self._send_json(ota_config(f"ws://{host}:{port}{path}", token))
+        ws_url = f"ws://{host}:{port}{path}"
+        self._log_info(f"Xiaozhi OTA config: host_header={self.headers.get('Host', '')!r} ws_url={ws_url}")
+        self._send_json(ota_config(ws_url, token))
 
     def _handle_upload(self, body: bytes):
         if not body:

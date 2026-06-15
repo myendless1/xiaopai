@@ -47,6 +47,9 @@ void run_camera_upload_app();
 void run_tracking_user_demo();
 static bool wifi_is_connected();
 static void show_expression(const char* expression);
+static void set_light_strip_listening();
+static void set_light_strip_speaking();
+static void set_light_strip_sleeping();
 static void start_speaking_animation();
 static void stop_speaking_animation();
 static void apply_speaker_volume();
@@ -119,7 +122,7 @@ static constexpr size_t kTtsStreamBufferSamples = 2048;
 static constexpr int kLauncherAppCount = 5;
 static constexpr bool kShowAppStatusScreens = false;
 static constexpr uint32_t kWifiTaskStackBytes = 8 * 1024;
-static constexpr uint32_t kApp1TaskStackBytes = 24 * 1024;
+static constexpr uint32_t kApp1TaskStackBytes = 40 * 1024;
 static constexpr uint32_t kApp2TaskStackBytes = 16 * 1024;
 static constexpr uint32_t kCommandTaskStackBytes = 16 * 1024;
 static constexpr uint32_t kCameraTaskStackBytes = 16 * 1024;
@@ -164,6 +167,16 @@ static constexpr int kServoPitchZeroRaw = 620;
 static constexpr float kServoStepsPerDegree = 3.2f;
 static constexpr uint8_t kPy32Address = 0x6f;
 static constexpr uint8_t kPy32ServoPowerPin = 0;
+static constexpr uint8_t kPy32RgbPin = 13;
+static constexpr uint8_t kPy32LedConfigReg = 0x24;
+static constexpr uint8_t kPy32LedRamStartReg = 0x30;
+static constexpr uint8_t kLightStripLedCount = 12;
+static constexpr uint8_t kLightStripListeningR = 0;
+static constexpr uint8_t kLightStripListeningG = 32;
+static constexpr uint8_t kLightStripListeningB = 0;
+static constexpr uint8_t kLightStripSpeakingR = 0;
+static constexpr uint8_t kLightStripSpeakingG = 0;
+static constexpr uint8_t kLightStripSpeakingB = 48;
 static constexpr uint32_t kPy32I2cFreq = 100000;
 static constexpr uint8_t kSi12tAddress = 0x68;
 static constexpr uint8_t kSi12tSensitivity1Reg = 0x02;
@@ -235,6 +248,10 @@ volatile bool speech_expression_overridden = false;
 volatile bool speak_animation_running = false;
 volatile bool expression_animation_running = false;
 volatile bool speak_command_active = false;
+bool light_strip_ready = false;
+bool light_strip_missing = false;
+bool light_strip_listening_after_speech = false;
+int light_strip_state = 0;
 bool camera_initialized = false;
 volatile bool camera_owns_internal_i2c = false;
 bool servo_uart_initialized = false;
@@ -1373,6 +1390,16 @@ static bool handle_ws_text_message(const char* data, size_t len, bool& got_hello
     } else if (type == "llm") {
         std::string text = json_string_value(root, "text");
         ESP_LOGI(TAG, "LLM text=%s", text.c_str());
+    } else if (type == "device_state" || type == "state") {
+        std::string state = json_string_value(root, "state");
+        ESP_LOGI(TAG, "Device state=%s", state.c_str());
+        if (state == "sleep" || state == "sleeping" || state == "idle") {
+            set_light_strip_sleeping();
+        } else if (state == "wake" || state == "awake" || state == "listen" || state == "listening") {
+            set_light_strip_listening();
+        } else if (state == "speak" || state == "speaking") {
+            set_light_strip_speaking();
+        }
     } else if (!type.empty()) {
         ESP_LOGI(TAG, "Unhandled WS message type=%s", type.c_str());
     }
@@ -2320,6 +2347,15 @@ static bool configure_local_xiaozhi_websocket()
     return true;
 }
 
+static bool websocket_url_is_connectable(const std::string& url)
+{
+    ParsedUrl parsed;
+    if (!parse_websocket_url(url, parsed)) {
+        return false;
+    }
+    return parsed.host != "0.0.0.0" && parsed.host != "::" && parsed.host != "[::]";
+}
+
 static std::string make_system_info_json()
 {
     const esp_app_desc_t* app = esp_app_get_description();
@@ -2540,7 +2576,13 @@ static bool request_local_xiaozhi_ota_config()
         return false;
     }
     summarize_ota_response(response);
-    return !xiaozhi_config.websocket_url.empty();
+    if (!websocket_url_is_connectable(xiaozhi_config.websocket_url)) {
+        ESP_LOGW(TAG, "Local OTA returned unusable WS URL: %s", xiaozhi_config.websocket_url.c_str());
+        xiaozhi_config.websocket_url.clear();
+        xiaozhi_config.websocket_token.clear();
+        return false;
+    }
+    return true;
 }
 
 static void* create_opus_encoder(int& frame_size_samples, int& outbuf_size)
@@ -2997,6 +3039,7 @@ static void run_local_record_upload_loop()
     }
 
     set_app1_status("Ready", "Listening", make_server_url("/upload-audio").c_str(), "", false, true);
+    set_light_strip_listening();
     std::vector<int16_t> probe(kVoiceProbeSamples);
     std::vector<int16_t> pre_roll;
     pre_roll.reserve(kPreRollSamples + kVoiceProbeSamples);
@@ -3028,6 +3071,7 @@ static void run_local_record_upload_loop()
             smooth_level = 0;
             last_status_ms = 0;
             set_app1_status("Listening", "Resumed", "Speak to upload", "", true, false);
+            set_light_strip_listening();
         }
         if (!mic_record_blocking(probe.data(), probe.size(), kRecordSampleRate)) {
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -3062,6 +3106,7 @@ static void run_local_record_upload_loop()
     }
 
     set_app1_status("Stopped", "Voice stopped", "", "", false, false);
+    set_light_strip_sleeping();
     while (M5.Mic.isRecording()) {
         vTaskDelay(pdMS_TO_TICKS(1));
     }
@@ -3145,9 +3190,11 @@ static void run_xiaozhi_speech_loop()
     esp_transport_handle_t ws = open_xiaozhi_websocket(parent);
     if (ws == nullptr) {
         esp_opus_enc_close(encoder);
+        set_light_strip_sleeping();
         return;
     }
 
+    set_light_strip_sleeping();
     std::vector<int16_t> probe(kVoiceProbeSamples);
     uint32_t last_status_ms = 0;
     bool got_hello = true;
@@ -3191,14 +3238,17 @@ static void run_xiaozhi_speech_loop()
                 parent = nullptr;
                 ws = open_xiaozhi_websocket(parent);
                 if (ws == nullptr) {
+                    set_light_strip_sleeping();
                     break;
                 }
+                set_light_strip_sleeping();
             }
             last_status_ms = 0;
         }
     }
 
     set_app1_status("Stopped", "Voice stopped", "", "", false, false);
+    set_light_strip_sleeping();
     esp_transport_close(ws);
     esp_transport_destroy(ws);
     if (parent != nullptr) {
@@ -3487,6 +3537,91 @@ static bool py32_write_bit(uint8_t low_reg, uint8_t high_reg, uint8_t pin, bool 
     uint8_t value = M5.In_I2C.readRegister8(kPy32Address, reg, kPy32I2cFreq);
     value = enabled ? (value | mask) : (value & ~mask);
     return M5.In_I2C.writeRegister8(kPy32Address, reg, value, kPy32I2cFreq);
+}
+
+static uint16_t rgb888_to_rgb565(uint8_t r, uint8_t g, uint8_t b)
+{
+    return static_cast<uint16_t>(((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3));
+}
+
+static bool py32_write_light_strip_color_locked(uint8_t r, uint8_t g, uint8_t b)
+{
+    const uint16_t color565 = rgb888_to_rgb565(r, g, b);
+    const uint8_t low = static_cast<uint8_t>(color565 & 0xff);
+    const uint8_t high = static_cast<uint8_t>((color565 >> 8) & 0xff);
+
+    for (uint8_t i = 0; i < kLightStripLedCount; ++i) {
+        const uint8_t reg = kPy32LedRamStartReg + i * 2;
+        if (!M5.In_I2C.writeRegister8(kPy32Address, reg, low, kPy32I2cFreq) ||
+            !M5.In_I2C.writeRegister8(kPy32Address, reg + 1, high, kPy32I2cFreq)) {
+            return false;
+        }
+    }
+
+    uint8_t config = M5.In_I2C.readRegister8(kPy32Address, kPy32LedConfigReg, kPy32I2cFreq);
+    config = (config & 0xc0) | (kLightStripLedCount & 0x3f) | (1 << 6);
+    return M5.In_I2C.writeRegister8(kPy32Address, kPy32LedConfigReg, config, kPy32I2cFreq);
+}
+
+static bool ensure_light_strip_ready_locked()
+{
+    if (light_strip_ready) {
+        return true;
+    }
+    if (light_strip_missing || camera_owns_internal_i2c) {
+        return false;
+    }
+
+    uint8_t version = M5.In_I2C.readRegister8(kPy32Address, 0x02, kPy32I2cFreq);
+    if (version == 0 || version == 0xff) {
+        ESP_LOGW(TAG, "PY32 IO expander not detected; RGB light strip disabled");
+        light_strip_missing = true;
+        return false;
+    }
+
+    py32_write_bit(0x03, 0x04, kPy32RgbPin, true);   // direction output
+    py32_write_bit(0x0b, 0x0c, kPy32RgbPin, false);  // pull-down off
+    py32_write_bit(0x09, 0x0a, kPy32RgbPin, true);   // pull-up on
+    py32_write_bit(0x13, 0x14, kPy32RgbPin, false);  // push-pull
+    M5.In_I2C.writeRegister8(kPy32Address, kPy32LedConfigReg, kLightStripLedCount & 0x3f, kPy32I2cFreq);
+    light_strip_ready = true;
+    ESP_LOGI(TAG, "RGB light strip ready via PY32 version=0x%02x", version);
+    return true;
+}
+
+static void set_light_strip_color(uint8_t r, uint8_t g, uint8_t b, int state)
+{
+    if (light_strip_state == state && light_strip_ready) {
+        return;
+    }
+    if (camera_owns_internal_i2c) {
+        return;
+    }
+
+    M5Lock lock;
+    if (!ensure_light_strip_ready_locked()) {
+        return;
+    }
+    if (py32_write_light_strip_color_locked(r, g, b)) {
+        light_strip_state = state;
+    }
+}
+
+static void set_light_strip_listening()
+{
+    light_strip_listening_after_speech = true;
+    set_light_strip_color(kLightStripListeningR, kLightStripListeningG, kLightStripListeningB, 1);
+}
+
+static void set_light_strip_speaking()
+{
+    set_light_strip_color(kLightStripSpeakingR, kLightStripSpeakingG, kLightStripSpeakingB, 2);
+}
+
+static void set_light_strip_sleeping()
+{
+    light_strip_listening_after_speech = false;
+    set_light_strip_color(0, 0, 0, 3);
 }
 
 static void enable_servo_power()
@@ -4615,6 +4750,7 @@ static void show_expression(const char* expression)
 
 static void start_speaking_animation()
 {
+    set_light_strip_speaking();
     speak_animation_running = true;
     if (speak_animation_task_handle != nullptr) {
         return;
@@ -4639,9 +4775,19 @@ static void stop_speaking_animation()
     }
     if (speech_expression_overridden) {
         speech_expression_overridden = false;
+        if (light_strip_listening_after_speech) {
+            set_light_strip_listening();
+        } else {
+            set_light_strip_sleeping();
+        }
         return;
     }
     show_expression(kDefaultExpression);
+    if (light_strip_listening_after_speech) {
+        set_light_strip_listening();
+    } else {
+        set_light_strip_sleeping();
+    }
 }
 
 static void request_speak_preempt(const char* reason)
@@ -5067,6 +5213,19 @@ static bool execute_command_object(const cJSON* command)
         app2_stop_requested = true;
         M5.Speaker.stop();
         show_expression("stopped");
+        set_light_strip_sleeping();
+        return true;
+    }
+    if (type == "sleep") {
+        app2_stop_requested = true;
+        M5.Speaker.stop();
+        show_expression("stopped");
+        set_light_strip_sleeping();
+        return true;
+    }
+    if (type == "wake" || type == "listen" || type == "listening") {
+        show_expression(kDefaultExpression);
+        set_light_strip_listening();
         return true;
     }
     if (type == "play_audio") {
