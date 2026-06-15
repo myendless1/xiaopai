@@ -793,7 +793,7 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
             return
-        if path == "/xiaozhi/ota":
+        if path in ("/xiaozhi/ota", "/realtime/config"):
             self._handle_xiaozhi_ota(query)
             return
         if path == "/expressions":
@@ -923,7 +923,7 @@ class Handler(BaseHTTPRequestHandler):
         path = getattr(self.server, "xiaozhi_ws_path", "/xiaozhi/ws")
         token = getattr(self.server, "xiaozhi_local_token", "")
         ws_url = f"ws://{host}:{port}{path}"
-        self._log_info(f"Xiaozhi OTA config: host_header={self.headers.get('Host', '')!r} ws_url={ws_url}")
+        self._log_info(f"Realtime config: host_header={self.headers.get('Host', '')!r} ws_url={ws_url}")
         self._send_json(ota_config(ws_url, token))
 
     def _handle_upload(self, body: bytes):

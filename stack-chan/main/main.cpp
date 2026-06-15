@@ -1355,6 +1355,25 @@ static std::string make_listen_message(const char* state)
            "\",\"type\":\"listen\",\"state\":\"" + state + "\",\"mode\":\"manual\"}";
 }
 
+static bool send_ws_frame(esp_transport_handle_t ws, ws_transport_opcodes_t opcode, const char* data, size_t len,
+                          const char* label, int timeout_ms = 5000)
+{
+    int written = esp_transport_ws_send_raw(ws, opcode, data, len, timeout_ms);
+    ESP_LOGI(TAG, "WS send %s opcode=%d written=%d expected=%u", label, static_cast<int>(opcode), written,
+             static_cast<unsigned>(len));
+    if (written < 0 || written < static_cast<int>(len)) {
+        ESP_LOGE(TAG, "WS send %s failed or short write: written=%d expected=%u", label, written,
+                 static_cast<unsigned>(len));
+        return false;
+    }
+    return true;
+}
+
+static bool send_ws_text(esp_transport_handle_t ws, const std::string& text, const char* label)
+{
+    return send_ws_frame(ws, WS_TRANSPORT_OPCODES_TEXT, text.c_str(), text.size(), label);
+}
+
 static bool handle_ws_text_message(const char* data, size_t len, bool& got_hello, std::string& stt_text)
 {
     ESP_LOGI(TAG, "WS text (%u bytes): %.*s", static_cast<unsigned>(len), static_cast<int>(len), data);
@@ -2513,9 +2532,9 @@ static bool request_xiaozhi_ota_config()
 
 static bool request_local_xiaozhi_ota_config()
 {
-    std::string url = make_server_url("/xiaozhi/ota");
-    set_app1_status("Realtime", "GET local Xiaozhi OTA", url.c_str(), "", true, false);
-    ESP_LOGI(TAG, "Local OTA URL: %s", url.c_str());
+    std::string url = make_server_url("/realtime/config");
+    set_app1_status("Realtime", "GET realtime config", url.c_str(), "", true, false);
+    ESP_LOGI(TAG, "Realtime config URL: %s", url.c_str());
 
     esp_http_client_config_t config = {};
     config.url = url.c_str();
@@ -2533,14 +2552,14 @@ static bool request_local_xiaozhi_ota_config()
 
     esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Local OTA open failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "Realtime config open failed: %s", esp_err_to_name(err));
         esp_http_client_cleanup(client);
         return false;
     }
     int content_length = esp_http_client_fetch_headers(client);
     int status = esp_http_client_get_status_code(client);
     if (err != ESP_OK || status < 200 || status >= 300) {
-        ESP_LOGW(TAG, "Local OTA failed: err=%s status=%d", esp_err_to_name(err), status);
+        ESP_LOGW(TAG, "Realtime config failed: err=%s status=%d", esp_err_to_name(err), status);
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         return false;
@@ -2577,7 +2596,7 @@ static bool request_local_xiaozhi_ota_config()
     }
     summarize_ota_response(response);
     if (!websocket_url_is_connectable(xiaozhi_config.websocket_url)) {
-        ESP_LOGW(TAG, "Local OTA returned unusable WS URL: %s", xiaozhi_config.websocket_url.c_str());
+        ESP_LOGW(TAG, "Realtime config returned unusable WS URL: %s", xiaozhi_config.websocket_url.c_str());
         xiaozhi_config.websocket_url.clear();
         xiaozhi_config.websocket_token.clear();
         return false;
@@ -2665,7 +2684,7 @@ static esp_transport_handle_t open_xiaozhi_websocket(esp_transport_handle_t& par
     std::string stt_text;
     std::string hello = make_ws_hello_message();
     ESP_LOGI(TAG, "WS send hello: %s", hello.c_str());
-    if (esp_transport_ws_send_raw(ws, WS_TRANSPORT_OPCODES_TEXT, hello.c_str(), hello.size(), 5000) < 0) {
+    if (!send_ws_text(ws, hello, "hello")) {
         set_app1_status("WS Fail", "hello send failed", "", "", false, false);
         esp_transport_destroy(ws);
         esp_transport_destroy(parent);
@@ -2709,10 +2728,8 @@ static bool send_opus_frame(esp_transport_handle_t ws, void* encoder, const int1
         return false;
     }
 
-    int written = esp_transport_ws_send_raw(ws, WS_TRANSPORT_OPCODES_BINARY, reinterpret_cast<const char*>(out.buffer),
-                                            out.encoded_bytes, 5000);
-    if (written < 0) {
-        ESP_LOGE(TAG, "WS audio send failed");
+    if (!send_ws_frame(ws, WS_TRANSPORT_OPCODES_BINARY, reinterpret_cast<const char*>(out.buffer), out.encoded_bytes,
+                       "audio")) {
         return false;
     }
     ESP_LOGD(TAG, "Sent opus frame: pcm=%d encoded=%u", samples, static_cast<unsigned>(out.encoded_bytes));
@@ -2724,7 +2741,7 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
 {
     std::string start = make_listen_message("start");
     ESP_LOGI(TAG, "WS send listen start: %s", start.c_str());
-    if (esp_transport_ws_send_raw(ws, WS_TRANSPORT_OPCODES_TEXT, start.c_str(), start.size(), 5000) < 0) {
+    if (!send_ws_text(ws, start, "listen start")) {
         set_app1_status("WS Fail", "listen start failed", "", "", false, false);
         return false;
     }
@@ -2791,7 +2808,7 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
 
     std::string stop = make_listen_message("stop");
     ESP_LOGI(TAG, "WS send listen stop: %s", stop.c_str());
-    esp_transport_ws_send_raw(ws, WS_TRANSPORT_OPCODES_TEXT, stop.c_str(), stop.size(), 5000);
+    send_ws_text(ws, stop, "listen stop");
     set_app1_status("Recognizing", "Waiting for STT text", "See USB serial log", "");
 
     int64_t deadline = esp_timer_get_time() + 12000000LL;
