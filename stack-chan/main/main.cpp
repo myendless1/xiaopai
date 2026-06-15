@@ -5348,6 +5348,7 @@ static void start_background_services()
             xTaskCreatePinnedToCore([](void*) {
                 run_xiaozhi_ota_probe();
                 xiaozhi_task_handle = nullptr;
+                vTaskDelete(nullptr);
             }, "bg_voice", kApp1TaskStackBytes, nullptr, 3, &xiaozhi_task_handle, 1);
         }
 
@@ -5355,6 +5356,7 @@ static void start_background_services()
             xTaskCreatePinnedToCore([](void*) {
                 run_command_http_loop();
                 command_task_handle = nullptr;
+                vTaskDelete(nullptr);
             }, "bg_command", kCommandTaskStackBytes, nullptr, 3, &command_task_handle, 0);
         }
 

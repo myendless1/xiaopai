@@ -412,6 +412,7 @@ class RealtimeManager:
             request = getattr(websocket, "request", None)
             path = getattr(websocket, "path", "") or getattr(request, "path", "")
         parsed = urlparse(path or "")
+        self.logger(f"Xiaozhi realtime WebSocket accepted: path={parsed.path!r} query={parsed.query!r}")
         if parsed.path != self.config.path:
             await websocket.close(code=1008, reason="invalid path")
             return
@@ -430,6 +431,7 @@ class RealtimeManager:
                 message = parse_json_message(frame)
                 if session is None:
                     device_id = extract_device_id_from_hello(message)
+                    self.logger(f"Xiaozhi realtime hello received: device_id={device_id} type={message.get('type')!r}")
                     session = RealtimeDeviceSession(
                         device_id=device_id,
                         websocket=websocket,
