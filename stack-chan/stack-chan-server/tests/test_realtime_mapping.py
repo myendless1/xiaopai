@@ -2,6 +2,7 @@ import os
 import sys
 import types
 import unittest
+import asyncio
 
 
 SRC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "src")
@@ -16,7 +17,14 @@ from mcp_client import (
     STACKCHAN_TOOL_VOLUME_SET,
     command_to_mcp_calls,
 )
-from realtime_server import has_realtime_sleep_word, has_realtime_wake_word, is_realtime_wake_only_text
+from realtime_server import (
+    RealtimeConfig,
+    RealtimeDeviceSession,
+    RealtimeManager,
+    has_realtime_sleep_word,
+    has_realtime_wake_word,
+    is_realtime_wake_only_text,
+)
 from xiaozhi_protocol import build_hello, build_mcp_tools_call, build_stt
 
 
@@ -105,6 +113,39 @@ class RealtimeMappingTest(unittest.TestCase):
         self.assertTrue(has_realtime_sleep_word("小派，先休息吧"))
         self.assertTrue(has_realtime_sleep_word("不用了，拜拜"))
         self.assertFalse(has_realtime_sleep_word("小派，继续聊天"))
+
+    def test_openclaw_realtime_reply_is_not_spoken_twice(self):
+        class FakeOpenClaw:
+            enabled = True
+
+            def chat(self, device_id, text):
+                return "你好，有什么我能帮到你的？"
+
+        class FakeWebSocket:
+            def __init__(self):
+                self.sent = []
+
+            async def send(self, payload):
+                self.sent.append(payload)
+
+        async def run_case():
+            manager = RealtimeManager(RealtimeConfig(openclaw_base_url="http://openclaw", openclaw_token="token"), logger=lambda _msg: None)
+            manager._openclaw = FakeOpenClaw()
+            spoken = []
+
+            async def fake_speak(_session, text):
+                spoken.append(text)
+
+            manager._speak = fake_speak
+            websocket = FakeWebSocket()
+            session = RealtimeDeviceSession(device_id="dev1", websocket=websocket, session_id="sess1")
+            session.dialog_awake = True
+            await manager._handle_final_text(session, "今天有什么安排")
+            return spoken, websocket.sent
+
+        spoken, sent = asyncio.run(run_case())
+        self.assertEqual(spoken, [])
+        self.assertTrue(any('"type":"llm"' in payload for payload in sent))
 
     def test_tts_iter_pcm_chunks_streams_binary_frames(self):
         class FakeWebSocket:

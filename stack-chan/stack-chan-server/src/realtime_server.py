@@ -597,7 +597,11 @@ class RealtimeManager:
         except Exception as exc:
             self.logger(f"OpenClaw realtime chat failed: {exc}")
             reply = ""
-        await self._speak(session, reply or "我没听清，可以再说一遍吗")
+            await self._speak(session, "我没听清，可以再说一遍吗")
+            return
+        if reply:
+            await session.websocket.send(json_dumps(build_llm(reply, session_id=session.session_id)))
+            self.logger("Realtime OpenClaw reply left to command playback")
 
     async def _speak(self, session: RealtimeDeviceSession, text: str) -> None:
         text = str(text or "").strip()

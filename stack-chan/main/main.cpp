@@ -3317,6 +3317,16 @@ static void pause_voice_listener_for_shared_peripherals(const char* reason)
     voice_listener_paused = true;
     ESP_LOGI(TAG, "Voice listener pause requested: %s", reason != nullptr ? reason : "shared peripheral use");
 
+    if (xTaskGetCurrentTaskHandle() == xiaozhi_task_handle) {
+        while (M5.Mic.isRecording()) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+        if (M5.Mic.isEnabled()) {
+            M5.Mic.end();
+        }
+        return;
+    }
+
     const int max_wait_ms = kVoiceListenerReleaseWaitMs;
     int waited_ms = 0;
     while (xiaozhi_task_handle != nullptr && M5.Mic.isEnabled() && waited_ms < max_wait_ms) {
@@ -3399,6 +3409,33 @@ static void run_xiaozhi_speech_loop()
     bool got_hello = true;
     std::string stt_text;
     while (!app1_stop_requested) {
+        if (voice_listener_paused) {
+            while (M5.Mic.isRecording()) {
+                vTaskDelay(pdMS_TO_TICKS(1));
+            }
+            if (M5.Mic.isEnabled()) {
+                M5.Mic.end();
+            }
+            set_app1_status("Paused", "Speaking", "Listening resumes soon", "", true, false);
+            while (voice_listener_paused && !app1_stop_requested) {
+                receive_ws_once(ws, 50, got_hello, stt_text);
+                vTaskDelay(pdMS_TO_TICKS(20));
+            }
+            if (app1_stop_requested) {
+                break;
+            }
+            M5.Mic.config(mic_cfg);
+            if (!M5.Mic.begin()) {
+                set_app1_status("Mic Fail", "M5.Mic.begin failed after pause", "", "", false, false);
+                ESP_LOGE(TAG, "M5.Mic.begin failed after realtime pause");
+                break;
+            }
+            last_status_ms = 0;
+            stt_text.clear();
+            set_app1_status("Listening", "Resumed", "Speak to recognize", "", true, false);
+            set_light_strip_listening();
+            continue;
+        }
         if (realtime_tts_playback_active) {
             receive_ws_once(ws, 100, got_hello, stt_text);
             continue;
@@ -5006,7 +5043,9 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
         return true;
     }
 
-    VoiceListenerPauseGuard* voice_pause = pause_voice_listener ? new VoiceListenerPauseGuard("speak command") : nullptr;
+    bool should_pause_listener = pause_voice_listener || xiaozhi_task_handle != nullptr;
+    VoiceListenerPauseGuard* voice_pause =
+        should_pause_listener ? new VoiceListenerPauseGuard("speak command") : nullptr;
 
     if (audio_mutex != nullptr) {
         xSemaphoreTake(audio_mutex, portMAX_DELAY);
