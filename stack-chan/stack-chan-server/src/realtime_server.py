@@ -339,7 +339,13 @@ class RealtimeManager:
         except Exception as exc:
             self._started.set()
             raise RuntimeError("websockets is required for xiaozhi realtime server") from exc
-        self._server = await websockets.serve(self._dispatch, self.config.host, self.config.port)
+        self._server = await websockets.serve(
+            self._dispatch,
+            self.config.host,
+            self.config.port,
+            compression=None,
+            ping_interval=None,
+        )
         self.logger(f"Xiaozhi realtime WebSocket ready: ws://{self.config.host}:{self.config.port}{self.config.path}")
 
     async def _close_sessions(self) -> None:
@@ -419,52 +425,67 @@ class RealtimeManager:
         if not self._authorized(websocket, parsed.query):
             await websocket.close(code=1008, reason="unauthorized")
             return
-        session: RealtimeDeviceSession | None = None
+        session = RealtimeDeviceSession(
+            device_id=self._device_id_from_request(websocket, parsed.query),
+            websocket=websocket,
+            session_id=make_request_id("sess"),
+        )
+        self._register_session(session)
         try:
+            hello = json_dumps(build_hello(session.session_id))
+            await websocket.send(hello)
+            self.logger(f"Xiaozhi realtime server hello sent: device_id={session.device_id} bytes={len(hello)}")
+            await self._send_device_state(session, "sleep")
             async for frame in websocket:
                 if isinstance(frame, bytes):
-                    if session is not None:
-                        session.last_seen = time.time()
-                        if session.asr_bridge is not None:
-                            session.asr_bridge.push_opus(frame)
+                    session.last_seen = time.time()
+                    if session.asr_bridge is None:
+                        self.logger(f"Realtime ASR auto-start on binary audio: device_id={session.device_id}")
+                        self._start_asr(session)
+                    if session.asr_bridge is not None:
+                        session.asr_bridge.push_opus(frame)
                     continue
                 message = parse_json_message(frame)
-                if session is None:
-                    device_id = extract_device_id_from_hello(message)
+                if message.get("type") == "hello":
+                    device_id = extract_device_id_from_hello(message, session.device_id)
                     self.logger(f"Xiaozhi realtime hello received: device_id={device_id} type={message.get('type')!r}")
-                    session = RealtimeDeviceSession(
-                        device_id=device_id,
-                        websocket=websocket,
-                        session_id=make_request_id("sess"),
-                    )
-                    self._register_session(session)
-                    await websocket.send(json_dumps(build_hello(session.session_id)))
-                    await self._send_device_state(session, "sleep")
                     continue
                 session.last_seen = time.time()
                 await self._handle_json(session, message)
         except Exception as exc:
             self.logger(f"Xiaozhi realtime session ended: {exc}")
         finally:
-            if session is not None:
-                self._stop_asr(session)
-                await self._abort_session_tts(session)
-                self._unregister_session(session.device_id, session.session_id)
+            self._stop_asr(session)
+            await self._abort_session_tts(session)
+            self._unregister_session(session.device_id, session.session_id)
 
     def _authorized(self, websocket, query: str) -> bool:
         if not self.config.token:
             return True
         token = ""
-        headers = getattr(websocket, "request_headers", {}) or {}
-        if not headers:
-            request = getattr(websocket, "request", None)
-            headers = getattr(request, "headers", {}) or {}
+        headers = self._request_headers(websocket)
         auth = headers.get("Authorization") or headers.get("authorization") or ""
         if auth.lower().startswith("bearer "):
             token = auth.split(" ", 1)[1].strip()
         if not token:
             token = (parse_qs(query).get("token") or [""])[0]
         return token == self.config.token
+
+    def _request_headers(self, websocket) -> dict:
+        headers = getattr(websocket, "request_headers", {}) or {}
+        if not headers:
+            request = getattr(websocket, "request", None)
+            headers = getattr(request, "headers", {}) or {}
+        return headers
+
+    def _device_id_from_request(self, websocket, query: str) -> str:
+        headers = self._request_headers(websocket)
+        for key in ("Device-Id", "device-id", "Client-Id", "client-id"):
+            value = str(headers.get(key) or "").strip()
+            if value:
+                return value
+        value = (parse_qs(query).get("device_id") or [""])[0].strip()
+        return value or "default"
 
     def _register_session(self, session: RealtimeDeviceSession) -> None:
         with self._sessions_lock:

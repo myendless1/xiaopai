@@ -1358,8 +1358,11 @@ static std::string make_listen_message(const char* state)
 static bool send_ws_frame(esp_transport_handle_t ws, ws_transport_opcodes_t opcode, const char* data, size_t len,
                           const char* label, int timeout_ms = 5000)
 {
-    int written = esp_transport_ws_send_raw(ws, opcode, data, len, timeout_ms);
-    ESP_LOGI(TAG, "WS send %s opcode=%d written=%d expected=%u", label, static_cast<int>(opcode), written,
+    static constexpr int kWsFinalFrameBit = 0x80;
+    ws_transport_opcodes_t final_opcode = static_cast<ws_transport_opcodes_t>(
+        static_cast<int>(opcode) | kWsFinalFrameBit);
+    int written = esp_transport_ws_send_raw(ws, final_opcode, data, len, timeout_ms);
+    ESP_LOGI(TAG, "WS send %s opcode=%d written=%d expected=%u", label, static_cast<int>(final_opcode), written,
              static_cast<unsigned>(len));
     if (written < 0 || written < static_cast<int>(len)) {
         ESP_LOGE(TAG, "WS send %s failed or short write: written=%d expected=%u", label, written,
