@@ -117,6 +117,7 @@ static constexpr int kVoiceStopThreshold = CONFIG_STACKCHAN_VOICE_STOP_THRESHOLD
 static constexpr int kRecordMaxMs = CONFIG_STACKCHAN_RECORD_MAX_MS;
 static constexpr int kSilenceStopMs = CONFIG_STACKCHAN_SILENCE_STOP_MS;
 static constexpr int kVoiceListenerReleaseWaitMs = 1000;
+static constexpr int kRealtimeSttDrainTimeoutMs = 1800;
 static constexpr int kTtsStreamSampleRate = 16000;
 static constexpr size_t kTtsStreamBufferSamples = 2048;
 static constexpr int kLauncherAppCount = 5;
@@ -198,7 +199,6 @@ static constexpr uint32_t kHeadTouchAudioTaskStackBytes = 16 * 1024;
 static constexpr uint32_t kSpeakCommandTaskStackBytes = 16 * 1024;
 static constexpr size_t kSpeakCommandMaxTextBytes = 512;
 static constexpr size_t kSpeakCommandCacheNameBytes = 64;
-static constexpr uint32_t kSpeakerDrainMs = 500;
 static constexpr int kSpeakerVolumePercentMin = 10;
 static constexpr int kSpeakerVolumePercentMax = 100;
 static constexpr int kSpeakerVolumeDefaultStep = 10;
@@ -1257,9 +1257,7 @@ static void finish_realtime_tts_playback()
     while (M5.Speaker.isPlaying() && !app2_stop_requested) {
         vTaskDelay(pdMS_TO_TICKS(20));
     }
-    if (!app2_stop_requested) {
-        vTaskDelay(pdMS_TO_TICKS(80));
-    }
+    ESP_LOGI(TAG, "Realtime TTS playback %s", app2_stop_requested ? "stopped" : "done");
     M5.Speaker.stop();
     M5.Speaker.end();
     stop_speaking_animation();
@@ -2962,7 +2960,7 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     }
 
     std::vector<int16_t> chunk(kVoiceProbeSamples);
-    while (!app1_stop_requested && elapsed_ms < kRecordMaxMs) {
+    while (!app1_stop_requested && !voice_listener_paused && elapsed_ms < kRecordMaxMs) {
         if (!mic_record_blocking(chunk.data(), chunk.size(), kAudioSampleRate)) {
             ESP_LOGW(TAG, "Mic record returned false while recording");
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -2991,10 +2989,16 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     std::string stop = make_listen_message("stop");
     ESP_LOGI(TAG, "WS send listen stop: %s", stop.c_str());
     send_ws_text(ws, stop, "listen stop");
+
+    if (voice_listener_paused) {
+        ESP_LOGI(TAG, "Recognition interrupted by voice listener pause");
+        return true;
+    }
+
     set_app1_status("Recognizing", "Waiting for STT text", "See USB serial log", "");
 
-    int64_t deadline = esp_timer_get_time() + 12000000LL;
-    while (stt_text.empty() && esp_timer_get_time() < deadline && !app1_stop_requested) {
+    int64_t deadline = esp_timer_get_time() + static_cast<int64_t>(kRealtimeSttDrainTimeoutMs) * 1000LL;
+    while (stt_text.empty() && esp_timer_get_time() < deadline && !app1_stop_requested && !voice_listener_paused) {
         if (!receive_ws_once(ws, 1000, got_hello, stt_text)) {
             return false;
         }
@@ -4580,12 +4584,12 @@ static bool play_stream_pcm_chunk(const int16_t* samples, size_t sample_count)
 
 static void drain_speaker_playback()
 {
+    uint32_t started_ms = M5.millis();
     while (M5.Speaker.isPlaying() && !app2_stop_requested) {
         vTaskDelay(pdMS_TO_TICKS(20));
     }
-    if (!app2_stop_requested) {
-        vTaskDelay(pdMS_TO_TICKS(kSpeakerDrainMs));
-    }
+    ESP_LOGI(TAG, "Speaker playback %s after %u ms", app2_stop_requested ? "stopped" : "done",
+             static_cast<unsigned>(M5.millis() - started_ms));
 }
 
 static bool stream_pcm_url(const std::string& url, const char* label, bool update_tts_status)
@@ -5376,7 +5380,9 @@ static bool execute_command_object(const cJSON* command)
     if (type == "speak") {
         std::string text = json_string_value(payload, "text");
         std::string cache_name = json_string_value(payload, "cache_name");
-        return execute_speak_command_internal(text.c_str(), false, cache_name.c_str());
+        bool pause_listener = json_bool_value(payload, "pause_listener", false) ||
+                              json_bool_value(payload, "pause_voice_listener", false);
+        return execute_speak_command_internal(text.c_str(), pause_listener, cache_name.c_str());
     }
     if (type == "volume" || type == "sound") {
         return execute_volume_command(payload);

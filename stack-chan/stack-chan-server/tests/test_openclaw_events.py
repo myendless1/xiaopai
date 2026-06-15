@@ -50,6 +50,17 @@ class OpenClawEventContentTest(unittest.TestCase):
         self.assertNotIn("\n", content)
 
 
+class CommandPayloadTest(unittest.TestCase):
+    def test_sequence_query_speak_step_pauses_listener(self):
+        payload = server.command_payload_from_query(
+            "sequence",
+            {"expression": ["calm"], "text": ["在的。"]},
+        )
+
+        self.assertEqual(payload[0], {"type": "face", "expression": "calm"})
+        self.assertEqual(payload[1], {"type": "speak", "text": "在的。", "pause_listener": True})
+
+
 class DeviceEventForwardingTest(unittest.TestCase):
     def make_handler(self, openclaw_enabled=True):
         handler = object.__new__(server.Handler)

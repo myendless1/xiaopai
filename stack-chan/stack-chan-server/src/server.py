@@ -1186,10 +1186,14 @@ class Handler(BaseHTTPRequestHandler):
             command_wire_type = "motion" if command_type == "move" else command_type
         if command_wire_type == "face" and isinstance(payload, dict):
             payload["expression"] = normalize_expression_name(payload.get("expression") or payload.get("face") or "calm")
+        elif command_wire_type == "speak" and isinstance(payload, dict):
+            payload.setdefault("pause_listener", True)
         elif command_wire_type == "sequence" and isinstance(payload, list):
             for step in payload:
                 if isinstance(step, dict) and step.get("type") == "face":
                     step["expression"] = normalize_expression_name(step.get("expression") or step.get("face") or "calm")
+                elif isinstance(step, dict) and step.get("type") == "speak":
+                    step.setdefault("pause_listener", True)
         command = make_command(
             command_wire_type,
             payload,
@@ -2250,7 +2254,7 @@ def command_payload_from_query(command_type: str, query: dict):
         expression = normalize_expression_name(first_value(query, "expression") or "calm")
         steps = [{"type": "face", "expression": expression}]
         if text:
-            steps.append({"type": "speak", "text": text})
+            steps.append({"type": "speak", "text": text, "pause_listener": True})
         return steps
     return {key: values[0] for key, values in query.items() if values}
 

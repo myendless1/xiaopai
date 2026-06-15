@@ -621,7 +621,7 @@ class RealtimeManager:
             "cmd_id": make_request_id("cmd"),
             "type": "sequence",
             "payload": [
-                {"type": "speak", "text": text},
+                {"type": "speak", "text": text, "pause_listener": True},
                 {"type": "face", "expression": "calm"},
             ],
         }
