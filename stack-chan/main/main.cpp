@@ -119,6 +119,7 @@ static constexpr int kSilenceStopMs = CONFIG_STACKCHAN_SILENCE_STOP_MS;
 static constexpr int kRealtimeSttDrainTimeoutMs = 1800;
 static constexpr int kTtsStreamSampleRate = 16000;
 static constexpr size_t kTtsStreamBufferSamples = 2048;
+static constexpr int kSpeakerDmaTailDrainMs = 384;
 static constexpr int kLauncherAppCount = 5;
 static constexpr bool kShowAppStatusScreens = false;
 static constexpr uint32_t kWifiTaskStackBytes = 8 * 1024;
@@ -1272,10 +1273,15 @@ static void finish_realtime_tts_playback()
     if (!realtime_tts_playback_active) {
         return;
     }
+    uint32_t started_ms = M5.millis();
     while (M5.Speaker.isPlaying() && !app2_stop_requested) {
         vTaskDelay(pdMS_TO_TICKS(20));
     }
-    ESP_LOGI(TAG, "Realtime TTS playback %s", app2_stop_requested ? "stopped" : "done");
+    if (!app2_stop_requested) {
+        vTaskDelay(pdMS_TO_TICKS(kSpeakerDmaTailDrainMs));
+    }
+    ESP_LOGI(TAG, "Realtime TTS playback %s after %u ms", app2_stop_requested ? "stopped" : "done",
+             static_cast<unsigned>(M5.millis() - started_ms));
     M5.Speaker.stop();
     M5.Speaker.end();
     stop_speaking_animation();
@@ -4642,6 +4648,9 @@ static void drain_speaker_playback()
     uint32_t started_ms = M5.millis();
     while (M5.Speaker.isPlaying() && !app2_stop_requested) {
         vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    if (!app2_stop_requested) {
+        vTaskDelay(pdMS_TO_TICKS(kSpeakerDmaTailDrainMs));
     }
     ESP_LOGI(TAG, "Speaker playback %s after %u ms", app2_stop_requested ? "stopped" : "done",
              static_cast<unsigned>(M5.millis() - started_ms));
