@@ -1,0 +1,19 @@
+{
+  "event_id": "proactive_daily_briefing_2026_06_06",
+  "type": "daily_briefing_triggered",
+  "timestamp": "2026-06-06T08:00:00+08:00",
+  "user_id": "ou_requester",
+  "payload": {
+    "trigger": {
+      "rule_id": "daily_briefing",
+      "scheduled_for": "2026-06-06T00:00:00.000Z",
+      "fired_at": "2026-06-06T00:00:00.000Z",
+      "source": "proactive_calendar_scheduler",
+      "trigger_key": "trigger_daily_briefing_2026_06_06",
+      "calendar_id": "primary"
+    }
+  },
+  "context": {
+    "timezone": "Asia/Shanghai"
+  }
+}

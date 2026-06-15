@@ -1,0 +1,10 @@
+{
+  "event_id": "fixture-head-touch-001",
+  "type": "head_touch",
+  "timestamp": "2026-06-06T08:00:00+08:00",
+  "user_id": "ou_requester",
+  "payload": {},
+  "context": {
+    "timezone": "Asia/Shanghai"
+  }
+}

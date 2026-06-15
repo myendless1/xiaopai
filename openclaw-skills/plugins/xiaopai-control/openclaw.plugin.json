@@ -1,0 +1,41 @@
+{
+  "id": "xiaopai-control",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "gatewayMethods": [
+      "xiaopaiControl.execute",
+      "tool.xiaopaiControl.execute",
+      "xiaopaiControl.getHealth",
+      "xiaopaiControl.listDevices"
+    ]
+  },
+  "skills": [
+    "./skills"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "baseUrl": {
+        "type": "string",
+        "description": "Base URL for the local stack-chan server."
+      },
+      "defaultDeviceId": {
+        "type": "string",
+        "description": "Optional Xiaopai device_id to apply when commands omit device_id."
+      },
+      "timeoutMs": {
+        "type": "number",
+        "minimum": 100,
+        "maximum": 60000,
+        "description": "HTTP request timeout in milliseconds."
+      },
+      "dryRun": {
+        "type": "boolean",
+        "description": "Return deterministic queued-like results without calling the stack-chan server."
+      }
+    }
+  }
+}

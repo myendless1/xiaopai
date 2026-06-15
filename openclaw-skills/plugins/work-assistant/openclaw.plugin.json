@@ -1,0 +1,277 @@
+{
+  "id": "work-assistant",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "gatewayMethods": [
+      "workAssistant.handleEvent"
+    ]
+  },
+  "skills": [
+    "./skills"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "dryRun": {
+        "type": "boolean",
+        "description": "Return mocked calendar, route, weather, and profile results without calling external providers."
+      },
+      "larkCliPath": {
+        "type": "string",
+        "description": "Executable path for lark-cli."
+      },
+      "larkIdentity": {
+        "type": "string",
+        "enum": [
+          "user",
+          "bot"
+        ],
+        "description": "Lark identity used for calendar operations."
+      },
+      "timeoutMs": {
+        "type": "number",
+        "minimum": 1000,
+        "maximum": 60000
+      },
+      "travel": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Travel planner defaults used for route-aware outdoor reminders and trip preparation guidance.",
+        "properties": {
+          "originAddress": {
+            "type": "string",
+            "description": "Default origin address used for route estimates."
+          },
+          "defaultRouteMode": {
+            "type": "string",
+            "enum": [
+              "driving",
+              "transit",
+              "walking"
+            ],
+            "description": "Default route mode for travel estimates."
+          },
+          "arrivalBufferMinutes": {
+            "type": "number",
+            "minimum": 1,
+            "description": "Minutes to arrive before an outdoor event starts."
+          },
+          "weather": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Weather provider used by travel and business-trip reminders. Use the same QWeather API Host and credential environment as the weather-provider plugin.",
+            "properties": {
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "qweather"
+                ]
+              },
+              "apiHost": {
+                "type": "string",
+                "description": "QWeather API Host from Console - Settings."
+              },
+              "credentialEnv": {
+                "type": "string",
+                "description": "Environment variable containing the QWeather API key or JWT token."
+              },
+              "authMode": {
+                "type": "string",
+                "enum": [
+                  "apiKeyHeader",
+                  "apiKeyQuery",
+                  "jwtBearer"
+                ]
+              },
+              "defaultLanguage": {
+                "type": "string"
+              },
+              "defaultUnit": {
+                "type": "string",
+                "enum": [
+                  "metric",
+                  "imperial"
+                ]
+              },
+              "defaultRange": {
+                "type": "string",
+                "description": "Optional GeoAPI search range, for example cn."
+              },
+              "forecastDays": {
+                "type": "number",
+                "enum": [
+                  3,
+                  7,
+                  10,
+                  15,
+                  30
+                ]
+              },
+              "timeoutMs": {
+                "type": "number",
+                "minimum": 100,
+                "maximum": 60000
+              }
+            },
+            "required": [
+              "provider"
+            ]
+          }
+        }
+      },
+      "wellbeing": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Sedentary wellbeing thresholds and reminder behavior.",
+        "properties": {
+          "minimumSedentaryDurationMinutes": {
+            "type": "number",
+            "minimum": 1,
+            "description": "Minimum sedentary duration before a nudge can be generated."
+          },
+          "minimumConfidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Minimum sensing confidence before a nudge can be generated."
+          },
+          "cooldownMinutes": {
+            "type": "number",
+            "minimum": 1,
+            "description": "Minimum minutes between audible wellbeing nudges when prior context is supplied."
+          },
+          "upcomingReminderHorizonMinutes": {
+            "type": "number",
+            "minimum": 1,
+            "description": "Calendar lookahead window for one concise upcoming-event reminder."
+          }
+        }
+      },
+      "scheduler": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Optional proactive calendar trigger scheduler. Disabled unless enabled is true.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable deterministic proactive calendar scanning and trigger dispatch."
+          },
+          "startIntervalLoop": {
+            "type": "boolean",
+            "description": "Start the scheduler interval loop at plugin registration time."
+          },
+          "scanIntervalMs": {
+            "type": "number",
+            "minimum": 1000,
+            "description": "Milliseconds between scheduler scans when the interval loop is enabled."
+          },
+          "lookaheadHours": {
+            "type": "number",
+            "minimum": 1,
+            "description": "Future calendar scan horizon in hours."
+          },
+          "timezone": {
+            "type": "string",
+            "description": "IANA timezone used for local trigger times."
+          },
+          "userId": {
+            "type": "string",
+            "description": "Target user id for scheduler-produced InputEvent objects."
+          },
+          "calendarId": {
+            "type": "string",
+            "description": "Calendar id passed to calendar list scans."
+          },
+          "statePath": {
+            "type": "string",
+            "description": "JSON trigger state path for pending and dispatched records."
+          },
+          "maxDispatchAttempts": {
+            "type": "number",
+            "minimum": 1,
+            "description": "Retry cap for failed trigger dispatches."
+          },
+          "agentDispatch": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Optional OpenClaw agent turn dispatch for scheduler-produced StructuredResponse reminders. A queued agent turn is treated as success; robot execution happens later through xiaopai-control.",
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "description": "Queue scheduler-produced StructuredResponse reminders into an OpenClaw agent session."
+              },
+              "sessionKey": {
+                "type": "string",
+                "description": "Target OpenClaw session key for proactive reminder turns, for example a Xiaopai/stack-chan session."
+              },
+              "agentId": {
+                "type": "string",
+                "description": "Optional OpenClaw agent id override for the scheduled reminder turn."
+              },
+              "deliveryMode": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "announce"
+                ],
+                "description": "Cron delivery mode for the scheduled agent turn. Defaults to none so Xiaopai voice rendering can be the primary output."
+              },
+              "deviceId": {
+                "type": "string",
+                "description": "Optional Xiaopai device id included in the stack-chan render envelope."
+              },
+              "interrupt": {
+                "type": "boolean",
+                "description": "Whether Xiaopai speech rendering should interrupt current playback."
+              }
+            }
+          },
+          "rules": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "dailyBriefing": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": { "type": "boolean" },
+                  "localTime": { "type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$" }
+                }
+              },
+              "meetingStartingSoon": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": { "type": "boolean" },
+                  "offsetMinutes": { "type": "number", "minimum": 1 },
+                  "keywords": { "type": "array", "items": { "type": "string" } }
+                }
+              },
+              "outdoorEvent": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": { "type": "boolean" },
+                  "offsetMinutes": { "type": "number", "minimum": 1 },
+                  "keywords": { "type": "array", "items": { "type": "string" } }
+                }
+              },
+              "businessTripTomorrow": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": { "type": "boolean" },
+                  "localTime": { "type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$" },
+                  "keywords": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

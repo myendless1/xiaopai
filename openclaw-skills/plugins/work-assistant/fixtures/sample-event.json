@@ -1,0 +1,12 @@
+{
+  "event_id": "fixture-calendar-create-001",
+  "type": "user_utterance",
+  "timestamp": "2026-06-05T10:00:00+08:00",
+  "user_id": "ou_requester",
+  "payload": {
+    "text": "明天上午10点到11点的项目会，帮我建一个飞书日程，邀请张三、李四参会。"
+  },
+  "context": {
+    "timezone": "Asia/Shanghai"
+  }
+}

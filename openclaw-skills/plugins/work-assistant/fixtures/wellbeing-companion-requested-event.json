@@ -1,0 +1,15 @@
+{
+  "event_id": "fixture-wellbeing-companion-requested-001",
+  "type": "wellbeing_companion_requested",
+  "timestamp": "2026-06-06T13:41:00+08:00",
+  "user_id": "ou_requester",
+  "payload": {
+    "content_type": "relaxation"
+  },
+  "context": {
+    "timezone": "Asia/Shanghai",
+    "wellbeing_last_nudge_at": "2026-06-06T13:40:00+08:00",
+    "wellbeing_last_decision": "allowed",
+    "wellbeing_follow_up_offered": true
+  }
+}

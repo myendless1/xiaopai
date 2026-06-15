@@ -1,0 +1,84 @@
+{
+  "id": "weather-provider",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "gatewayMethods": [
+      "weather.getCurrent",
+      "weather.getForecast",
+      "tool.weather.getCurrent",
+      "tool.weather.getForecast"
+    ],
+    "tools": [
+      "weather_current",
+      "weather_forecast"
+    ]
+  },
+  "skills": [
+    "./skills"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "provider": {
+        "type": "string",
+        "enum": [
+          "qweather"
+        ],
+        "description": "Weather provider. Currently only qweather is implemented."
+      },
+      "apiHost": {
+        "type": "string",
+        "description": "QWeather API Host from Console - Settings, for example https://abcxyz.qweatherapi.com."
+      },
+      "credentialEnv": {
+        "type": "string",
+        "description": "Environment variable containing the QWeather API key or JWT token."
+      },
+      "authMode": {
+        "type": "string",
+        "enum": [
+          "apiKeyHeader",
+          "apiKeyQuery",
+          "jwtBearer"
+        ],
+        "description": "Authentication mode. apiKeyHeader sends X-QW-Api-Key; jwtBearer sends Authorization: Bearer."
+      },
+      "defaultLanguage": {
+        "type": "string",
+        "description": "QWeather response language, for example zh or en."
+      },
+      "defaultUnit": {
+        "type": "string",
+        "enum": [
+          "metric",
+          "imperial"
+        ],
+        "description": "Preferred weather unit system."
+      },
+      "defaultRange": {
+        "type": "string",
+        "description": "Optional GeoAPI search range, for example cn."
+      },
+      "forecastDays": {
+        "type": "number",
+        "enum": [
+          3,
+          7,
+          10,
+          15,
+          30
+        ],
+        "description": "Default daily forecast horizon."
+      },
+      "timeoutMs": {
+        "type": "number",
+        "minimum": 100,
+        "maximum": 60000,
+        "description": "HTTP timeout in milliseconds."
+      }
+    }
+  }
+}

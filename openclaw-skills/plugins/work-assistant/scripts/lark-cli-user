@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+for openclaw_env_name in ${!OPENCLAW_@}; do
+  unset "$openclaw_env_name"
+done
+exec lark-cli "$@"

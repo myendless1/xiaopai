@@ -1,0 +1,24 @@
+{
+  "event_id": "meeting_notify_late_adapter_failure_2026_06_06",
+  "type": "user_utterance",
+  "timestamp": "2026-06-06T09:25:00+08:00",
+  "user_id": "ou_requester",
+  "payload": {
+    "text": "我会晚到5分钟，帮我通知参会人"
+  },
+  "context": {
+    "timezone": "Asia/Shanghai",
+    "current_focus": {
+      "type": "calendar_event",
+      "event_id": "dry_today_1",
+      "calendar_id": "primary",
+      "title": "客户来访接待",
+      "start_time": "2026-06-06T09:30:00+08:00",
+      "end_time": "2026-06-06T10:30:00+08:00",
+      "location": "上海办公室",
+      "notification_target": {
+        "chat_id": "oc_adapter_failure_demo"
+      }
+    }
+  }
+}

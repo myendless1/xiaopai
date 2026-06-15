@@ -1,0 +1,6 @@
+[submodule "stack-chan/third_parties/stack-chan"]
+	path = stack-chan/third_parties/stack-chan
+	url = https://github.com/m5stack/StackChan.git
+[submodule "stack-chan/third_parties/xiaozhi-esp32"]
+	path = stack-chan/third_parties/xiaozhi-esp32
+	url = https://github.com/78/xiaozhi-esp32.git

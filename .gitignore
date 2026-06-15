@@ -1,0 +1,28 @@
+# OS/editor
+.DS_Store
+*.swp
+*.swo
+
+# Local configuration and secrets
+.env
+.env.*
+
+# JavaScript/TypeScript
+node_modules/
+coverage/
+.turbo/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.uv-cache/
+
+# ESP-IDF and build artifacts
+build/
+.espressif/
+esp-idf/
+
+# Tool caches/state
+.cache/
+.openclaw/

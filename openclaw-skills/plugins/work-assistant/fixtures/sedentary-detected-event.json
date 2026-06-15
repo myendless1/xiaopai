@@ -1,0 +1,15 @@
+{
+  "event_id": "fixture-sedentary-detected-001",
+  "type": "sedentary_detected",
+  "timestamp": "2026-06-06T13:40:00+08:00",
+  "user_id": "ou_requester",
+  "payload": {
+    "duration_minutes": 35,
+    "confidence": 0.91,
+    "source": "robot_vision",
+    "device_id": "robot-dry-run-001"
+  },
+  "context": {
+    "timezone": "Asia/Shanghai"
+  }
+}

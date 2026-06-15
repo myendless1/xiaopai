@@ -1,0 +1,44 @@
+{
+  "name": "@openclaw/weather-provider",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenClaw weather provider plugin backed by QWeather.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "npm run build && npm run test"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.5.22"
+  },
+  "dependencies": {
+    "typebox": "^1.1.39"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "openclaw": ">=2026.5.22",
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "runtimeExtensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.5.22"
+    }
+  },
+  "files": [
+    "dist/**",
+    "openclaw.plugin.json",
+    "skills/**",
+    "README.md"
+  ]
+}
