@@ -120,6 +120,7 @@ static constexpr int kRealtimeSttDrainTimeoutMs = 1800;
 static constexpr int kTtsStreamSampleRate = 16000;
 static constexpr size_t kTtsStreamBufferSamples = 2048;
 static constexpr int kSpeakerDmaTailDrainMs = 384;
+static constexpr int kPostSpeechEchoGuardMs = 800;
 static constexpr int kLauncherAppCount = 5;
 static constexpr bool kShowAppStatusScreens = false;
 static constexpr uint32_t kWifiTaskStackBytes = 8 * 1024;
@@ -248,6 +249,7 @@ volatile bool speech_expression_overridden = false;
 volatile bool speak_animation_running = false;
 volatile bool expression_animation_running = false;
 volatile bool speak_command_active = false;
+volatile uint32_t speech_output_finished_ms = 0;
 bool light_strip_ready = false;
 bool light_strip_missing = false;
 bool light_strip_listening_after_speech = false;
@@ -428,6 +430,17 @@ static bool speech_output_is_busy()
         return false;
     }
     return true;
+}
+
+static void mark_speech_output_finished()
+{
+    speech_output_finished_ms = M5.millis();
+}
+
+static bool post_speech_echo_guard_active()
+{
+    uint32_t finished_ms = speech_output_finished_ms;
+    return finished_ms != 0 && static_cast<uint32_t>(M5.millis() - finished_ms) < kPostSpeechEchoGuardMs;
 }
 
 struct App1Status {
@@ -1279,6 +1292,7 @@ static void finish_realtime_tts_playback()
     }
     if (!app2_stop_requested) {
         vTaskDelay(pdMS_TO_TICKS(kSpeakerDmaTailDrainMs));
+        mark_speech_output_finished();
     }
     ESP_LOGI(TAG, "Realtime TTS playback %s after %u ms", app2_stop_requested ? "stopped" : "done",
              static_cast<unsigned>(M5.millis() - started_ms));
@@ -3000,6 +3014,7 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     int frame_pos = 0;
     int elapsed_ms = 0;
     int silence_ms = 0;
+    int32_t stop_smooth_level = average_abs_level(first_samples, first_count);
     bool got_hello = true;
     std::string stt_text;
 
@@ -3037,13 +3052,15 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
         }
 
         int32_t level = average_abs_level(chunk.data(), chunk.size());
-        silence_ms = level < kVoiceStopThreshold ? silence_ms + (kVoiceProbeSamples * 1000 / kAudioSampleRate) : 0;
+        stop_smooth_level = (stop_smooth_level * 3 + level) / 4;
+        silence_ms = stop_smooth_level < kVoiceStopThreshold ? silence_ms + (kVoiceProbeSamples * 1000 / kAudioSampleRate) : 0;
         if (!append_and_send(chunk.data(), chunk.size())) {
             return false;
         }
 
         if (silence_ms >= kSilenceStopMs && elapsed_ms > 600) {
-            ESP_LOGI(TAG, "Stop recording due to silence: %d ms", silence_ms);
+            ESP_LOGI(TAG, "Stop recording due to silence: %d ms level=%ld smooth=%ld stop=%d",
+                     silence_ms, static_cast<long>(level), static_cast<long>(stop_smooth_level), kVoiceStopThreshold);
             break;
         }
     }
@@ -3362,6 +3379,16 @@ static void run_local_record_upload_loop()
             last_status_ms = now;
         }
 
+        if (post_speech_echo_guard_active()) {
+            if (smooth_level >= kVoiceStartThreshold) {
+                ESP_LOGI(TAG, "Voice threshold ignored during post-speech echo guard: level=%ld smooth=%ld",
+                         static_cast<long>(level), static_cast<long>(smooth_level));
+            }
+            pre_roll.clear();
+            smooth_level = 0;
+            continue;
+        }
+
         if (!voice_listener_paused && smooth_level >= kVoiceStartThreshold) {
             ESP_LOGI(TAG, "Voice threshold triggered: level=%ld smooth=%ld start=%d stop=%d pre_roll=%ums sample_rate=%d",
                      static_cast<long>(level), static_cast<long>(smooth_level), kVoiceStartThreshold,
@@ -3528,6 +3555,13 @@ static void run_xiaozhi_speech_loop()
         }
 
         receive_ws_once(ws, 0, got_hello, stt_text);
+        if (post_speech_echo_guard_active()) {
+            if (level >= kVoiceStartThreshold) {
+                ESP_LOGI(TAG, "Voice threshold ignored during post-speech echo guard: level=%ld threshold=%d",
+                         static_cast<long>(level), kVoiceStartThreshold);
+            }
+            continue;
+        }
         if (level >= kVoiceStartThreshold) {
             ESP_LOGI(TAG, "Voice threshold triggered: level=%ld threshold=%d", static_cast<long>(level), kVoiceStartThreshold);
             if (!run_one_speech_recognition(ws, encoder, encoder_frame_samples, encoder_outbuf_size, probe.data(),
@@ -4651,6 +4685,7 @@ static void drain_speaker_playback()
     }
     if (!app2_stop_requested) {
         vTaskDelay(pdMS_TO_TICKS(kSpeakerDmaTailDrainMs));
+        mark_speech_output_finished();
     }
     ESP_LOGI(TAG, "Speaker playback %s after %u ms", app2_stop_requested ? "stopped" : "done",
              static_cast<unsigned>(M5.millis() - started_ms));

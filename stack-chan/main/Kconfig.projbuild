@@ -55,7 +55,7 @@ menu "Xiaopai settings"
 
     config STACKCHAN_VOICE_STOP_THRESHOLD
         int "Voice stop threshold"
-        default 260
+        default 500
 
     config STACKCHAN_MIC_MAGNIFICATION
         int "Microphone magnification"
@@ -67,6 +67,6 @@ menu "Xiaopai settings"
 
     config STACKCHAN_SILENCE_STOP_MS
         int "Silence stop milliseconds"
-        default 1300
+        default 1600
 
 endmenu
