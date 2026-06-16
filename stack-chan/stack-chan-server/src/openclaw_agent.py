@@ -1,10 +1,22 @@
 import json
+import re
 import urllib.error
 import urllib.request
 from http import HTTPStatus
 
+from xiaopai_openclaw_prompt import XIAOPAI_OPENCLAW_SYSTEM_PROMPT
 
-SYSTEM_PROMPT = """你是 StackChan 小派的实时控制代理。你可以自然对话，也可以通过工具控制表情、动作、云台、相机和音量。输出普通文本时将被立即转成语音。"""
+SYSTEM_PROMPT = XIAOPAI_OPENCLAW_SYSTEM_PROMPT
+
+
+def safe_openclaw_session_part(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.:-]+", "_", str(value or "").strip())[:64]
+    return safe or "default"
+
+
+def build_openclaw_session_key(session_prefix: str, device_id: str) -> str:
+    prefix = safe_openclaw_session_part(session_prefix or "xiaopai")
+    return f"{prefix}-{safe_openclaw_session_part(device_id)}"
 
 
 def extract_openclaw_text(response_text: str) -> str:
@@ -53,18 +65,20 @@ class OpenClawAgent:
     def chat(self, device_id: str, user_text: str) -> str:
         if not self.enabled:
             return ""
+        session_key = build_openclaw_session_key(self.session_prefix, device_id)
         payload = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_text},
             ],
+            "user": session_key,
             "max_completion_tokens": self.max_completion_tokens,
         }
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
-            "x-openclaw-session-key": f"{self.session_prefix}-{device_id}",
+            "x-openclaw-session-key": session_key,
         }
         if self.backend_model:
             headers["x-openclaw-model"] = self.backend_model

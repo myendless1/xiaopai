@@ -51,7 +51,7 @@ Fallback behavior:
 
 - A successful explicit `speak` command, or `sequence` containing a non-empty `speak` step, suppresses fallback.
 - Face, action, move, stop, health/list calls, rejected results, and failed results do not suppress fallback.
-- Final text is trimmed, diagnostic/tool transport lines are removed, raw JSON-only text is skipped, and speech is capped at 500 characters before validation.
+- Final text is trimmed, diagnostic/tool transport lines are removed, Markdown tables/formatting are normalized for speech, raw JSON-only text is skipped, and speech is capped at 500 characters before validation.
 - `device_id` comes from the envelope when present, falling back to `event.payload.device_id`; `interrupt` comes from `render.interrupt` and defaults to `true`.
 - The OpenAI-compatible response shape is unchanged. Stack-chan does not need to parse fallback metadata.
 

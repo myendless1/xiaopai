@@ -194,6 +194,7 @@ export * from "./adapter.js";
 export * from "./constants.js";
 export * from "./contracts.js";
 export * from "./render-fallback.js";
+export * from "./speech-text.js";
 export * from "./validation.js";
 
 function renderStateKey(event: Record<string, unknown>, ctx: Record<string, unknown>): string | undefined {

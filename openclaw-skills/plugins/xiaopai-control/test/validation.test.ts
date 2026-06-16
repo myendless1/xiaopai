@@ -13,6 +13,20 @@ describe("validateXiaopaiCommand", () => {
     });
   });
 
+  it("normalizes markdown table speech before queuing", () => {
+    const result = validateXiaopaiCommand({
+      type: "speak",
+      text: "你今天（2026年6月16日 周二）有 **2 个日程**： | 时间 | 内容 | |------|------| | 10:00 - 11:00 | 汇报上周工作进展 | | 17:00 - 18:00 | 跟老板开会 |"
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error.message);
+    expect(result.value).toEqual({
+      type: "speak",
+      text: "你今天（2026年6月16日 周二）有 2 个日程：10:00 - 11:00，汇报上周工作进展；17:00 - 18:00，跟老板开会。"
+    });
+  });
+
   it("rejects unsupported expressions and actions", () => {
     expect(validateXiaopaiCommand({ type: "face", expression: "confused" })).toMatchObject({
       ok: false,

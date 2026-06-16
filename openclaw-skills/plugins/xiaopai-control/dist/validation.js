@@ -1,5 +1,6 @@
 import { MAX_MOVE_DEGREE, MAX_MOVE_DURATION_MS, MAX_SEQUENCE_STEPS, MAX_SPEECH_LENGTH, MIN_MOVE_DEGREE, MIN_MOVE_DURATION_MS, XIAOPAI_ACTIONS, XIAOPAI_EXPRESSIONS, XIAOPAI_MOVE_DIRECTIONS } from "./constants.js";
 import { rejectedCommandResult } from "./results.js";
+import { normalizeSpeechTextForVoice } from "./speech-text.js";
 const expressions = new Set(XIAOPAI_EXPRESSIONS);
 const actions = new Set(XIAOPAI_ACTIONS);
 const directions = new Set(XIAOPAI_MOVE_DIRECTIONS);
@@ -46,7 +47,10 @@ function validateSpeak(value, stepIndex) {
     if (typeof text !== "string" || text.trim() === "") {
         return invalid("invalid_speech_text", "speak.text must be a non-empty string.", "text", stepIndex, text);
     }
-    const trimmed = text.trim();
+    const trimmed = normalizeSpeechTextForVoice(text);
+    if (trimmed === "") {
+        return invalid("invalid_speech_text", "speak.text must contain speakable text.", "text", stepIndex, text);
+    }
     if (trimmed.length > MAX_SPEECH_LENGTH) {
         return invalid("speech_text_too_long", `speak.text must be ${MAX_SPEECH_LENGTH} characters or fewer.`, "text", stepIndex);
     }

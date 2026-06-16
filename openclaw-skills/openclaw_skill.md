@@ -127,7 +127,13 @@
 - `work-assistant` 插件已安装并加载。
 - 插件调度器已显式启用，且 `startIntervalLoop` 已开启。
 - 当前实现中，插件调度器会在 OpenClaw gateway 进程内扫描飞书日历，把到期触发事件交给内部 `assistant.handleEvent(event)` 并生成 `StructuredResponse`。如果启用了 `scheduler.agentDispatch`，调度器会把该响应包成 `openclaw.stackchan.event.v1` 的 Xiaopai 渲染 envelope，并通过 OpenClaw session workflow 入队一次 agent/LLM turn；agent 处理后的回复再通过 `xiaopaiControl.execute` 或 Xiaopai fallback 入队语音指令。机器人当前不在线时，只要 OpenClaw agent turn 和后续 Xiaopai 命令正常入队，就视为链路成功。
-- 飞书日历读取权限和 `lark-cli` 身份配置可用。
+- 飞书日历读取权限和 `lark-cli` 用户身份配置可用。当前实现默认用 `larkIdentity: "user"`，因此需要本机用户 OAuth 授权，不是只配置 bot app secret 就够。
+- 最小可运行权限：`contact:user:search`、`calendar:calendar.event:read`、`calendar:calendar.event:create`、`calendar:calendar.event:update`。
+- 若需求包含忙闲查询、推荐会议时间或会议室排期，需要额外授权 `calendar:calendar.free_busy:read`。
+- 若需求包含“迟到通知/通知参会人”等飞书 IM 发送，需要用户身份授权 `im:message.send_as_user` 和 `im:message`；如果改成 bot 身份发送，则需要 `im:message:send_as_bot` 且 bot 必须能访问目标会话。
+- 排查命令：
+  - `lark-cli auth status --verify`
+  - `lark-cli auth check --scope "contact:user:search calendar:calendar.event:read calendar:calendar.event:create calendar:calendar.event:update calendar:calendar.free_busy:read im:message.send_as_user im:message"`
 - 对应调度规则已启用：
   - `dailyBriefing` 用于定时日程播报。
   - `meetingStartingSoon` 用于会前提醒。

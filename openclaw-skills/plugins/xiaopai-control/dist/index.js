@@ -137,6 +137,7 @@ export * from "./adapter.js";
 export * from "./constants.js";
 export * from "./contracts.js";
 export * from "./render-fallback.js";
+export * from "./speech-text.js";
 export * from "./validation.js";
 function renderStateKey(event, ctx) {
     return readString(event.runId) ?? readString(ctx.runId) ?? readString(event.sessionKey) ?? readString(ctx.sessionKey) ?? readString(event.sessionId) ?? readString(ctx.sessionId);

@@ -272,7 +272,7 @@ Environment variables:
 | `STACKCHAN_OPENCLAW_TIMEOUT` | `45` | OpenClaw request timeout in seconds |
 | `STACKCHAN_OPENCLAW_WORKERS` | `4` | Background OpenClaw event forwarding workers |
 | `STACKCHAN_OPENCLAW_MAX_COMPLETION_TOKENS` | `512` | Max OpenClaw output tokens |
-| `STACKCHAN_OPENCLAW_SESSION_PREFIX` | `xiaopai` | Prefix for per-device OpenClaw session keys |
+| `STACKCHAN_OPENCLAW_SESSION_PREFIX` | `xiaopai` | Prefix for per-device OpenClaw session keys; sent as `x-openclaw-session-key` and `user` fallback |
 
 ## Firmware URLs
 

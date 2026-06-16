@@ -83,6 +83,11 @@ def normalize_realtime_command_text(text: str) -> str:
     return re.sub(r"[\s,_\-，。.!！?？/（）()]+", "", str(text or "").strip().lower())
 
 
+def safe_realtime_device_id(device_id: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.:-]+", "_", str(device_id or "").strip())[:64]
+    return safe or "default"
+
+
 def has_realtime_wake_word(text: str) -> bool:
     normalized = normalize_realtime_command_text(text)
     return any(normalize_realtime_command_text(word) in normalized for word in REALTIME_WAKE_WORDS)
@@ -480,8 +485,9 @@ class RealtimeManager:
                     continue
                 message = parse_json_message(frame)
                 if message.get("type") == "hello":
-                    device_id = extract_device_id_from_hello(message, session.device_id)
+                    device_id = safe_realtime_device_id(extract_device_id_from_hello(message, session.device_id))
                     self.logger(f"Xiaozhi realtime hello received: device_id={device_id} type={message.get('type')!r}")
+                    self._update_session_device_id(session, device_id)
                     if not hello_resent_after_device_hello:
                         await websocket.send(hello)
                         hello_resent_after_device_hello = True
@@ -522,14 +528,29 @@ class RealtimeManager:
         for key in ("Device-Id", "device-id", "Client-Id", "client-id"):
             value = str(headers.get(key) or "").strip()
             if value:
-                return value
+                return safe_realtime_device_id(value)
         value = (parse_qs(query).get("device_id") or [""])[0].strip()
-        return value or "default"
+        return safe_realtime_device_id(value)
 
     def _register_session(self, session: RealtimeDeviceSession) -> None:
         with self._sessions_lock:
             self._sessions[session.device_id] = session
         self.logger(f"Xiaozhi device connected: {session.device_id}")
+
+    def _update_session_device_id(self, session: RealtimeDeviceSession, device_id: str) -> None:
+        device_id = safe_realtime_device_id(device_id)
+        old_device_id = session.device_id
+        if device_id == old_device_id:
+            return
+        with self._sessions_lock:
+            current = self._sessions.get(old_device_id)
+            if current is session:
+                self._sessions.pop(old_device_id, None)
+            session.device_id = device_id
+            self._sessions[device_id] = session
+        if session.asr_bridge is not None:
+            session.asr_bridge.device_id = device_id
+        self.logger(f"Xiaozhi device id updated: {old_device_id} -> {device_id}")
 
     def _unregister_session(self, device_id: str, session_id: str) -> None:
         with self._sessions_lock:

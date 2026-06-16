@@ -132,6 +132,11 @@ describe("xiaopai render fallback helpers", () => {
   it("normalizes fallback text and fits the speech limit", () => {
     expect(normalizeFallbackSpeechText("assistant: hello\nDEBUG: hidden\nworld")).toBe("hello world");
     expect(normalizeFallbackSpeechText("hello MEDIA:fallback-rendered world")).toBe("hello world");
+    expect(
+      normalizeFallbackSpeechText(
+        "你今天（2026年6月16日 周二）有 **2 个日程**：\n| 时间 | 内容 |\n|------|------|\n| 10:00 - 11:00 | 汇报上周工作进展 |\n| 17:00 - 18:00 | 跟老板开会 |"
+      )
+    ).toBe("你今天（2026年6月16日 周二）有 2 个日程：10:00 - 11:00，汇报上周工作进展；17:00 - 18:00，跟老板开会。");
     expect(normalizeFallbackSpeechText(JSON.stringify({ diagnostic: true }))).toBe("");
     expect(normalizeFallbackSpeechText("a".repeat(800))).toHaveLength(500);
   });

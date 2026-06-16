@@ -303,10 +303,24 @@ The default adapters use `lark-cli` with fixed argv arrays and JSON output:
 Required Lark scopes:
 
 - `contact:user:search`
+- `calendar:calendar.event:read`
 - `calendar:calendar.event:create`
 - `calendar:calendar.event:update`
-- Calendar read/list access for `calendar +agenda`
+- `calendar:calendar.free_busy:read` only if a deployment adds free/busy or meeting-time suggestion flows
 - `im:message.send_as_user` and `im:message` for user-identity meeting notifications, or `im:message:send_as_bot` for bot-identity sends where the bot has access to the target chat
+
+For the default user-identity runtime, both the app backend and the local user token must have the needed scopes. Check the current user authorization with:
+
+```bash
+lark-cli auth status --verify
+lark-cli auth check --scope "contact:user:search calendar:calendar.event:read calendar:calendar.event:create calendar:calendar.event:update"
+```
+
+Authorize missing optional flows incrementally, for example:
+
+```bash
+lark-cli auth login --scope "calendar:calendar.free_busy:read im:message.send_as_user im:message"
+```
 
 The default identity is `user`, because `contact +search-user` is user-only. The plugin config supports `larkIdentity`, `larkCliPath`, `timeoutMs`, `dryRun`, optional travel settings, optional wellbeing settings, and optional scheduler settings:
 
