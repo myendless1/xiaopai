@@ -1352,8 +1352,7 @@ class Handler(BaseHTTPRequestHandler):
     def _enqueue_command(self, device_id: str, command: dict) -> bool:
         device_id = safe_device_id(device_id)
         manager = getattr(self.server, "realtime_manager", None)
-        prefer_http_queue = command_contains_speech(command)
-        if manager and manager.has_device(device_id) and not prefer_http_queue:
+        if manager and manager.has_device(device_id):
             sent = manager.enqueue_command(device_id, command)
             detail = ""
             if command.get("type") == "face" and isinstance(command.get("payload"), dict):
@@ -1373,8 +1372,6 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 return True
             self._log_info(f"Realtime command fallback to queue: {command['type']}{detail}")
-        elif manager and manager.has_device(device_id) and prefer_http_queue:
-            self._log_info(f"Realtime speech command queued for device playback: {command['type']}")
         queue = self._queue_for(device_id)
         stats = queue.put(command)
         detail = ""

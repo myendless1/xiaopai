@@ -424,6 +424,7 @@ class RealtimeManager:
                 session,
                 str(payload.get("text") or ""),
                 cache_name=str(payload.get("cache_name") or ""),
+                pause_listener=bool(payload.get("pause_listener", payload.get("pause_voice_listener", True))),
             )
             return True
         return await self._send_mcp_command(session, command)
@@ -468,7 +469,7 @@ class RealtimeManager:
             hello_resent_after_device_hello = False
             await websocket.send(hello)
             self.logger(f"Xiaozhi realtime server hello sent: device_id={session.device_id} bytes={len(hello)}")
-            await self._send_device_state(session, "sleep")
+            await self._send_device_state(session, "idle")
             async for frame in websocket:
                 if isinstance(frame, bytes):
                     session.last_seen = time.time()
@@ -667,14 +668,21 @@ class RealtimeManager:
         else:
             self.logger(f"Realtime wake find-owner not sent: device_id={session.device_id}")
 
-    async def _speak(self, session: RealtimeDeviceSession, text: str, *, cache_name: str = "") -> None:
+    async def _speak(
+        self,
+        session: RealtimeDeviceSession,
+        text: str,
+        *,
+        cache_name: str = "",
+        pause_listener: bool = True,
+    ) -> None:
         text = str(text or "").strip()
         if not text:
             return
         await self._abort_session_tts(session)
         self._mark(session, "device_tts_start")
         await session.websocket.send(json_dumps(build_llm(text, session_id=session.session_id)))
-        speak_step = {"type": "speak", "text": text, "pause_listener": True}
+        speak_step = {"type": "speak", "text": text, "pause_listener": bool(pause_listener)}
         cache_name = str(cache_name or "").strip()
         if cache_name:
             speak_step["cache_name"] = cache_name

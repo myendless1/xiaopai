@@ -1,8 +1,10 @@
 #include <M5Unified.h>
 
+#include "expression_controller.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
+#include "voice_state.h"
 
 #include "cJSON.h"
 #include "esp_app_desc.h"
@@ -46,16 +48,14 @@ void run_wifi_connect_app();
 void run_camera_upload_app();
 void run_tracking_user_demo();
 static bool wifi_is_connected();
-static void show_expression(const char* expression);
-static void show_temporary_expression(const char* expression, uint32_t duration_ms);
 static void set_light_strip_listening();
 static void set_light_strip_speaking();
 static void set_light_strip_sleeping();
 static void set_light_strip_listening_bar(uint8_t level);
 static void update_listening_light_level(const int16_t* samples, size_t sample_count);
-static void start_speaking_animation();
-static void stop_speaking_animation();
 static void update_speaking_light_level(const int16_t* samples, size_t sample_count);
+static void start_speaking_light_animation();
+static void stop_speaking_light_animation();
 static void apply_speaker_volume();
 static bool execute_speak_command(const char* text);
 static bool execute_speak_command_internal(const char* text, bool pause_voice_listener, const char* cache_name = nullptr);
@@ -63,37 +63,6 @@ static bool enqueue_speak_command(const char* cmd_id, const char* text, const ch
 static void request_speak_preempt(const char* reason);
 static bool run_find_owner_command(int rounds, const char* reply, float gain_x, float gain_y, float stop_pixels,
                                    bool preserve_speech_playback, bool wait_for_speech);
-
-extern const uint8_t calm_face_png_start[] asm("_binary_calm_face_png_start");
-extern const uint8_t calm_face_png_end[] asm("_binary_calm_face_png_end");
-extern const uint8_t speak1_face_png_start[] asm("_binary_speak1_face_png_start");
-extern const uint8_t speak1_face_png_end[] asm("_binary_speak1_face_png_end");
-extern const uint8_t speak2_face_png_start[] asm("_binary_speak2_face_png_start");
-extern const uint8_t speak2_face_png_end[] asm("_binary_speak2_face_png_end");
-extern const uint8_t shy_face_png_start[] asm("_binary_shy_face_png_start");
-extern const uint8_t shy_face_png_end[] asm("_binary_shy_face_png_end");
-extern const uint8_t thinking_face_png_start[] asm("_binary_thinking_face_png_start");
-extern const uint8_t thinking_face_png_end[] asm("_binary_thinking_face_png_end");
-extern const uint8_t blink_half_face_png_start[] asm("_binary_blink_half_face_png_start");
-extern const uint8_t blink_half_face_png_end[] asm("_binary_blink_half_face_png_end");
-extern const uint8_t blink_closed_face_png_start[] asm("_binary_blink_closed_face_png_start");
-extern const uint8_t blink_closed_face_png_end[] asm("_binary_blink_closed_face_png_end");
-extern const uint8_t wink_half_face_png_start[] asm("_binary_wink_half_face_png_start");
-extern const uint8_t wink_half_face_png_end[] asm("_binary_wink_half_face_png_end");
-extern const uint8_t wink_closed_face_png_start[] asm("_binary_wink_closed_face_png_start");
-extern const uint8_t wink_closed_face_png_end[] asm("_binary_wink_closed_face_png_end");
-extern const uint8_t heart_small_face_png_start[] asm("_binary_heart_small_face_png_start");
-extern const uint8_t heart_small_face_png_end[] asm("_binary_heart_small_face_png_end");
-extern const uint8_t heart_face_png_start[] asm("_binary_heart_face_png_start");
-extern const uint8_t heart_face_png_end[] asm("_binary_heart_face_png_end");
-extern const uint8_t nod_soft_face_png_start[] asm("_binary_nod_soft_face_png_start");
-extern const uint8_t nod_soft_face_png_end[] asm("_binary_nod_soft_face_png_end");
-extern const uint8_t nod_down_face_png_start[] asm("_binary_nod_down_face_png_start");
-extern const uint8_t nod_down_face_png_end[] asm("_binary_nod_down_face_png_end");
-extern const uint8_t happy_squint_face_png_start[] asm("_binary_happy_squint_face_png_start");
-extern const uint8_t happy_squint_face_png_end[] asm("_binary_happy_squint_face_png_end");
-extern const uint8_t happy_squint_soft_face_png_start[] asm("_binary_happy_squint_soft_face_png_start");
-extern const uint8_t happy_squint_soft_face_png_end[] asm("_binary_happy_squint_soft_face_png_end");
 
 namespace {
 
@@ -170,6 +139,7 @@ static constexpr int kFindOwnerMaxRounds = 3;
 static constexpr int kVisionUploadTimeoutMs = 6000;
 static constexpr int kCommandLongPollSeconds = 5;
 static constexpr int kCommandLongPollHttpTimeoutMs = (kCommandLongPollSeconds + 3) * 1000;
+static constexpr bool kUseHttpCommandLongPoll = false;
 static constexpr float kPi = 3.14159265358979323846f;
 static constexpr uart_port_t kServoUart = UART_NUM_1;
 static constexpr int kServoTxPin = 6;
@@ -246,10 +216,7 @@ TaskHandle_t camera_upload_task_handle = nullptr;
 TaskHandle_t tracking_task_handle = nullptr;
 TaskHandle_t command_task_handle = nullptr;
 TaskHandle_t boot_task_handle = nullptr;
-TaskHandle_t speak_animation_task_handle = nullptr;
 TaskHandle_t speaking_light_task_handle = nullptr;
-TaskHandle_t expression_animation_task_handle = nullptr;
-TaskHandle_t temporary_expression_task_handle = nullptr;
 TaskHandle_t head_touch_task_handle = nullptr;
 TaskHandle_t head_touch_audio_task_handle = nullptr;
 TaskHandle_t speak_command_task_handle = nullptr;
@@ -271,25 +238,12 @@ volatile int voice_listener_pause_count = 0;
 volatile bool voice_status_screen_suppressed = false;
 volatile bool speech_playback_active = false;
 volatile bool realtime_tts_playback_active = false;
-volatile bool speech_expression_overridden = false;
-volatile bool speak_animation_running = false;
 volatile uint32_t listening_light_last_update_ms = 0;
 volatile bool speaking_light_running = false;
 volatile uint8_t speaking_light_level = 0;
 volatile uint32_t speaking_light_level_ms = 0;
-volatile bool expression_animation_running = false;
-volatile uint32_t temporary_expression_until_ms = 0;
 volatile bool speak_command_active = false;
 volatile uint32_t speech_output_finished_ms = 0;
-enum class LocalVoiceState : uint8_t {
-    Idle,
-    Listening,
-    Speaking,
-};
-volatile LocalVoiceState local_voice_state = LocalVoiceState::Idle;
-volatile LocalVoiceState local_voice_return_state = LocalVoiceState::Idle;
-volatile int local_voice_speaking_depth = 0;
-volatile uint32_t local_voice_generation = 0;
 volatile bool wake_find_owner_pending = false;
 volatile uint32_t wake_find_owner_requested_ms = 0;
 volatile uint32_t wake_find_owner_last_run_ms = 0;
@@ -358,99 +312,6 @@ static constexpr const char* kServerBaseCandidates[] = {
     "http://192.168.137.1:8091",
 };
 
-struct ExpressionAsset {
-    const char* name;
-    const uint8_t* start;
-    const uint8_t* end;
-    int width;
-    int height;
-};
-
-struct ExpressionAnimation {
-    const char* name;
-    const char* const* frames;
-    size_t frame_count;
-    int frame_ms;
-};
-
-static constexpr const char* kDefaultExpression = "calm";
-static constexpr uint32_t kHeadTouchShyExpressionMs = 5000;
-static const ExpressionAsset kExpressionAssets[] = {
-    {"calm", calm_face_png_start, calm_face_png_end, 320, 240},
-    {"speak1", speak1_face_png_start, speak1_face_png_end, 320, 240},
-    {"speak2", speak2_face_png_start, speak2_face_png_end, 320, 240},
-    {"shy", shy_face_png_start, shy_face_png_end, 320, 240},
-    {"thinking", thinking_face_png_start, thinking_face_png_end, 320, 240},
-    {"blink_half", blink_half_face_png_start, blink_half_face_png_end, 320, 240},
-    {"blink_closed", blink_closed_face_png_start, blink_closed_face_png_end, 320, 240},
-    {"wink_half", wink_half_face_png_start, wink_half_face_png_end, 320, 240},
-    {"wink_closed", wink_closed_face_png_start, wink_closed_face_png_end, 320, 240},
-    {"heart_small", heart_small_face_png_start, heart_small_face_png_end, 320, 240},
-    {"heart", heart_face_png_start, heart_face_png_end, 320, 240},
-    {"nod_soft", nod_soft_face_png_start, nod_soft_face_png_end, 320, 240},
-    {"nod_down", nod_down_face_png_start, nod_down_face_png_end, 320, 240},
-    {"happy_squint", happy_squint_face_png_start, happy_squint_face_png_end, 320, 240},
-    {"happy_squint_soft", happy_squint_soft_face_png_start, happy_squint_soft_face_png_end, 320, 240},
-};
-static constexpr const char* kBlinkFrames[] = {
-    "calm",
-    "blink_half",
-    "blink_closed",
-    "blink_half",
-    "calm",
-    "calm",
-    "calm",
-};
-static constexpr const char* kWinkFrames[] = {
-    "calm",
-    "wink_half",
-    "wink_closed",
-    "wink_half",
-    "calm",
-    "wink_closed",
-    "calm",
-};
-static constexpr const char* kHeartFrames[] = {
-    "calm",
-    "heart_small",
-    "heart",
-    "heart",
-    "heart_small",
-    "heart",
-};
-static constexpr const char* kNodFrames[] = {
-    "calm",
-    "nod_soft",
-    "nod_down",
-    "nod_soft",
-    "calm",
-};
-static constexpr const char* kSpeakFrames[] = {
-    "speak1",
-    "speak2",
-};
-static constexpr const char* kHappyDynamicFrames[] = {
-    "happy_squint_soft",
-    "happy_squint",
-    "happy_squint_soft",
-    "happy_squint",
-};
-static constexpr ExpressionAnimation kExpressionAnimations[] = {
-    {"blink", kBlinkFrames, sizeof(kBlinkFrames) / sizeof(kBlinkFrames[0]), 140},
-    {"wink", kWinkFrames, sizeof(kWinkFrames) / sizeof(kWinkFrames[0]), 140},
-    {"heart_action", kHeartFrames, sizeof(kHeartFrames) / sizeof(kHeartFrames[0]), 170},
-    {"hearting", kHeartFrames, sizeof(kHeartFrames) / sizeof(kHeartFrames[0]), 170},
-    {"nod", kNodFrames, sizeof(kNodFrames) / sizeof(kNodFrames[0]), 180},
-    {"nodding", kNodFrames, sizeof(kNodFrames) / sizeof(kNodFrames[0]), 180},
-    {"speak", kSpeakFrames, sizeof(kSpeakFrames) / sizeof(kSpeakFrames[0]), 160},
-    {"speaking", kSpeakFrames, sizeof(kSpeakFrames) / sizeof(kSpeakFrames[0]), 160},
-    {"happy_dynamic", kHappyDynamicFrames, sizeof(kHappyDynamicFrames) / sizeof(kHappyDynamicFrames[0]), 180},
-    {"happy_squint_dynamic", kHappyDynamicFrames, sizeof(kHappyDynamicFrames) / sizeof(kHappyDynamicFrames[0]), 180},
-};
-bool expression_screen_visible = false;
-const ExpressionAsset* current_expression_asset = nullptr;
-const ExpressionAnimation* current_expression_animation = nullptr;
-
 struct XiaozhiConfig {
     std::string websocket_url;
     std::string websocket_token;
@@ -464,7 +325,7 @@ bool realtime_tts_audio_mutex_taken = false;
 static bool speech_output_is_busy()
 {
     if (speech_playback_active || realtime_tts_playback_active || speak_command_active ||
-        speak_animation_running || M5.Speaker.isPlaying()) {
+        speaking_animation_is_running() || M5.Speaker.isPlaying()) {
         return true;
     }
     if (audio_mutex == nullptr) {
@@ -491,46 +352,8 @@ static bool post_speech_echo_guard_active()
     return finished_ms != 0 && static_cast<uint32_t>(M5.millis() - finished_ms) < kPostSpeechEchoGuardMs;
 }
 
-static const char* local_voice_state_name(LocalVoiceState state)
+static void mark_wake_find_owner_pending(const char* reason)
 {
-    switch (state) {
-        case LocalVoiceState::Idle:
-            return "idle";
-        case LocalVoiceState::Listening:
-            return "listening";
-        case LocalVoiceState::Speaking:
-            return "speaking";
-    }
-    return "unknown";
-}
-
-static bool local_voice_is_speaking()
-{
-    return local_voice_state == LocalVoiceState::Speaking;
-}
-
-static bool local_voice_can_sample_mic()
-{
-    return local_voice_state != LocalVoiceState::Speaking;
-}
-
-static void apply_local_voice_state_outputs(LocalVoiceState state)
-{
-    if (state == LocalVoiceState::Idle) {
-        set_light_strip_sleeping();
-    } else if (state == LocalVoiceState::Listening) {
-        set_light_strip_listening();
-    } else {
-        set_light_strip_speaking();
-    }
-}
-
-static void maybe_mark_wake_find_owner_pending(LocalVoiceState old_state, LocalVoiceState new_state, const char* reason)
-{
-    if (old_state != LocalVoiceState::Idle || new_state != LocalVoiceState::Listening) {
-        return;
-    }
-
     uint32_t now = M5.millis();
     if (wake_find_owner_last_run_ms != 0 &&
         static_cast<uint32_t>(now - wake_find_owner_last_run_ms) < kWakeFindOwnerDuplicateGuardMs) {
@@ -544,68 +367,9 @@ static void maybe_mark_wake_find_owner_pending(LocalVoiceState old_state, LocalV
     ESP_LOGI(TAG, "Wake find-owner pending reason=%s", reason != nullptr ? reason : "");
 }
 
-static void local_voice_request_state(LocalVoiceState new_state, const char* reason)
+static bool should_restore_listening_light_after_speech()
 {
-    LocalVoiceState old_state = local_voice_state;
-    if (old_state == LocalVoiceState::Speaking && new_state != LocalVoiceState::Speaking &&
-        local_voice_speaking_depth > 0) {
-        local_voice_return_state = new_state;
-        ESP_LOGI(TAG, "Local voice state deferred while speaking: return=%s reason=%s",
-                 local_voice_state_name(new_state), reason != nullptr ? reason : "");
-        return;
-    }
-    if (old_state == new_state) {
-        apply_local_voice_state_outputs(new_state);
-        return;
-    }
-
-    local_voice_state = new_state;
-    local_voice_generation = local_voice_generation + 1;
-    ESP_LOGI(TAG, "Local voice state: %s -> %s reason=%s", local_voice_state_name(old_state),
-             local_voice_state_name(new_state), reason != nullptr ? reason : "");
-    maybe_mark_wake_find_owner_pending(old_state, new_state, reason);
-    apply_local_voice_state_outputs(new_state);
-}
-
-static void local_voice_begin_speaking(const char* reason)
-{
-    local_voice_speaking_depth = local_voice_speaking_depth + 1;
-    if (local_voice_speaking_depth > 1) {
-        ESP_LOGI(TAG, "Local voice speaking nested depth=%d reason=%s", local_voice_speaking_depth,
-                 reason != nullptr ? reason : "");
-        return;
-    }
-
-    LocalVoiceState old_state = local_voice_state;
-    local_voice_return_state = old_state == LocalVoiceState::Speaking ? LocalVoiceState::Listening : old_state;
-    local_voice_state = LocalVoiceState::Speaking;
-    local_voice_generation = local_voice_generation + 1;
-    ESP_LOGI(TAG, "Local voice state: %s -> speaking reason=%s", local_voice_state_name(old_state),
-             reason != nullptr ? reason : "");
-    apply_local_voice_state_outputs(LocalVoiceState::Speaking);
-}
-
-static void local_voice_end_speaking(const char* reason)
-{
-    if (local_voice_speaking_depth > 0) {
-        local_voice_speaking_depth = local_voice_speaking_depth - 1;
-    }
-    if (local_voice_speaking_depth > 0) {
-        ESP_LOGI(TAG, "Local voice speaking still nested depth=%d reason=%s", local_voice_speaking_depth,
-                 reason != nullptr ? reason : "");
-        return;
-    }
-
-    LocalVoiceState return_state = local_voice_return_state;
-    if (return_state == LocalVoiceState::Speaking) {
-        return_state = LocalVoiceState::Listening;
-    }
-    LocalVoiceState old_state = local_voice_state;
-    local_voice_state = return_state;
-    local_voice_generation = local_voice_generation + 1;
-    ESP_LOGI(TAG, "Local voice state: %s -> %s reason=%s", local_voice_state_name(old_state),
-             local_voice_state_name(return_state), reason != nullptr ? reason : "");
-    apply_local_voice_state_outputs(return_state);
+    return light_strip_listening_after_speech;
 }
 
 static void handle_pending_wake_find_owner()
@@ -622,7 +386,7 @@ static void handle_pending_wake_find_owner()
     if (static_cast<uint32_t>(now - wake_find_owner_requested_ms) < kWakeFindOwnerServerGraceMs) {
         return;
     }
-    if (local_voice_state != LocalVoiceState::Listening || voice_listener_paused || speech_output_is_busy()) {
+    if (local_voice_current_state() != LocalVoiceState::Listening || voice_listener_paused || speech_output_is_busy()) {
         return;
     }
 
@@ -667,12 +431,6 @@ private:
     bool locked_ = false;
 };
 
-void mark_expression_screen_dirty()
-{
-    expression_screen_visible = false;
-    current_expression_asset = nullptr;
-}
-
 void draw_header(const char* title)
 {
     mark_expression_screen_dirty();
@@ -693,7 +451,7 @@ void draw_header(const char* title)
 void draw_launcher()
 {
     if (!kShowAppStatusScreens) {
-        if (!expression_screen_visible) {
+        if (!expression_screen_is_visible()) {
             show_expression(kDefaultExpression);
         }
         return;
@@ -1071,7 +829,7 @@ const char* touch_state_name(const m5::Touch_Class::touch_detail_t& touch)
 void draw_touch_status(const char* event_name, const m5::Touch_Class::touch_detail_t& touch)
 {
     if (!kShowAppStatusScreens) {
-        if (!expression_screen_visible) {
+        if (!expression_screen_is_visible()) {
             show_expression(kDefaultExpression);
         }
         return;
@@ -1467,7 +1225,7 @@ static bool start_realtime_tts_playback()
     M5.Speaker.stop();
     speech_playback_active = true;
     realtime_tts_playback_active = true;
-    speech_expression_overridden = false;
+    expression_set_speech_overridden(false);
     start_speaking_animation();
     set_app1_status("Realtime TTS", "Playing server audio", "WebSocket Opus stream", "");
     return true;
@@ -1731,7 +1489,7 @@ static void wake_for_server_command(const char* command_type)
         strcmp(type, "wake") == 0 || strcmp(type, "listen") == 0 || strcmp(type, "listening") == 0) {
         return;
     }
-    if (local_voice_state != LocalVoiceState::Idle) {
+    if (local_voice_current_state() != LocalVoiceState::Idle) {
         return;
     }
 
@@ -3247,11 +3005,11 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     int32_t stop_smooth_level = average_abs_level(first_samples, first_count);
     bool got_hello = true;
     std::string stt_text;
-    uint32_t state_generation = local_voice_generation;
+    uint32_t state_generation = local_voice_generation();
 
     auto append_and_send = [&](const int16_t* samples, int count) -> bool {
         int offset = 0;
-        while (offset < count && local_voice_generation == state_generation && !local_voice_is_speaking()) {
+        while (offset < count && local_voice_generation() == state_generation && !local_voice_is_speaking()) {
             int n = std::min(count - offset, encoder_frame_samples - frame_pos);
             memcpy(frame.data() + frame_pos, samples + offset, n * sizeof(int16_t));
             frame_pos += n;
@@ -3275,7 +3033,7 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     }
 
     std::vector<int16_t> chunk(kVoiceProbeSamples);
-    while (!app1_stop_requested && !voice_listener_paused && local_voice_generation == state_generation &&
+    while (!app1_stop_requested && !voice_listener_paused && local_voice_generation() == state_generation &&
            !local_voice_is_speaking() && elapsed_ms < kRecordMaxMs) {
         if (!mic_record_blocking(chunk.data(), chunk.size(), kAudioSampleRate)) {
             ESP_LOGW(TAG, "Mic record returned false while recording");
@@ -3298,7 +3056,7 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
         }
     }
 
-    bool interrupted = voice_listener_paused || local_voice_generation != state_generation || local_voice_is_speaking();
+    bool interrupted = voice_listener_paused || local_voice_generation() != state_generation || local_voice_is_speaking();
 
     if (!interrupted && frame_pos > 0) {
         memset(frame.data() + frame_pos, 0, (encoder_frame_samples - frame_pos) * sizeof(int16_t));
@@ -3315,8 +3073,8 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
 
     if (interrupted) {
         ESP_LOGI(TAG, "Recognition interrupted by local state: paused=%d state=%s gen=%u->%u",
-                 voice_listener_paused, local_voice_state_name(local_voice_state),
-                 static_cast<unsigned>(state_generation), static_cast<unsigned>(local_voice_generation));
+                 voice_listener_paused, local_voice_state_name(local_voice_current_state()),
+                 static_cast<unsigned>(state_generation), static_cast<unsigned>(local_voice_generation()));
         set_app1_status("Interrupted", "Local speech or command", "Listening resumes soon", "", true, false);
         return true;
     }
@@ -3737,14 +3495,67 @@ static void run_xiaozhi_speech_loop()
     }
 
     esp_transport_handle_t parent = nullptr;
-    esp_transport_handle_t ws = open_xiaozhi_websocket(parent);
-    if (ws == nullptr) {
+    esp_transport_handle_t ws = nullptr;
+
+    auto close_ws = [&]() {
+        if (realtime_tts_playback_active) {
+            request_speak_preempt("websocket reconnect");
+            app2_stop_requested = false;
+        }
+        if (ws != nullptr) {
+            esp_transport_close(ws);
+            esp_transport_destroy(ws);
+            ws = nullptr;
+        }
+        if (parent != nullptr) {
+            esp_transport_destroy(parent);
+            parent = nullptr;
+        }
+    };
+
+    auto reconnect_ws = [&](const char* reason) -> bool {
+        ESP_LOGW(TAG, "Realtime WebSocket reconnect requested: %s", reason != nullptr ? reason : "");
+        close_ws();
+        local_voice_request_state(LocalVoiceState::Idle, reason != nullptr ? reason : "websocket reconnect");
+        set_app1_status("WS Reconnect", "Waiting for server", "Voice resumes automatically", "", true, false);
+
+        int retry_delay_ms = 1000;
+        while (!app1_stop_requested) {
+            while ((!wifi_is_connected() || !active_server_selected) && !app1_stop_requested) {
+                set_app1_status("WS Reconnect", "Waiting for network", "Voice resumes automatically", "", true, false);
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+            if (app1_stop_requested) {
+                break;
+            }
+
+            if (!request_local_xiaozhi_ota_config()) {
+                configure_local_xiaozhi_websocket();
+            }
+            ws = open_xiaozhi_websocket(parent);
+            if (ws != nullptr) {
+                set_app1_status("Wake Listen", "WebSocket connected", "Say 小派同学", "", true, false);
+                set_light_strip_listening();
+                return true;
+            }
+
+            set_app1_status("WS Reconnect", "Connect failed", "Retrying...", "", true, false);
+            vTaskDelay(pdMS_TO_TICKS(retry_delay_ms));
+            retry_delay_ms = std::min(retry_delay_ms * 2, 5000);
+        }
+        return false;
+    };
+
+    if (!reconnect_ws("speech loop start")) {
+        close_ws();
         esp_opus_enc_close(encoder);
         local_voice_request_state(LocalVoiceState::Idle, "websocket open failed");
         return;
     }
 
     local_voice_request_state(LocalVoiceState::Idle, "speech loop start");
+    set_app1_status("Wake Listen", "Wake word active", "Say 小派同学", "", true, false);
+    set_light_strip_listening();
     std::vector<int16_t> probe(kVoiceProbeSamples);
     uint32_t last_status_ms = 0;
     bool got_hello = true;
@@ -3765,7 +3576,10 @@ static void run_xiaozhi_speech_loop()
                 set_app1_status("Paused", "Shared peripheral", "Listening resumes soon", "", true, false);
             }
             while ((voice_listener_paused || local_voice_is_speaking()) && !app1_stop_requested) {
-                receive_ws_once(ws, 50, got_hello, stt_text);
+                if (!receive_ws_once(ws, 50, got_hello, stt_text) &&
+                    !reconnect_ws("websocket read failed while paused")) {
+                    break;
+                }
                 vTaskDelay(pdMS_TO_TICKS(20));
             }
             if (app1_stop_requested) {
@@ -3782,16 +3596,20 @@ static void run_xiaozhi_speech_loop()
             }
             last_status_ms = 0;
             stt_text.clear();
-            if (local_voice_state == LocalVoiceState::Idle) {
-                set_app1_status("Idle", "Wake word only", "Say 小派同学", "", true, false);
+            local_voice_apply_outputs(local_voice_current_state());
+            if (local_voice_current_state() == LocalVoiceState::Idle) {
+                set_app1_status("Wake Listen", "Resumed", "Say 小派同学", "", true, false);
+                set_light_strip_listening();
             } else {
                 set_app1_status("Listening", "Resumed", "Speak to recognize", "", true, false);
             }
-            apply_local_voice_state_outputs(local_voice_state);
             continue;
         }
         if (realtime_tts_playback_active) {
-            receive_ws_once(ws, 100, got_hello, stt_text);
+            if (!receive_ws_once(ws, 100, got_hello, stt_text) &&
+                !reconnect_ws("websocket read failed during tts")) {
+                break;
+            }
             continue;
         }
         if (!M5.Mic.isEnabled() && !realtime_tts_playback_active) {
@@ -3808,19 +3626,23 @@ static void run_xiaozhi_speech_loop()
         }
 
         int32_t level = average_abs_level(probe.data(), probe.size());
+        update_listening_light_level(probe.data(), probe.size());
         uint32_t now = M5.millis();
         if (now - last_status_ms > 700) {
             char level_line[64];
             snprintf(level_line, sizeof(level_line), "level=%ld threshold=%d", static_cast<long>(level), kVoiceStartThreshold);
-            if (local_voice_state == LocalVoiceState::Idle) {
-                set_app1_status("Idle", level_line, "Say 小派同学", "", true, false);
+            if (local_voice_current_state() == LocalVoiceState::Idle) {
+                set_app1_status("Wake Listen", level_line, "Say 小派同学", "", true, false);
             } else {
                 set_app1_status("Listening", level_line, "Speak to recognize", "", true, false);
             }
             last_status_ms = now;
         }
 
-        receive_ws_once(ws, 0, got_hello, stt_text);
+        if (!receive_ws_once(ws, 0, got_hello, stt_text) &&
+            !reconnect_ws("websocket read failed")) {
+            break;
+        }
         if (post_speech_echo_guard_active()) {
             if (level >= kVoiceStartThreshold) {
                 ESP_LOGI(TAG, "Voice threshold ignored during post-speech echo guard: level=%ld threshold=%d",
@@ -3830,20 +3652,16 @@ static void run_xiaozhi_speech_loop()
         }
         if (local_voice_can_sample_mic() && level >= kVoiceStartThreshold) {
             ESP_LOGI(TAG, "Voice threshold triggered: level=%ld threshold=%d state=%s",
-                     static_cast<long>(level), kVoiceStartThreshold, local_voice_state_name(local_voice_state));
+                     static_cast<long>(level), kVoiceStartThreshold, local_voice_state_name(local_voice_current_state()));
             if (!run_one_speech_recognition(ws, encoder, encoder_frame_samples, encoder_outbuf_size, probe.data(),
                                             probe.size())) {
-                ESP_LOGW(TAG, "Speech recognition round failed; reconnecting websocket");
-                esp_transport_close(ws);
-                esp_transport_destroy(ws);
-                esp_transport_destroy(parent);
-                parent = nullptr;
-                ws = open_xiaozhi_websocket(parent);
-                if (ws == nullptr) {
+                ESP_LOGW(TAG, "Speech recognition round failed; reconnecting WebSocket");
+                if (!reconnect_ws("speech recognition round failed")) {
                     local_voice_request_state(LocalVoiceState::Idle, "websocket reconnect failed");
                     break;
                 }
-                local_voice_request_state(LocalVoiceState::Idle, "websocket reconnected");
+                set_app1_status("Wake Listen", "Reconnected", "Say 小派同学", "", true, false);
+                set_light_strip_listening();
             }
             last_status_ms = 0;
         }
@@ -3851,11 +3669,7 @@ static void run_xiaozhi_speech_loop()
 
     set_app1_status("Stopped", "Voice stopped", "", "", false, false);
     local_voice_request_state(LocalVoiceState::Idle, "speech loop stopped");
-    esp_transport_close(ws);
-    esp_transport_destroy(ws);
-    if (parent != nullptr) {
-        esp_transport_destroy(parent);
-    }
+    close_ws();
     esp_opus_enc_close(encoder);
     while (M5.Mic.isRecording()) {
         vTaskDelay(pdMS_TO_TICKS(1));
@@ -3989,7 +3803,7 @@ static void release_camera_driver()
     }
     M5.In_I2C.begin();
     camera_owns_internal_i2c = false;
-    apply_local_voice_state_outputs(local_voice_state);
+    local_voice_apply_outputs(local_voice_current_state());
 }
 
 static camera_fb_t* get_fresh_camera_frame(const char* context)
@@ -4399,7 +4213,7 @@ static void run_light_strip_boot_probe()
 {
     set_light_strip_color(0, 0, 32, 4);
     vTaskDelay(pdMS_TO_TICKS(150));
-    apply_local_voice_state_outputs(local_voice_state);
+    local_voice_apply_outputs(local_voice_current_state());
 }
 
 static void enable_servo_power()
@@ -5398,179 +5212,6 @@ static bool send_command_ack(const char* cmd_id, const char* status, const char*
     return http_get_string(url, &response, 5000);
 }
 
-static const ExpressionAsset* find_expression_asset(const char* expression)
-{
-    const char* name = expression != nullptr && expression[0] != '\0' ? expression : kDefaultExpression;
-    if (strcmp(name, "listening") == 0 || strcmp(name, "default") == 0 || strcmp(name, "stopped") == 0) {
-        name = kDefaultExpression;
-    }
-
-    for (const auto& asset : kExpressionAssets) {
-        if (strcmp(asset.name, name) == 0) {
-            return &asset;
-        }
-    }
-
-    for (const auto& asset : kExpressionAssets) {
-        if (strcmp(asset.name, kDefaultExpression) == 0) {
-            return &asset;
-        }
-    }
-    return nullptr;
-}
-
-static const ExpressionAnimation* find_expression_animation(const char* expression)
-{
-    const char* name = expression != nullptr && expression[0] != '\0' ? expression : "";
-    for (const auto& animation : kExpressionAnimations) {
-        if (strcmp(animation.name, name) == 0) {
-            return &animation;
-        }
-    }
-    return nullptr;
-}
-
-static void render_expression_frame(const char* expression)
-{
-    {
-        M5Lock lock;
-        auto& display = M5.Display;
-        const ExpressionAsset* asset = find_expression_asset(expression);
-        if (asset != nullptr) {
-            const uint32_t image_len = static_cast<uint32_t>(asset->end - asset->start);
-            const int draw_x = (display.width() - asset->width) / 2;
-            const int draw_y = (display.height() - asset->height) / 2;
-            if (!expression_screen_visible || current_expression_asset == nullptr ||
-                current_expression_asset->width != asset->width || current_expression_asset->height != asset->height) {
-                if (display.drawPng(asset->start, image_len, draw_x, draw_y)) {
-                    expression_screen_visible = true;
-                    current_expression_asset = asset;
-                    return;
-                }
-            } else if (current_expression_asset != asset) {
-                if (display.drawPng(asset->start, image_len, draw_x, draw_y)) {
-                    current_expression_asset = asset;
-                    return;
-                }
-            } else {
-                return;
-            }
-        }
-        display.fillScreen(TFT_BLACK);
-        mark_expression_screen_dirty();
-    }
-}
-
-static void stop_expression_animation()
-{
-    expression_animation_running = false;
-    for (int i = 0; i < 30 && expression_animation_task_handle != nullptr; ++i) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-    current_expression_animation = nullptr;
-}
-
-static void start_expression_animation(const ExpressionAnimation* animation)
-{
-    if (animation == nullptr || animation->frame_count == 0) {
-        return;
-    }
-    if (expression_animation_task_handle != nullptr && current_expression_animation == animation) {
-        return;
-    }
-    stop_expression_animation();
-    expression_animation_running = true;
-    current_expression_animation = animation;
-    xTaskCreatePinnedToCore([](void* arg) {
-        const auto* animation = static_cast<const ExpressionAnimation*>(arg);
-        size_t frame = 0;
-        while (expression_animation_running && animation != nullptr && animation->frame_count > 0) {
-            render_expression_frame(animation->frames[frame]);
-            frame = (frame + 1) % animation->frame_count;
-            vTaskDelay(pdMS_TO_TICKS(animation->frame_ms));
-        }
-        expression_animation_task_handle = nullptr;
-        vTaskDelete(nullptr);
-    }, "expr_anim", 4 * 1024, const_cast<ExpressionAnimation*>(animation), 2, &expression_animation_task_handle, 0);
-}
-
-static void notify_temporary_expression_task()
-{
-    TaskHandle_t task = temporary_expression_task_handle;
-    if (task != nullptr) {
-        xTaskNotifyGive(task);
-    }
-}
-
-static void show_expression_internal(const char* expression, bool notify_temporary_task)
-{
-    const ExpressionAnimation* animation = find_expression_animation(expression);
-    if (animation != nullptr) {
-        start_expression_animation(animation);
-        if (notify_temporary_task) {
-            notify_temporary_expression_task();
-        }
-        return;
-    }
-    stop_expression_animation();
-    render_expression_frame(expression);
-    if (notify_temporary_task) {
-        notify_temporary_expression_task();
-    }
-}
-
-static void show_expression(const char* expression)
-{
-    show_expression_internal(expression, true);
-}
-
-static void show_temporary_expression(const char* expression, uint32_t duration_ms)
-{
-    const ExpressionAsset* expected_asset = find_expression_asset(expression);
-    if (expected_asset == nullptr) {
-        return;
-    }
-
-    temporary_expression_until_ms = static_cast<uint32_t>(M5.millis() + duration_ms);
-    show_expression_internal(expression, false);
-
-    if (temporary_expression_task_handle != nullptr) {
-        return;
-    }
-
-    xTaskCreatePinnedToCore([](void* arg) {
-        const auto* expected_asset = static_cast<const ExpressionAsset*>(arg);
-        while (true) {
-            if (current_expression_asset != expected_asset ||
-                current_expression_animation != nullptr ||
-                speak_animation_running) {
-                break;
-            }
-
-            uint32_t now = M5.millis();
-            uint32_t until = temporary_expression_until_ms;
-            int32_t remaining_ms = static_cast<int32_t>(until - now);
-            if (remaining_ms > 0) {
-                ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(std::min<int32_t>(remaining_ms, 250)));
-                continue;
-            }
-
-            if (until == temporary_expression_until_ms &&
-                current_expression_asset == expected_asset &&
-                current_expression_animation == nullptr &&
-                !speak_animation_running) {
-                show_expression_internal(kDefaultExpression, false);
-            }
-
-            break;
-        }
-        temporary_expression_task_handle = nullptr;
-        temporary_expression_until_ms = 0;
-        vTaskDelete(nullptr);
-    }, "temp_expr", 4 * 1024, const_cast<ExpressionAsset*>(expected_asset), 2,
-       &temporary_expression_task_handle, 0);
-}
-
 static uint8_t light_bar_level_from_abs(int32_t level, int silence_level, int full_scale_level)
 {
     if (level <= silence_level) {
@@ -5664,54 +5305,11 @@ static void stop_speaking_light_animation()
     speaking_light_level_ms = 0;
 }
 
-static void start_speaking_animation()
-{
-    start_speaking_light_animation();
-    speak_animation_running = true;
-    if (speak_animation_task_handle != nullptr) {
-        return;
-    }
-    xTaskCreatePinnedToCore([](void*) {
-        bool open = false;
-        while (speak_animation_running) {
-            show_expression(open ? "speak2" : "speak1");
-            open = !open;
-            vTaskDelay(pdMS_TO_TICKS(160));
-        }
-        speak_animation_task_handle = nullptr;
-        vTaskDelete(nullptr);
-    }, "speak_anim", 4 * 1024, nullptr, 2, &speak_animation_task_handle, 0);
-}
-
-static void stop_speaking_animation()
-{
-    speak_animation_running = false;
-    for (int i = 0; i < 30 && speak_animation_task_handle != nullptr; ++i) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-    stop_speaking_light_animation();
-    if (speech_expression_overridden) {
-        speech_expression_overridden = false;
-        if (light_strip_listening_after_speech) {
-            set_light_strip_listening();
-        } else {
-            set_light_strip_sleeping();
-        }
-        return;
-    }
-    show_expression(kDefaultExpression);
-    if (light_strip_listening_after_speech) {
-        set_light_strip_listening();
-    } else {
-        set_light_strip_sleeping();
-    }
-}
-
 static void request_speak_preempt(const char* reason)
 {
     app2_stop_requested = true;
     M5.Speaker.stop();
-    speak_animation_running = false;
+    cancel_speaking_animation_now();
     speaking_light_running = false;
     if (realtime_tts_playback_active) {
         finish_realtime_tts_playback();
@@ -5746,7 +5344,7 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
     app2_stop_requested = false;
     M5.Speaker.stop();
     speech_playback_active = true;
-    speech_expression_overridden = false;
+    expression_set_speech_overridden(false);
     start_speaking_animation();
     const char* selected_cache_name = cache_name != nullptr && cache_name[0] != '\0' ? cache_name : "";
     bool ok = selected_cache_name[0] != '\0' ? stream_cached_reply_pcm(selected_cache_name, text)
@@ -5810,7 +5408,9 @@ static void run_speak_command_loop()
         speak_command_active = true;
         bool ok = execute_speak_command_internal(item.text, item.pause_voice_listener, item.cache_name);
         speak_command_active = false;
-        send_command_ack(item.cmd_id, ok ? "done" : "failed", ok ? "" : "speak command interrupted or failed");
+        if (item.cmd_id[0] != '\0') {
+            send_command_ack(item.cmd_id, ok ? "done" : "failed", ok ? "" : "speak command interrupted or failed");
+        }
     }
 }
 
@@ -6068,8 +5668,8 @@ static bool execute_command_object(const cJSON* command)
     if (type == "face") {
         std::string expression = json_string_value(payload, "expression");
         if (speech_output_is_busy()) {
-            speech_expression_overridden = true;
-            speak_animation_running = false;
+            expression_set_speech_overridden(true);
+            cancel_speaking_animation_now();
         }
         show_expression(expression.empty() ? kDefaultExpression : expression.c_str());
         return true;
@@ -6310,7 +5910,7 @@ static void start_background_services()
             }, "bg_voice", kApp1TaskStackBytes, nullptr, 3, &xiaozhi_task_handle, 1);
         }
 
-        if (command_task_handle == nullptr) {
+        if (kUseHttpCommandLongPoll && command_task_handle == nullptr) {
             xTaskCreatePinnedToCore([](void*) {
                 run_command_http_loop();
                 command_task_handle = nullptr;
@@ -6330,6 +5930,19 @@ extern "C" void app_main(void)
     force_core_s3_display_board();
     m5_mutex = xSemaphoreCreateMutex();
     audio_mutex = xSemaphoreCreateMutex();
+    local_voice_state_init({
+        set_light_strip_sleeping,
+        set_light_strip_listening,
+        set_light_strip_speaking,
+        mark_wake_find_owner_pending,
+    });
+    expression_controller_init(m5_mutex, {
+        start_speaking_light_animation,
+        stop_speaking_light_animation,
+        set_light_strip_listening,
+        set_light_strip_sleeping,
+        should_restore_listening_light_after_speech,
+    });
     auto cfg = M5.config();
     cfg.internal_mic = true;
     cfg.internal_spk = true;
