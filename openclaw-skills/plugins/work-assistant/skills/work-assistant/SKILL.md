@@ -43,6 +43,14 @@ lark-cli auth status --verify
 
 Use the returned `userOpenId` as `event.user_id` and, when the user wants to invite themself, as a direct attendee id in `structured_intent.attendees`.
 
+The default runtime uses Lark user identity, so local OAuth must be ready and the app backend must have matching scopes. The minimum scopes for this plugin's Lark path are `contact:user:search`, `calendar:calendar.event:read`, `calendar:calendar.event:create`, and `calendar:calendar.event:update`. Optional flows need additional scopes: `calendar:calendar.free_busy:read` for free/busy or meeting-time suggestions, and `im:message.send_as_user im:message` for user-identity late-arrival notifications.
+
+To diagnose missing authorization, use:
+
+```bash
+lark-cli auth check --scope "contact:user:search calendar:calendar.event:read calendar:calendar.event:create calendar:calendar.event:update calendar:calendar.free_busy:read im:message.send_as_user im:message"
+```
+
 When the user asks the workplace robot to create a Lark calendar event, first extract a deterministic `calendar.create` structured intent from the utterance. Then call the Gateway method `workAssistant.handleEvent` with both the original text and `payload.structured_intent`.
 
 For example, for:

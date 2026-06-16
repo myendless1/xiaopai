@@ -1,5 +1,6 @@
 import { MAX_SPEECH_LENGTH } from "./constants.js";
 import type { XiaopaiCommand, XiaopaiCommandResult, XiaopaiSequenceCommand } from "./contracts.js";
+import { normalizeSpeechTextForVoice } from "./speech-text.js";
 import { extractCommandInput, validateXiaopaiCommand } from "./validation.js";
 
 export const STACKCHAN_EVENT_SCHEMA = "openclaw.stackchan.event.v1";
@@ -163,8 +164,10 @@ export function normalizeFallbackSpeechText(text: unknown): string {
     .trim();
 
   if (withoutDiagnosticLines === "" || isRawJsonText(withoutDiagnosticLines)) return "";
-  if (withoutDiagnosticLines.length <= MAX_SPEECH_LENGTH) return withoutDiagnosticLines;
-  return truncateSpeechText(withoutDiagnosticLines, MAX_SPEECH_LENGTH);
+  const speechText = normalizeSpeechTextForVoice(withoutDiagnosticLines);
+  if (speechText === "") return "";
+  if (speechText.length <= MAX_SPEECH_LENGTH) return speechText;
+  return truncateSpeechText(speechText, MAX_SPEECH_LENGTH);
 }
 
 export function buildFallbackSequenceCommand(context: XiaopaiRenderContext, speechText: string): XiaopaiSequenceCommand {

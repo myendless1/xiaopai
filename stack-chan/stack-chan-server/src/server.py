@@ -22,7 +22,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue import Empty
 
+from openclaw_agent import build_openclaw_session_key
 from realtime_server import RealtimeConfig, RealtimeManager
+from xiaopai_openclaw_prompt import XIAOPAI_OPENCLAW_SYSTEM_PROMPT
 from xiaozhi_protocol import ota_config
 from yunet_service import YunetFaceService
 
@@ -180,17 +182,6 @@ HEAD_TOUCH_EVENT_TEXT.update(
         "swipe_backward": "你好，我是小派同学",
     }
 )
-
-XIAOPAI_OPENCLAW_SYSTEM_PROMPT = """你是小派同学。stack-chan 会把小派收到的语音识别文本直接作为用户消息发给你；非触摸设备事件会作为一行简短的自然语言事件说明发给你。
-
-普通聊天、简单问答、表情动作请求可以直接由你用小派第一人称回应。
-需要日程、会议、通知、久坐提醒等业务能力时，调用 workAssistant.handleEvent 处理。
-普通文字回复会由 OpenClaw 运行时自动播报到当前小派设备，不要为了播报最终回复而主动调用 xiaopaiControl.execute。
-只有在需要额外移动、切换表情，或执行不只是说话的组合动作时，才调用 xiaopaiControl.execute；如果没有明确 device_id，可省略 device_id 让插件使用默认设备。
-凡是会展示给用户或通过 xiaopaiControl.execute 口播的内容，都以小派自居，优先使用“我”或“小派来……”，不要说“已让小派……”。
-只有在调试、工具执行说明、错误排查中，才可以使用 OpenClaw 或控制器视角。
-"""
-
 
 def log_timestamp() -> str:
     return _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -467,6 +458,138 @@ def normalize_voice_command_text(text: str) -> str:
     return re.sub(r"[\s,_\-，。.!！?？/（）()]+", "", text.strip().lower())
 
 
+SPEECH_ENDING_PUNCT_RE = re.compile(r"[。！？!?；;]$")
+MARKDOWN_TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
+DISPLAY_SYMBOL_RE = re.compile(r"[✅✔☑❌✖\U0001F300-\U0001FAFF\U00002700-\U000027BF]")
+
+
+def normalize_speech_text_for_voice(text: str) -> str:
+    value = strip_markdown_syntax(normalize_markdown_tables(str(text or "")))
+    value = value.replace("\r\n", "\n").replace("\r", "\n").replace("\u00a0", " ")
+    value = DISPLAY_SYMBOL_RE.sub("", value)
+    value = re.sub(r"[ \t]*\n[ \t]*", " ", value)
+    value = re.sub(r"[ \t]+", " ", value)
+    value = re.sub(r"\s*([，。！？、；：])\s*", r"\1", value)
+    value = re.sub(r"\s+([,.!?;:])", r"\1", value)
+    return value.strip()
+
+
+def normalize_markdown_tables(text: str) -> str:
+    prepared = re.sub(r"\|\s+(?=\|)", "|\n", text.replace("\r\n", "\n").replace("\r", "\n"))
+    lines = prepared.split("\n")
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        original_line = lines[index]
+        next_line = lines[index + 1].strip() if index + 1 < len(lines) else ""
+        prefix, table_line = split_table_prefix(original_line, next_line)
+
+        if is_markdown_table_row(table_line) and is_markdown_table_separator_row(next_line):
+            if prefix:
+                output.append(prefix)
+            headers = split_markdown_table_row(table_line)
+            rows: list[str] = []
+            index += 2
+            while index < len(lines):
+                row_line = lines[index].strip()
+                if not is_markdown_table_row(row_line) or is_markdown_table_separator_row(row_line):
+                    break
+                row = format_markdown_table_row(headers, split_markdown_table_row(row_line))
+                if row:
+                    rows.append(row)
+                index += 1
+            if rows:
+                output.append(with_sentence_ending("；".join(rows)))
+            continue
+
+        output.append(original_line)
+        index += 1
+    return "\n".join(output)
+
+
+def split_table_prefix(line: str, next_line: str) -> tuple[str, str]:
+    trimmed = line.strip()
+    pipe_index = trimmed.find("|")
+    if pipe_index <= 0:
+        return "", trimmed
+    candidate = trimmed[pipe_index:].strip()
+    if not is_markdown_table_row(candidate) or not is_markdown_table_separator_row(next_line):
+        return "", trimmed
+    return trimmed[:pipe_index].strip(), candidate
+
+
+def is_markdown_table_row(line: str) -> bool:
+    trimmed = line.strip()
+    return trimmed.startswith("|") and trimmed.endswith("|") and len(split_markdown_table_row(trimmed)) >= 2
+
+
+def is_markdown_table_separator_row(line: str) -> bool:
+    cells = split_markdown_table_row(line)
+    return len(cells) >= 2 and all(MARKDOWN_TABLE_SEPARATOR_CELL_RE.match(cell.replace(" ", "")) for cell in cells)
+
+
+def split_markdown_table_row(line: str) -> list[str]:
+    return [clean_markdown_cell(cell) for cell in line.strip().strip("|").split("|")]
+
+
+def clean_markdown_cell(value: str) -> str:
+    value = value.strip()
+    value = re.sub(r"(\*\*|__)(.*?)\1", r"\2", value)
+    value = re.sub(r"~~(.*?)~~", r"\1", value)
+    value = re.sub(r"`([^`]+)`", r"\1", value)
+    value = re.sub(r"[*_`]+", "", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def format_markdown_table_row(headers: list[str], cells: list[str]) -> str:
+    parts: list[str] = []
+    for index in range(max(len(headers), len(cells))):
+        cell = cells[index].strip() if index < len(cells) else ""
+        if not cell:
+            continue
+        header = headers[index].strip() if index < len(headers) else ""
+        if not header or is_header_safe_to_omit(header):
+            parts.append(cell)
+        else:
+            parts.append(f"{header}{cell}")
+    return "，".join(parts)
+
+
+def is_header_safe_to_omit(header: str) -> bool:
+    return bool(re.match(r"^(时间|日期|时段|开始|结束|内容|事项|标题|名称|事件|日程)$", re.sub(r"\s+", "", header), re.I))
+
+
+def with_sentence_ending(value: str) -> str:
+    value = value.strip()
+    if not value or SPEECH_ENDING_PUNCT_RE.search(value):
+        return value
+    return f"{value}。"
+
+
+def strip_markdown_syntax(text: str) -> str:
+    value = re.sub(r"```[A-Za-z0-9_-]*\n?", "", text)
+    value = value.replace("```", "")
+    value = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", value)
+    value = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", value)
+    value = re.sub(r"`([^`]+)`", r"\1", value)
+    value = "\n".join(strip_markdown_line_prefix(line) for line in value.split("\n"))
+    value = re.sub(r"(\*\*|__)(.*?)\1", r"\2", value)
+    value = re.sub(r"~~(.*?)~~", r"\1", value)
+    value = re.sub(r"(^|[^\w])\*([^*\n]+)\*", r"\1\2", value)
+    value = re.sub(r"(^|[^\w])_([^_\n]+)_", r"\1\2", value)
+    value = re.sub(r"^[|:\-\s]+$", "", value, flags=re.MULTILINE)
+    value = re.sub(r"\s*\|\s*", "，", value)
+    return re.sub(r"[*_`]+", "", value)
+
+
+def strip_markdown_line_prefix(line: str) -> str:
+    line = line.strip()
+    line = re.sub(r"^#{1,6}\s+", "", line)
+    line = re.sub(r"^>\s?", "", line)
+    line = re.sub(r"^[-*+]\s+", "", line)
+    return re.sub(r"^\d+[.)]\s+", "", line)
+
+
 def has_dialog_wake_word(text: str) -> bool:
     normalized = normalize_voice_command_text(text)
     return any(normalize_voice_command_text(word) in normalized for word in DIALOG_WAKE_WORDS)
@@ -582,6 +705,16 @@ def command_contains_speech(command: dict) -> bool:
             if isinstance(step, dict) and command_contains_speech(step):
                 return True
     return False
+
+
+def normalize_command_speech_payload(command_type: str, payload) -> None:
+    if command_type == "speak" and isinstance(payload, dict):
+        payload["text"] = normalize_speech_text_for_voice(str(payload.get("text") or ""))
+        return
+    if command_type == "sequence" and isinstance(payload, list):
+        for step in payload:
+            if isinstance(step, dict) and step.get("type") == "speak":
+                step["text"] = normalize_speech_text_for_voice(str(step.get("text") or ""))
 
 
 class DeviceCommandQueue:
@@ -1237,6 +1370,7 @@ class Handler(BaseHTTPRequestHandler):
                     step["expression"] = normalize_expression_name(step.get("expression") or step.get("face") or "calm")
                 elif isinstance(step, dict) and step.get("type") == "speak":
                     step.setdefault("pause_listener", True)
+        normalize_command_speech_payload(command_wire_type, payload)
         command = make_command(
             command_wire_type,
             payload,
@@ -1451,18 +1585,20 @@ class Handler(BaseHTTPRequestHandler):
     def _call_openclaw(self, device_id: str, event_type: str, details: dict) -> None:
         event_content = build_openclaw_event_content(device_id, event_type, details)
         url = self.server.openclaw_base_url.rstrip("/") + "/chat/completions"
+        session_key = build_openclaw_session_key(self.server.openclaw_session_prefix, device_id)
         payload = {
             "model": self.server.openclaw_model,
             "messages": [
                 {"role": "system", "content": XIAOPAI_OPENCLAW_SYSTEM_PROMPT},
                 {"role": "user", "content": event_content},
             ],
+            "user": session_key,
             "max_completion_tokens": self.server.openclaw_max_completion_tokens,
         }
         headers = {
             "Authorization": f"Bearer {self.server.openclaw_token}",
             "Content-Type": "application/json",
-            "x-openclaw-session-key": f"{self.server.openclaw_session_prefix}-{safe_device_id(device_id)}",
+            "x-openclaw-session-key": session_key,
         }
         if self.server.openclaw_backend_model:
             headers["x-openclaw-model"] = self.server.openclaw_backend_model
@@ -1484,7 +1620,7 @@ class Handler(BaseHTTPRequestHandler):
         self._log_info(f"OpenClaw response: HTTP {status}")
         self._log_debug(
             "OpenClaw response detail: "
-            f"device={device_id} event={event_type} status={status} "
+            f"device={device_id} event={event_type} session_key={session_key} status={status} "
             f"body={truncate_log_text(response_text)!r}"
         )
 
@@ -1754,7 +1890,7 @@ class Handler(BaseHTTPRequestHandler):
             return json.loads(resp.read().decode("utf-8"))
 
     def _handle_stream_speak(self, text: str):
-        text = text.strip()
+        text = normalize_speech_text_for_voice(text)
         if not text:
             self.send_error(HTTPStatus.BAD_REQUEST, "missing text")
             return

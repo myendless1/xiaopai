@@ -149,6 +149,22 @@ class RealtimeMappingTest(unittest.TestCase):
         self.assertTrue(is_realtime_wake_only_text("你好，小派。"))
         self.assertFalse(is_realtime_wake_only_text("小派，今天深圳天气怎么样"))
 
+    def test_realtime_hello_updates_registered_device_id(self):
+        manager = RealtimeManager(RealtimeConfig(), logger=lambda _msg: None)
+
+        class FakeWebSocket:
+            pass
+
+        session = RealtimeDeviceSession(device_id="default", websocket=FakeWebSocket(), session_id="sess1")
+        session.asr_bridge = types.SimpleNamespace(device_id="default")
+        manager._register_session(session)
+
+        manager._update_session_device_id(session, "44:1b f6/e4:83:8c")
+
+        self.assertEqual(session.device_id, "44:1b_f6_e4:83:8c")
+        self.assertEqual(session.asr_bridge.device_id, "44:1b_f6_e4:83:8c")
+        self.assertEqual(set(manager._sessions), {"44:1b_f6_e4:83:8c"})
+
     def test_realtime_sleep_text(self):
         self.assertTrue(has_realtime_sleep_word("小派，先休息吧"))
         self.assertTrue(has_realtime_sleep_word("不用了，拜拜"))

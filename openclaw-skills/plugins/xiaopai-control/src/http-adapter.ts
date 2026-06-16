@@ -155,8 +155,31 @@ function toStackChanPostBody(command: Exclude<XiaopaiCommand, { type: "stop" }>)
         }
       };
     case "sequence":
-      return { ...base, payload: command.steps.map(toStackChanSequenceStep) };
+      return { ...base, payload: toStackChanSequencePayload(command.steps) };
   }
+}
+
+function toStackChanSequencePayload(steps: XiaopaiSequenceStep[]): Record<string, unknown>[] {
+  const wireSteps = steps.map(toStackChanSequenceStep);
+  const result: Record<string, unknown>[] = [];
+  for (let index = 0; index < wireSteps.length; index += 1) {
+    const step = steps[index];
+    const nextStep = steps[index + 1];
+    const wireStep = wireSteps[index];
+    const nextWireStep = wireSteps[index + 1];
+    if (!step || !wireStep) continue;
+    if (step?.type === "action" && nextStep?.type === "face" && nextWireStep && !hasSpeakAfter(steps, index + 1)) {
+      // Device expression animations are cancelled by the next face step.
+      // Keep the animation visible by moving a non-calm final face before it,
+      // or dropping an immediate final calm reset.
+      if (nextStep.expression !== "calm") result.push(nextWireStep);
+      result.push(wireStep);
+      index += 1;
+      continue;
+    }
+    result.push(wireStep);
+  }
+  return result;
 }
 
 function toStackChanSequenceStep(step: XiaopaiSequenceStep): Record<string, unknown> {
@@ -175,6 +198,10 @@ function toStackChanSequenceStep(step: XiaopaiSequenceStep): Record<string, unkn
         ...(step.duration_ms === undefined ? {} : { duration_ms: step.duration_ms })
       };
   }
+}
+
+function hasSpeakAfter(steps: XiaopaiSequenceStep[], index: number): boolean {
+  return steps.slice(index + 1).some((step) => step.type === "speak");
 }
 
 function normalizeQueueResponse(command: XiaopaiCommand, body: unknown): XiaopaiCommandResult {

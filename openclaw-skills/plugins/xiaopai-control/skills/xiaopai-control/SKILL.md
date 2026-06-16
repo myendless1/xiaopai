@@ -92,7 +92,7 @@ When a stack-chan user message contains `schema: "openclaw.stackchan.event.v1"`,
 
 If the envelope event is `work_assistant_proactive_response` with `payload.schema: "openclaw.work_assistant.scheduler_response.v1"`, the work-assistant scheduler has already produced the canonical `StructuredResponse`. Do not call `workAssistant.handleEvent` again; render `payload.structured_response.speech` and supported presentation hints through `xiaopaiControl.execute`.
 
-For envelopes with `render.target: "xiaopai"`, the Xiaopai control plugin has a runtime fallback guard. You should still call `xiaopaiControl.execute` explicitly for planned robot output; the fallback is only a reliability layer. If the final assistant response contains user-facing text and the turn did not successfully queue a speech-capable `xiaopaiControl.execute` command, the runtime queues a validated fallback `sequence` with a `speak` step and a final `face: calm` step.
+For envelopes with `render.target: "xiaopai"`, the Xiaopai control plugin has a runtime fallback guard. You should still call `xiaopaiControl.execute` explicitly for planned robot output; the fallback is only a reliability layer. If the final assistant response contains user-facing text and the turn did not successfully queue a speech-capable `xiaopaiControl.execute` command, the runtime normalizes Markdown tables/formatting into speech text, then queues a validated fallback `sequence` with a `speak` step and a final `face: calm` step.
 
 Only successful `speak` commands, or `sequence` commands containing a non-empty `speak` step, count as rendered speech. Face, action, move, stop, health/list calls, rejected results, and failed results do not suppress fallback.
 

@@ -88,6 +88,55 @@ describe("XiaopaiHttpAdapter", () => {
     expect(calls[3]?.init.method).toBe("GET");
   });
 
+  it("keeps trailing sequence actions visible instead of immediately cancelling them", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const adapter = new XiaopaiHttpAdapter({
+      baseUrl: "http://stack.local",
+      timeoutMs: 1000,
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), init: init ?? {} });
+        return jsonResponse({
+          type: "queued",
+          device_id: "robot-1",
+          command: { cmd_id: `cmd_${calls.length}`, type: "sequence", interrupt: false }
+        });
+      }
+    });
+
+    await adapter.execute({
+      type: "sequence",
+      steps: [
+        { type: "speak", text: "hi" },
+        { type: "action", action: "nodding" },
+        { type: "face", expression: "happy_squint_soft" }
+      ]
+    });
+    await adapter.execute({
+      type: "sequence",
+      steps: [
+        { type: "speak", text: "hi" },
+        { type: "action", action: "wink" },
+        { type: "face", expression: "calm" }
+      ]
+    });
+
+    expect(JSON.parse(String(calls[0]?.init.body))).toMatchObject({
+      type: "sequence",
+      payload: [
+        { type: "speak", text: "hi" },
+        { type: "face", expression: "happy_squint_soft" },
+        { type: "face", expression: "nodding" }
+      ]
+    });
+    expect(JSON.parse(String(calls[1]?.init.body))).toMatchObject({
+      type: "sequence",
+      payload: [
+        { type: "speak", text: "hi" },
+        { type: "face", expression: "wink" }
+      ]
+    });
+  });
+
   it("normalizes HTTP, network, and malformed response failures", async () => {
     const httpFailure = new XiaopaiHttpAdapter({
       baseUrl: "http://stack.local",

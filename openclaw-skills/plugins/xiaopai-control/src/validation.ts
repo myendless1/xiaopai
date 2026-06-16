@@ -19,6 +19,7 @@ import type {
   XiaopaiValidationError
 } from "./contracts.js";
 import { rejectedCommandResult } from "./results.js";
+import { normalizeSpeechTextForVoice } from "./speech-text.js";
 
 const expressions = new Set<string>(XIAOPAI_EXPRESSIONS);
 const actions = new Set<string>(XIAOPAI_ACTIONS);
@@ -66,7 +67,10 @@ function validateSpeak(value: Record<string, unknown>, stepIndex: number | undef
   if (typeof text !== "string" || text.trim() === "") {
     return invalid("invalid_speech_text", "speak.text must be a non-empty string.", "text", stepIndex, text);
   }
-  const trimmed = text.trim();
+  const trimmed = normalizeSpeechTextForVoice(text);
+  if (trimmed === "") {
+    return invalid("invalid_speech_text", "speak.text must contain speakable text.", "text", stepIndex, text);
+  }
   if (trimmed.length > MAX_SPEECH_LENGTH) {
     return invalid("speech_text_too_long", `speak.text must be ${MAX_SPEECH_LENGTH} characters or fewer.`, "text", stepIndex);
   }

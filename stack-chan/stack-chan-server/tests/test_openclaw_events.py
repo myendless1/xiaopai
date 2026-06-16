@@ -10,6 +10,11 @@ import server  # noqa: E402
 
 
 class OpenClawEventContentTest(unittest.TestCase):
+    def test_openclaw_prompt_is_voice_first(self):
+        self.assertIn("输出默认面向语音播报", server.XIAOPAI_OPENCLAW_SYSTEM_PROMPT)
+        self.assertIn("不要使用 Markdown 表格", server.XIAOPAI_OPENCLAW_SYSTEM_PROMPT)
+        self.assertIn("消化成适合朗读的总结", server.XIAOPAI_OPENCLAW_SYSTEM_PROMPT)
+
     def test_speech_recognition_uses_recognized_text_as_content(self):
         content = server.build_openclaw_event_content(
             "44:1b:f6:e4:83:8c",
@@ -59,6 +64,32 @@ class CommandPayloadTest(unittest.TestCase):
 
         self.assertEqual(payload[0], {"type": "face", "expression": "calm"})
         self.assertEqual(payload[1], {"type": "speak", "text": "在的。", "pause_listener": True})
+
+    def test_speech_text_normalizes_inline_markdown_table(self):
+        text = (
+            "你今天（2026年6月16日 周二）有 **2 个日程**： "
+            "| 时间 | 内容 | |------|------| "
+            "| 10:00 - 11:00 | 汇报上周工作进展 | "
+            "| 17:00 - 18:00 | 跟老板开会 |"
+        )
+
+        self.assertEqual(
+            server.normalize_speech_text_for_voice(text),
+            "你今天（2026年6月16日 周二）有 2 个日程：10:00 - 11:00，汇报上周工作进展；17:00 - 18:00，跟老板开会。",
+        )
+
+    def test_sequence_speech_payload_is_normalized_before_queue(self):
+        payload = [
+            {
+                "type": "speak",
+                "text": "**2026-06-16 周二** 10:00 - 11:00 汇报上周工作进展",
+            },
+            {"type": "face", "expression": "calm"},
+        ]
+
+        server.normalize_command_speech_payload("sequence", payload)
+
+        self.assertEqual(payload[0]["text"], "2026-06-16 周二 10:00 - 11:00 汇报上周工作进展")
 
 
 class DeviceEventForwardingTest(unittest.TestCase):
