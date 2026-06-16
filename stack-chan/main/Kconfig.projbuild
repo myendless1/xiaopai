@@ -51,7 +51,7 @@ menu "Xiaopai settings"
 
     config STACKCHAN_VOICE_START_THRESHOLD
         int "Voice start threshold"
-        default 550
+        default 1400
 
     config STACKCHAN_VOICE_STOP_THRESHOLD
         int "Voice stop threshold"

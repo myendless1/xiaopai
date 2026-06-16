@@ -47,14 +47,19 @@ void run_camera_upload_app();
 void run_tracking_user_demo();
 static bool wifi_is_connected();
 static void show_expression(const char* expression);
+static void show_temporary_expression(const char* expression, uint32_t duration_ms);
 static void set_light_strip_listening();
 static void set_light_strip_speaking();
 static void set_light_strip_sleeping();
+static void set_light_strip_listening_bar(uint8_t level);
+static void update_listening_light_level(const int16_t* samples, size_t sample_count);
 static void start_speaking_animation();
 static void stop_speaking_animation();
+static void update_speaking_light_level(const int16_t* samples, size_t sample_count);
 static void apply_speaker_volume();
 static bool execute_speak_command(const char* text);
 static bool execute_speak_command_internal(const char* text, bool pause_voice_listener, const char* cache_name = nullptr);
+static bool enqueue_speak_command(const char* cmd_id, const char* text, const char* cache_name, bool pause_voice_listener);
 static void request_speak_preempt(const char* reason);
 static bool run_find_owner_command(int rounds, const char* reply, float gain_x, float gain_y, float stop_pixels,
                                    bool preserve_speech_playback, bool wait_for_speech);
@@ -162,6 +167,9 @@ static constexpr float kTrackingHomePitchDeg = 45.0f;
 static constexpr float kTrackingScanYawDeg = 25.0f;
 static constexpr float kTrackingScanPitchDeltaDeg = 20.0f;
 static constexpr int kFindOwnerMaxRounds = 3;
+static constexpr int kVisionUploadTimeoutMs = 6000;
+static constexpr int kCommandLongPollSeconds = 5;
+static constexpr int kCommandLongPollHttpTimeoutMs = (kCommandLongPollSeconds + 3) * 1000;
 static constexpr float kPi = 3.14159265358979323846f;
 static constexpr uart_port_t kServoUart = UART_NUM_1;
 static constexpr int kServoTxPin = 6;
@@ -179,12 +187,20 @@ static constexpr uint8_t kPy32RgbPin = 13;
 static constexpr uint8_t kPy32LedConfigReg = 0x24;
 static constexpr uint8_t kPy32LedRamStartReg = 0x30;
 static constexpr uint8_t kLightStripLedCount = 12;
+static constexpr uint8_t kLightStripSideLedCount = 6;
+static constexpr bool kLightStripReverseSecondSide = true;
 static constexpr uint8_t kLightStripListeningR = 0;
 static constexpr uint8_t kLightStripListeningG = 32;
 static constexpr uint8_t kLightStripListeningB = 0;
 static constexpr uint8_t kLightStripSpeakingR = 0;
 static constexpr uint8_t kLightStripSpeakingG = 0;
 static constexpr uint8_t kLightStripSpeakingB = 48;
+static constexpr uint32_t kListeningLightFrameMs = 60;
+static constexpr int kListeningLightSilenceLevel = 120;
+static constexpr int kListeningLightFullScaleLevel = 3600;
+static constexpr uint32_t kSpeakingLightFrameMs = 60;
+static constexpr int kSpeakingLightSilenceLevel = 180;
+static constexpr int kSpeakingLightFullScaleLevel = 5200;
 static constexpr uint32_t kPy32I2cFreq = 100000;
 static constexpr uint8_t kSi12tAddress = 0x68;
 static constexpr uint8_t kSi12tSensitivity1Reg = 0x02;
@@ -231,7 +247,9 @@ TaskHandle_t tracking_task_handle = nullptr;
 TaskHandle_t command_task_handle = nullptr;
 TaskHandle_t boot_task_handle = nullptr;
 TaskHandle_t speak_animation_task_handle = nullptr;
+TaskHandle_t speaking_light_task_handle = nullptr;
 TaskHandle_t expression_animation_task_handle = nullptr;
+TaskHandle_t temporary_expression_task_handle = nullptr;
 TaskHandle_t head_touch_task_handle = nullptr;
 TaskHandle_t head_touch_audio_task_handle = nullptr;
 TaskHandle_t speak_command_task_handle = nullptr;
@@ -248,13 +266,19 @@ volatile bool app1_stop_requested = false;
 volatile bool app2_stop_requested = false;
 volatile bool tracking_stop_requested = false;
 volatile bool voice_listener_paused = false;
+volatile bool voice_recording_active = false;
 volatile int voice_listener_pause_count = 0;
 volatile bool voice_status_screen_suppressed = false;
 volatile bool speech_playback_active = false;
 volatile bool realtime_tts_playback_active = false;
 volatile bool speech_expression_overridden = false;
 volatile bool speak_animation_running = false;
+volatile uint32_t listening_light_last_update_ms = 0;
+volatile bool speaking_light_running = false;
+volatile uint8_t speaking_light_level = 0;
+volatile uint32_t speaking_light_level_ms = 0;
 volatile bool expression_animation_running = false;
+volatile uint32_t temporary_expression_until_ms = 0;
 volatile bool speak_command_active = false;
 volatile uint32_t speech_output_finished_ms = 0;
 enum class LocalVoiceState : uint8_t {
@@ -350,6 +374,7 @@ struct ExpressionAnimation {
 };
 
 static constexpr const char* kDefaultExpression = "calm";
+static constexpr uint32_t kHeadTouchShyExpressionMs = 5000;
 static const ExpressionAsset kExpressionAssets[] = {
     {"calm", calm_face_png_start, calm_face_png_end, 320, 240},
     {"speak1", speak1_face_png_start, speak1_face_png_end, 320, 240},
@@ -1529,6 +1554,7 @@ static bool play_realtime_opus_frame(const uint8_t* data, size_t len)
     }
     memcpy(pcm.data(), out_frame.buffer, sample_count * sizeof(int16_t));
     pcm_buffer_index = (pcm_buffer_index + 1) % pcm_buffers.size();
+    update_speaking_light_level(pcm.data(), sample_count);
     if (!M5.Speaker.playRaw(pcm.data(), sample_count, kTtsStreamSampleRate, false, 1, 0, false)) {
         ESP_LOGE(TAG, "Realtime TTS playRaw failed");
         return false;
@@ -1698,6 +1724,22 @@ static bool send_mcp_response(esp_transport_handle_t ws, const cJSON* request_pa
     return sent;
 }
 
+static void wake_for_server_command(const char* command_type)
+{
+    const char* type = command_type != nullptr ? command_type : "";
+    if (strcmp(type, "sleep") == 0 || strcmp(type, "stop") == 0 ||
+        strcmp(type, "wake") == 0 || strcmp(type, "listen") == 0 || strcmp(type, "listening") == 0) {
+        return;
+    }
+    if (local_voice_state != LocalVoiceState::Idle) {
+        return;
+    }
+
+    local_voice_request_state(LocalVoiceState::Listening, "server command");
+    wake_find_owner_pending = false;
+    show_expression(kDefaultExpression);
+}
+
 static bool handle_mcp_message(esp_transport_handle_t ws, const cJSON* root)
 {
     const cJSON* payload = cJSON_GetObjectItemCaseSensitive(root, "payload");
@@ -1736,6 +1778,7 @@ static bool handle_mcp_message(esp_transport_handle_t ws, const cJSON* root)
     }
 
     ESP_LOGI(TAG, "MCP tool call: %s", tool_name.c_str());
+    wake_for_server_command(json_string_value(command, "type").c_str());
     bool ok = execute_command_object(command);
     cJSON_Delete(command);
     send_mcp_response(ws, payload, ok, ok ? "" : "command execution failed");
@@ -1751,6 +1794,7 @@ static bool handle_ws_command_message(const cJSON* root)
     }
     std::string cmd_type = json_string_value(command, "type");
     ESP_LOGI(TAG, "WS command received: type=%s", cmd_type.c_str());
+    wake_for_server_command(cmd_type.c_str());
     execute_command_object(command);
     return true;
 }
@@ -3167,6 +3211,22 @@ static bool send_opus_frame(esp_transport_handle_t ws, void* encoder, const int1
     return true;
 }
 
+class VoiceRecordingGuard {
+public:
+    VoiceRecordingGuard()
+    {
+        voice_recording_active = true;
+    }
+
+    ~VoiceRecordingGuard()
+    {
+        voice_recording_active = false;
+    }
+
+    VoiceRecordingGuard(const VoiceRecordingGuard&) = delete;
+    VoiceRecordingGuard& operator=(const VoiceRecordingGuard&) = delete;
+};
+
 static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder, int encoder_frame_samples,
                                        int encoder_outbuf_size, const int16_t* first_samples, int first_count)
 {
@@ -3177,7 +3237,9 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
         return false;
     }
 
+    VoiceRecordingGuard recording_guard;
     set_app1_status("Recording", "Voice threshold hit", "Sending Opus to Xiaozhi", "");
+    update_listening_light_level(first_samples, first_count);
     std::vector<int16_t> frame(encoder_frame_samples);
     int frame_pos = 0;
     int elapsed_ms = 0;
@@ -3222,6 +3284,7 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
         }
 
         int32_t level = average_abs_level(chunk.data(), chunk.size());
+        update_listening_light_level(chunk.data(), chunk.size());
         stop_smooth_level = (stop_smooth_level * 3 + level) / 4;
         silence_ms = stop_smooth_level < kVoiceStopThreshold ? silence_ms + (kVoiceProbeSamples * 1000 / kAudioSampleRate) : 0;
         if (!append_and_send(chunk.data(), chunk.size())) {
@@ -3247,6 +3310,8 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     std::string stop = make_listen_message("stop");
     ESP_LOGI(TAG, "WS send listen stop: %s", stop.c_str());
     send_ws_text(ws, stop, "listen stop");
+
+    set_light_strip_listening();
 
     if (interrupted) {
         ESP_LOGI(TAG, "Recognition interrupted by local state: paused=%d state=%s gen=%u->%u",
@@ -3436,6 +3501,7 @@ static void append_capped(std::vector<int16_t>& dst, const int16_t* samples, siz
 
 static std::vector<int16_t> record_pcm_after_trigger(const std::vector<int16_t>& pre_roll, int32_t trigger_level)
 {
+    VoiceRecordingGuard recording_guard;
     const size_t max_samples = static_cast<size_t>(kRecordSampleRate) * kRecordMaxMs / 1000;
     std::vector<int16_t> pcm;
     pcm.reserve(max_samples + pre_roll.size() + kVoiceProbeSamples);
@@ -3455,6 +3521,7 @@ static std::vector<int16_t> record_pcm_after_trigger(const std::vector<int16_t>&
         }
 
         int32_t level = average_abs_level(chunk.data(), chunk.size());
+        update_listening_light_level(chunk.data(), chunk.size());
         smooth_level = (smooth_level * 3 + level) / 4;
         silence_ms = smooth_level < kVoiceStopThreshold ? silence_ms + kRecordChunkMs : 0;
         pcm.insert(pcm.end(), chunk.begin(), chunk.end());
@@ -3478,6 +3545,7 @@ static std::vector<int16_t> record_pcm_after_trigger(const std::vector<int16_t>&
 
     ESP_LOGI(TAG, "Recorded PCM samples=%u duration=%ums", static_cast<unsigned>(pcm.size()),
              static_cast<unsigned>(pcm.size() * 1000 / kRecordSampleRate));
+    set_light_strip_listening();
     return pcm;
 }
 
@@ -3949,6 +4017,41 @@ struct FaceTarget {
     float area = 0.0f;
 };
 
+struct CapturedFrame {
+    std::vector<uint8_t> data;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    pixformat_t format = PIXFORMAT_RGB565;
+};
+
+static bool capture_frame_copy(const char* context, CapturedFrame* captured)
+{
+    if (captured == nullptr) {
+        return false;
+    }
+    captured->data.clear();
+
+    VoiceListenerPauseGuard voice_pause("camera capture");
+    if (!init_camera_once()) {
+        return false;
+    }
+
+    camera_fb_t* frame = get_fresh_camera_frame(context);
+    if (frame == nullptr) {
+        ESP_LOGE(TAG, "esp_camera_fb_get failed");
+        release_camera_driver();
+        return false;
+    }
+
+    captured->width = frame->width;
+    captured->height = frame->height;
+    captured->format = frame->format;
+    captured->data.assign(frame->buf, frame->buf + frame->len);
+    esp_camera_fb_return(frame);
+    release_camera_driver();
+    return true;
+}
+
 struct ScanPose {
     const char* label;
     float yaw;
@@ -4133,13 +4236,66 @@ static bool py32_write_light_strip_color_locked(uint8_t r, uint8_t g, uint8_t b)
         data[i * 2 + 1] = high;
     }
 
+    if (!M5.In_I2C.writeRegister8(kPy32Address, kPy32LedConfigReg, kLightStripLedCount & 0x3f, kPy32I2cFreq)) {
+        return false;
+    }
     if (!M5.In_I2C.writeRegister(kPy32Address, kPy32LedRamStartReg, data, sizeof(data), kPy32I2cFreq)) {
         return false;
     }
 
-    uint8_t config = M5.In_I2C.readRegister8(kPy32Address, kPy32LedConfigReg, kPy32I2cFreq);
-    config = (config & 0xc0) | (kLightStripLedCount & 0x3f) | (1 << 6);
-    return M5.In_I2C.writeRegister8(kPy32Address, kPy32LedConfigReg, config, kPy32I2cFreq);
+    return M5.In_I2C.writeRegister8(kPy32Address, kPy32LedConfigReg,
+                                    (kLightStripLedCount & 0x3f) | (1 << 6), kPy32I2cFreq);
+}
+
+static void set_rgb565_bytes(uint8_t* data, uint8_t index, uint8_t r, uint8_t g, uint8_t b)
+{
+    uint16_t color565 = rgb888_to_rgb565(r, g, b);
+    data[index * 2] = static_cast<uint8_t>(color565 & 0xff);
+    data[index * 2 + 1] = static_cast<uint8_t>((color565 >> 8) & 0xff);
+}
+
+static uint8_t light_strip_index_for_side_pos(uint8_t side, uint8_t pos)
+{
+    uint8_t physical_pos = pos;
+    if (kLightStripReverseSecondSide && side == 1) {
+        physical_pos = static_cast<uint8_t>(kLightStripSideLedCount - 1 - pos);
+    }
+    return static_cast<uint8_t>(side * kLightStripSideLedCount + physical_pos);
+}
+
+static bool py32_write_light_strip_bar_locked(uint8_t level, uint8_t base_r, uint8_t base_g, uint8_t base_b,
+                                              uint8_t peak_r, uint8_t peak_g, uint8_t peak_b)
+{
+    uint8_t active = std::min<uint8_t>(level, kLightStripSideLedCount);
+    uint8_t data[kLightStripLedCount * 2] = {};
+
+    for (uint8_t side = 0; side < 2; ++side) {
+        for (uint8_t pos = 0; pos < kLightStripSideLedCount; ++pos) {
+            if (pos >= active) {
+                continue;
+            }
+            uint8_t index = light_strip_index_for_side_pos(side, pos);
+            uint8_t ramp = static_cast<uint8_t>(std::min<int>(255, 70 + pos * 18 + active * 8));
+            uint8_t r = static_cast<uint8_t>(std::min<int>(255, base_r * ramp / 100));
+            uint8_t g = static_cast<uint8_t>(std::min<int>(255, base_g * ramp / 100));
+            uint8_t b = static_cast<uint8_t>(std::min<int>(255, base_b * ramp / 100));
+            if (active >= kLightStripSideLedCount && pos == kLightStripSideLedCount - 1) {
+                r = peak_r;
+                g = peak_g;
+                b = peak_b;
+            }
+            set_rgb565_bytes(data, index, r, g, b);
+        }
+    }
+
+    if (!M5.In_I2C.writeRegister8(kPy32Address, kPy32LedConfigReg, kLightStripLedCount & 0x3f, kPy32I2cFreq)) {
+        return false;
+    }
+    if (!M5.In_I2C.writeRegister(kPy32Address, kPy32LedRamStartReg, data, sizeof(data), kPy32I2cFreq)) {
+        return false;
+    }
+    return M5.In_I2C.writeRegister8(kPy32Address, kPy32LedConfigReg,
+                                    (kLightStripLedCount & 0x3f) | (1 << 6), kPy32I2cFreq);
 }
 
 static bool ensure_light_strip_ready_locked()
@@ -4163,6 +4319,7 @@ static bool ensure_light_strip_ready_locked()
     py32_write_bit(0x09, 0x0a, kPy32RgbPin, true);   // pull-up on
     py32_write_bit(0x13, 0x14, kPy32RgbPin, false);  // push-pull
     M5.In_I2C.writeRegister8(kPy32Address, kPy32LedConfigReg, kLightStripLedCount & 0x3f, kPy32I2cFreq);
+    vTaskDelay(pdMS_TO_TICKS(200));
     py32_write_light_strip_color_locked(0, 0, 0);
     vTaskDelay(pdMS_TO_TICKS(50));
     py32_write_light_strip_color_locked(0, 0, 0);
@@ -4192,7 +4349,8 @@ static void set_light_strip_color(uint8_t r, uint8_t g, uint8_t b, int state)
 static void set_light_strip_listening()
 {
     light_strip_listening_after_speech = true;
-    set_light_strip_color(kLightStripListeningR, kLightStripListeningG, kLightStripListeningB, 1);
+    listening_light_last_update_ms = 0;
+    set_light_strip_listening_bar(1);
 }
 
 static void set_light_strip_speaking()
@@ -4200,9 +4358,40 @@ static void set_light_strip_speaking()
     set_light_strip_color(kLightStripSpeakingR, kLightStripSpeakingG, kLightStripSpeakingB, 2);
 }
 
+static void set_light_strip_speaking_bar(uint8_t level)
+{
+    if (camera_owns_internal_i2c) {
+        return;
+    }
+
+    M5Lock lock;
+    if (!ensure_light_strip_ready_locked()) {
+        return;
+    }
+    if (py32_write_light_strip_bar_locked(level, 0, 0, 48, 28, 38, 90)) {
+        light_strip_state = 20 + std::min<uint8_t>(level, kLightStripSideLedCount);
+    }
+}
+
+static void set_light_strip_listening_bar(uint8_t level)
+{
+    if (camera_owns_internal_i2c) {
+        return;
+    }
+
+    M5Lock lock;
+    if (!ensure_light_strip_ready_locked()) {
+        return;
+    }
+    if (py32_write_light_strip_bar_locked(level, 0, 36, 0, 22, 90, 28)) {
+        light_strip_state = 30 + std::min<uint8_t>(level, kLightStripSideLedCount);
+    }
+}
+
 static void set_light_strip_sleeping()
 {
     light_strip_listening_after_speech = false;
+    listening_light_last_update_ms = 0;
     set_light_strip_color(0, 0, 0, 3);
 }
 
@@ -4337,23 +4526,24 @@ static bool parse_face_target(const std::string& response, FaceTarget* target)
     return true;
 }
 
-static bool upload_tracking_frame(const camera_fb_t* frame, FaceTarget* target)
+static bool upload_tracking_frame(const uint8_t* frame_data, size_t frame_len, uint32_t frame_width,
+                                  uint32_t frame_height, pixformat_t frame_format, FaceTarget* target)
 {
-    if (frame == nullptr || frame->buf == nullptr || frame->len == 0) {
+    if (frame_data == nullptr || frame_len == 0) {
         set_tracking_status("Capture Fail", "Empty camera frame", "", "", false, false);
         return false;
     }
 
     std::string upload_url = make_server_url("/upload-image");
     ESP_LOGI(TAG, "Uploading camera frame to %s, len=%u size=%ux%u format=%d", upload_url.c_str(),
-             static_cast<unsigned>(frame->len), static_cast<unsigned>(frame->width), static_cast<unsigned>(frame->height),
-             static_cast<int>(frame->format));
+             static_cast<unsigned>(frame_len), static_cast<unsigned>(frame_width), static_cast<unsigned>(frame_height),
+             static_cast<int>(frame_format));
     set_tracking_status("Uploading", upload_url.c_str(), "Sending RGB565 frame", "");
 
     esp_http_client_config_t config = {};
     config.url = upload_url.c_str();
     config.method = HTTP_METHOD_POST;
-    config.timeout_ms = 20000;
+    config.timeout_ms = kVisionUploadTimeoutMs;
     config.buffer_size = kHttpBufferSize;
     config.buffer_size_tx = kHttpBufferSize;
 
@@ -4365,8 +4555,8 @@ static bool upload_tracking_frame(const camera_fb_t* frame, FaceTarget* target)
 
     char width[16];
     char height[16];
-    snprintf(width, sizeof(width), "%u", static_cast<unsigned>(frame->width));
-    snprintf(height, sizeof(height), "%u", static_cast<unsigned>(frame->height));
+    snprintf(width, sizeof(width), "%u", static_cast<unsigned>(frame_width));
+    snprintf(height, sizeof(height), "%u", static_cast<unsigned>(frame_height));
     esp_http_client_set_header(client, "Content-Type", "image/rgb565");
     esp_http_client_set_header(client, "X-Image-Format", "rgb565");
     esp_http_client_set_header(client, "X-Image-Width", width);
@@ -4375,7 +4565,7 @@ static bool upload_tracking_frame(const camera_fb_t* frame, FaceTarget* target)
     esp_http_client_set_header(client, "X-Client-Id", client_id);
     esp_http_client_set_header(client, "X-Visual-Tracking", "false");
 
-    esp_err_t err = esp_http_client_open(client, frame->len);
+    esp_err_t err = esp_http_client_open(client, frame_len);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Camera upload open failed: %s", esp_err_to_name(err));
         set_tracking_status("Upload Fail", esp_err_to_name(err), "Check server URL/IP", "", false, false);
@@ -4384,9 +4574,9 @@ static bool upload_tracking_frame(const camera_fb_t* frame, FaceTarget* target)
     }
 
     size_t offset = 0;
-    while (offset < frame->len && !tracking_stop_requested) {
-        size_t chunk = std::min<size_t>(kHttpBufferSize, frame->len - offset);
-        int written = esp_http_client_write(client, reinterpret_cast<const char*>(frame->buf + offset), chunk);
+    while (offset < frame_len && !tracking_stop_requested) {
+        size_t chunk = std::min<size_t>(kHttpBufferSize, frame_len - offset);
+        int written = esp_http_client_write(client, reinterpret_cast<const char*>(frame_data + offset), chunk);
         if (written <= 0) {
             ESP_LOGE(TAG, "Camera upload write failed at offset=%u", static_cast<unsigned>(offset));
             set_tracking_status("Upload Fail", "HTTP write failed", "See USB serial log", "", false, false);
@@ -4439,23 +4629,24 @@ static bool upload_tracking_frame(const camera_fb_t* frame, FaceTarget* target)
     return false;
 }
 
-static bool upload_camera_frame_only(const camera_fb_t* frame)
+static bool upload_camera_frame_only(const uint8_t* frame_data, size_t frame_len, uint32_t frame_width,
+                                     uint32_t frame_height, pixformat_t frame_format)
 {
-    if (frame == nullptr || frame->buf == nullptr || frame->len == 0) {
+    if (frame_data == nullptr || frame_len == 0) {
         set_camera_status("Capture Fail", "Empty camera frame", "", "", false, false);
         return false;
     }
 
     std::string upload_url = make_server_url("/upload-image");
     ESP_LOGI(TAG, "Uploading one camera frame to %s, len=%u size=%ux%u format=%d", upload_url.c_str(),
-             static_cast<unsigned>(frame->len), static_cast<unsigned>(frame->width),
-             static_cast<unsigned>(frame->height), static_cast<int>(frame->format));
+             static_cast<unsigned>(frame_len), static_cast<unsigned>(frame_width),
+             static_cast<unsigned>(frame_height), static_cast<int>(frame_format));
     set_camera_status("Uploading", upload_url.c_str(), "Sending RGB565 frame", "");
 
     esp_http_client_config_t config = {};
     config.url = upload_url.c_str();
     config.method = HTTP_METHOD_POST;
-    config.timeout_ms = 20000;
+    config.timeout_ms = kVisionUploadTimeoutMs;
     config.buffer_size = kHttpBufferSize;
     config.buffer_size_tx = kHttpBufferSize;
 
@@ -4467,8 +4658,8 @@ static bool upload_camera_frame_only(const camera_fb_t* frame)
 
     char width[16];
     char height[16];
-    snprintf(width, sizeof(width), "%u", static_cast<unsigned>(frame->width));
-    snprintf(height, sizeof(height), "%u", static_cast<unsigned>(frame->height));
+    snprintf(width, sizeof(width), "%u", static_cast<unsigned>(frame_width));
+    snprintf(height, sizeof(height), "%u", static_cast<unsigned>(frame_height));
     esp_http_client_set_header(client, "Content-Type", "image/rgb565");
     esp_http_client_set_header(client, "X-Image-Format", "rgb565");
     esp_http_client_set_header(client, "X-Image-Width", width);
@@ -4476,7 +4667,7 @@ static bool upload_camera_frame_only(const camera_fb_t* frame)
     esp_http_client_set_header(client, "X-Device-Id", mac_address().c_str());
     esp_http_client_set_header(client, "X-Client-Id", client_id);
 
-    esp_err_t err = esp_http_client_open(client, frame->len);
+    esp_err_t err = esp_http_client_open(client, frame_len);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Single camera upload open failed: %s", esp_err_to_name(err));
         set_camera_status("Upload Fail", esp_err_to_name(err), "Check server URL/IP", "", false, false);
@@ -4485,9 +4676,9 @@ static bool upload_camera_frame_only(const camera_fb_t* frame)
     }
 
     size_t offset = 0;
-    while (offset < frame->len) {
-        size_t chunk = std::min<size_t>(kHttpBufferSize, frame->len - offset);
-        int written = esp_http_client_write(client, reinterpret_cast<const char*>(frame->buf + offset), chunk);
+    while (offset < frame_len) {
+        size_t chunk = std::min<size_t>(kHttpBufferSize, frame_len - offset);
+        int written = esp_http_client_write(client, reinterpret_cast<const char*>(frame_data + offset), chunk);
         if (written <= 0) {
             ESP_LOGE(TAG, "Single camera upload write failed at offset=%u", static_cast<unsigned>(offset));
             set_camera_status("Upload Fail", "HTTP write failed", "See USB serial log", "", false, false);
@@ -4520,7 +4711,7 @@ static bool upload_camera_frame_only(const camera_fb_t* frame)
 
     if (status >= 200 && status < 300) {
         char line1[64];
-        snprintf(line1, sizeof(line1), "uploaded %u bytes", static_cast<unsigned>(frame->len));
+        snprintf(line1, sizeof(line1), "uploaded %u bytes", static_cast<unsigned>(frame_len));
         set_camera_status("Done", line1, "Saved on local server", "", false, true);
         return true;
     }
@@ -4549,23 +4740,16 @@ static bool capture_face_at_pose(const ScanPose& pose, int step_index, int step_
     }
     vTaskDelay(pdMS_TO_TICKS(950));
 
-    if (!init_camera_once()) {
-        return false;
-    }
-
     set_tracking_status("Capturing", pose.label, "Detecting face via server", "");
-    camera_fb_t* frame = get_fresh_camera_frame("scan");
-    if (frame == nullptr) {
+    CapturedFrame frame;
+    if (!capture_frame_copy("scan", &frame)) {
         set_tracking_status("Capture Fail", "esp_camera_fb_get failed", "", "", false, false);
-        ESP_LOGE(TAG, "esp_camera_fb_get failed");
-        release_camera_driver();
         return false;
     }
 
     FaceTarget target;
-    bool detected = upload_tracking_frame(frame, &target);
-    esp_camera_fb_return(frame);
-    release_camera_driver();
+    bool detected = upload_tracking_frame(frame.data.data(), frame.data.size(), frame.width, frame.height,
+                                          frame.format, &target);
 
     if (detected) {
         float dx = target.center_x - kTrackingCx;
@@ -4599,23 +4783,14 @@ static bool capture_face_at_current_pose(const char* stage, const char* line1, c
     if (target == nullptr) {
         return false;
     }
-    if (!init_camera_once()) {
-        return false;
-    }
-
     set_tracking_status(stage, line1, line2, "");
-    camera_fb_t* frame = get_fresh_camera_frame("find_owner");
-    if (frame == nullptr) {
+    CapturedFrame frame;
+    if (!capture_frame_copy("find_owner", &frame)) {
         set_tracking_status("Capture Fail", "esp_camera_fb_get failed", "", "", false, false);
-        ESP_LOGE(TAG, "esp_camera_fb_get failed");
-        release_camera_driver();
         return false;
     }
 
-    bool detected = upload_tracking_frame(frame, target);
-    esp_camera_fb_return(frame);
-    release_camera_driver();
-    return detected;
+    return upload_tracking_frame(frame.data.data(), frame.data.size(), frame.width, frame.height, frame.format, target);
 }
 
 static bool refine_head_toward_face(const FaceTarget& target, uint16_t duration_ms, float gain_x, float gain_y)
@@ -4657,7 +4832,6 @@ static bool run_find_owner_command(int rounds, const char* reply, float gain_x =
         ESP_LOGI(TAG, "Find owner waited for speech: %dms", waited_ms);
     }
 
-    VoiceListenerPauseGuard voice_pause("find owner");
     if (preserve_speech_playback) {
         ESP_LOGI(TAG, "Find owner preserving speech playback");
     } else {
@@ -4719,27 +4893,18 @@ void run_camera_upload_app()
         return;
     }
 
-    VoiceListenerPauseGuard voice_pause("camera upload");
     M5.Speaker.stop();
     M5.Speaker.end();
 
     set_camera_status("Camera", "Initializing camera", "Taking one photo");
-    if (!init_camera_once()) {
-        return;
-    }
-
     set_camera_status("Capturing", "Taking photo", "Uploading follows");
-    camera_fb_t* frame = get_fresh_camera_frame("capture_image");
-    if (frame == nullptr) {
+    CapturedFrame frame;
+    if (!capture_frame_copy("capture_image", &frame)) {
         set_camera_status("Capture Fail", "esp_camera_fb_get failed", "", "", false, false);
-        ESP_LOGE(TAG, "esp_camera_fb_get failed");
-        release_camera_driver();
         return;
     }
 
-    upload_camera_frame_only(frame);
-    esp_camera_fb_return(frame);
-    release_camera_driver();
+    upload_camera_frame_only(frame.data.data(), frame.data.size(), frame.width, frame.height, frame.format);
 }
 
 void run_tracking_user_demo()
@@ -4752,7 +4917,6 @@ void run_tracking_user_demo()
         return;
     }
 
-    VoiceListenerPauseGuard voice_pause("tracking demo");
     M5.Speaker.stop();
     M5.Speaker.end();
 
@@ -4920,6 +5084,7 @@ static bool play_stream_pcm_chunk(const int16_t* samples, size_t sample_count)
     if (sample_count == 0 || app2_stop_requested) {
         return true;
     }
+    update_speaking_light_level(samples, sample_count);
     if (!M5.Speaker.playRaw(samples, sample_count, kTtsStreamSampleRate, false, 1, 0, false)) {
         set_tts_status("Play Fail", "M5.Speaker.playRaw failed", "", "", false, false);
         return false;
@@ -5144,7 +5309,10 @@ void run_stream_tts_demo()
         return;
     }
     apply_speaker_volume();
+    app2_stop_requested = false;
+    start_speaking_animation();
     stream_tts_pcm();
+    stop_speaking_animation();
 }
 
 static bool http_get_string(const std::string& url, std::string* response, int timeout_ms)
@@ -5326,20 +5494,179 @@ static void start_expression_animation(const ExpressionAnimation* animation)
     }, "expr_anim", 4 * 1024, const_cast<ExpressionAnimation*>(animation), 2, &expression_animation_task_handle, 0);
 }
 
-static void show_expression(const char* expression)
+static void notify_temporary_expression_task()
+{
+    TaskHandle_t task = temporary_expression_task_handle;
+    if (task != nullptr) {
+        xTaskNotifyGive(task);
+    }
+}
+
+static void show_expression_internal(const char* expression, bool notify_temporary_task)
 {
     const ExpressionAnimation* animation = find_expression_animation(expression);
     if (animation != nullptr) {
         start_expression_animation(animation);
+        if (notify_temporary_task) {
+            notify_temporary_expression_task();
+        }
         return;
     }
     stop_expression_animation();
     render_expression_frame(expression);
+    if (notify_temporary_task) {
+        notify_temporary_expression_task();
+    }
+}
+
+static void show_expression(const char* expression)
+{
+    show_expression_internal(expression, true);
+}
+
+static void show_temporary_expression(const char* expression, uint32_t duration_ms)
+{
+    const ExpressionAsset* expected_asset = find_expression_asset(expression);
+    if (expected_asset == nullptr) {
+        return;
+    }
+
+    temporary_expression_until_ms = static_cast<uint32_t>(M5.millis() + duration_ms);
+    show_expression_internal(expression, false);
+
+    if (temporary_expression_task_handle != nullptr) {
+        return;
+    }
+
+    xTaskCreatePinnedToCore([](void* arg) {
+        const auto* expected_asset = static_cast<const ExpressionAsset*>(arg);
+        while (true) {
+            if (current_expression_asset != expected_asset ||
+                current_expression_animation != nullptr ||
+                speak_animation_running) {
+                break;
+            }
+
+            uint32_t now = M5.millis();
+            uint32_t until = temporary_expression_until_ms;
+            int32_t remaining_ms = static_cast<int32_t>(until - now);
+            if (remaining_ms > 0) {
+                ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(std::min<int32_t>(remaining_ms, 250)));
+                continue;
+            }
+
+            if (until == temporary_expression_until_ms &&
+                current_expression_asset == expected_asset &&
+                current_expression_animation == nullptr &&
+                !speak_animation_running) {
+                show_expression_internal(kDefaultExpression, false);
+            }
+
+            break;
+        }
+        temporary_expression_task_handle = nullptr;
+        temporary_expression_until_ms = 0;
+        vTaskDelete(nullptr);
+    }, "temp_expr", 4 * 1024, const_cast<ExpressionAsset*>(expected_asset), 2,
+       &temporary_expression_task_handle, 0);
+}
+
+static uint8_t light_bar_level_from_abs(int32_t level, int silence_level, int full_scale_level)
+{
+    if (level <= silence_level) {
+        return 1;
+    }
+    int32_t scaled = (level - silence_level) * kLightStripSideLedCount /
+                     std::max(1, full_scale_level - silence_level);
+    return static_cast<uint8_t>(std::max<int32_t>(1, std::min<int32_t>(kLightStripSideLedCount, scaled + 1)));
+}
+
+static uint8_t listening_light_level_from_pcm(const int16_t* samples, size_t sample_count)
+{
+    if (samples == nullptr || sample_count == 0) {
+        return 1;
+    }
+    int32_t level = average_abs_level(samples, sample_count);
+    return light_bar_level_from_abs(level, kListeningLightSilenceLevel, kListeningLightFullScaleLevel);
+}
+
+static void update_listening_light_level(const int16_t* samples, size_t sample_count)
+{
+    uint32_t now = M5.millis();
+    if (listening_light_last_update_ms != 0 &&
+        static_cast<uint32_t>(now - listening_light_last_update_ms) < kListeningLightFrameMs) {
+        return;
+    }
+    listening_light_last_update_ms = now;
+    set_light_strip_listening_bar(listening_light_level_from_pcm(samples, sample_count));
+}
+
+static uint8_t speaking_light_level_from_pcm(const int16_t* samples, size_t sample_count)
+{
+    if (samples == nullptr || sample_count == 0) {
+        return 1;
+    }
+
+    int32_t level = average_abs_level(samples, sample_count);
+    return light_bar_level_from_abs(level, kSpeakingLightSilenceLevel, kSpeakingLightFullScaleLevel);
+}
+
+static void update_speaking_light_level(const int16_t* samples, size_t sample_count)
+{
+    if (!speaking_light_running) {
+        return;
+    }
+    speaking_light_level = speaking_light_level_from_pcm(samples, sample_count);
+    speaking_light_level_ms = M5.millis();
+}
+
+static void start_speaking_light_animation()
+{
+    speaking_light_level = 2;
+    speaking_light_level_ms = 0;
+    speaking_light_running = true;
+    if (speaking_light_task_handle != nullptr) {
+        return;
+    }
+
+    xTaskCreatePinnedToCore([](void*) {
+        uint8_t displayed = 0;
+        uint8_t fallback_phase = 0;
+        while (speaking_light_running) {
+            uint32_t now = M5.millis();
+            uint8_t target = speaking_light_level;
+            if (speaking_light_level_ms == 0 || static_cast<uint32_t>(now - speaking_light_level_ms) > 220) {
+                static constexpr uint8_t fallback[] = {2, 3, 2, 4, 3, 2};
+                target = fallback[fallback_phase % (sizeof(fallback) / sizeof(fallback[0]))];
+                fallback_phase++;
+            }
+
+            if (displayed < target) {
+                displayed++;
+            } else if (displayed > target) {
+                displayed--;
+            }
+            set_light_strip_speaking_bar(displayed);
+            vTaskDelay(pdMS_TO_TICKS(kSpeakingLightFrameMs));
+        }
+        speaking_light_task_handle = nullptr;
+        vTaskDelete(nullptr);
+    }, "speak_light", 4 * 1024, nullptr, 2, &speaking_light_task_handle, 0);
+}
+
+static void stop_speaking_light_animation()
+{
+    speaking_light_running = false;
+    for (int i = 0; i < 30 && speaking_light_task_handle != nullptr; ++i) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    speaking_light_level = 0;
+    speaking_light_level_ms = 0;
 }
 
 static void start_speaking_animation()
 {
-    set_light_strip_speaking();
+    start_speaking_light_animation();
     speak_animation_running = true;
     if (speak_animation_task_handle != nullptr) {
         return;
@@ -5362,6 +5689,7 @@ static void stop_speaking_animation()
     for (int i = 0; i < 30 && speak_animation_task_handle != nullptr; ++i) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
+    stop_speaking_light_animation();
     if (speech_expression_overridden) {
         speech_expression_overridden = false;
         if (light_strip_listening_after_speech) {
@@ -5384,6 +5712,7 @@ static void request_speak_preempt(const char* reason)
     app2_stop_requested = true;
     M5.Speaker.stop();
     speak_animation_running = false;
+    speaking_light_running = false;
     if (realtime_tts_playback_active) {
         finish_realtime_tts_playback();
     }
@@ -5435,7 +5764,17 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
 
 static bool execute_speak_command(const char* text)
 {
+    if (voice_recording_active) {
+        return enqueue_speak_command("", text, "", true);
+    }
     return execute_speak_command_internal(text, true);
+}
+
+static void wait_for_voice_recording_to_finish()
+{
+    while (voice_recording_active && !app1_stop_requested) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
 }
 
 static bool enqueue_speak_command(const char* cmd_id, const char* text, const char* cache_name, bool pause_voice_listener)
@@ -5456,11 +5795,17 @@ static bool enqueue_speak_command(const char* cmd_id, const char* text, const ch
 static void run_speak_command_loop()
 {
     while (true) {
-        SpeakCommandItem item = {};
-        if (xQueueReceive(speak_command_queue, &item, portMAX_DELAY) != pdTRUE) {
+        if (voice_recording_active) {
+            vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
 
+        SpeakCommandItem item = {};
+        if (xQueueReceive(speak_command_queue, &item, pdMS_TO_TICKS(50)) != pdTRUE) {
+            continue;
+        }
+
+        wait_for_voice_recording_to_finish();
         app2_stop_requested = false;
         speak_command_active = true;
         bool ok = execute_speak_command_internal(item.text, item.pause_voice_listener, item.cache_name);
@@ -5625,7 +5970,7 @@ static void run_head_touch_audio_loop()
         HeadTouchEvent event = HeadTouchEvent::Press;
         if (xQueueReceive(head_touch_event_queue, &event, portMAX_DELAY) == pdTRUE) {
             ESP_LOGI(TAG, "Head touch local expression: %s -> shy", head_touch_event_name(event));
-            show_expression("shy");
+            show_temporary_expression("shy", kHeadTouchShyExpressionMs);
         }
     }
 }
@@ -5734,6 +6079,9 @@ static bool execute_command_object(const cJSON* command)
         std::string cache_name = json_string_value(payload, "cache_name");
         bool pause_listener = json_bool_value(payload, "pause_listener", false) ||
                               json_bool_value(payload, "pause_voice_listener", false);
+        if (voice_recording_active) {
+            return enqueue_speak_command("", text.c_str(), cache_name.c_str(), pause_listener);
+        }
         return execute_speak_command_internal(text.c_str(), pause_listener, cache_name.c_str());
     }
     if (type == "volume" || type == "sound") {
@@ -5868,6 +6216,7 @@ static bool handle_command_response(const std::string& response)
     std::string cmd_type = json_string_value(command, "type");
     ESP_LOGI(TAG, "Command received: id=%s type=%s", cmd_id.c_str(), cmd_type.c_str());
     send_command_ack(cmd_id.c_str(), "received");
+    wake_for_server_command(cmd_type.c_str());
 
     if (cmd_type == "speak") {
         const cJSON* payload = cJSON_GetObjectItemCaseSensitive(command, "payload");
@@ -5912,9 +6261,10 @@ static void run_command_http_loop()
         std::string url = make_server_url("/device/next-command");
         url += "?device_id=";
         url += url_encode(mac_address().c_str());
-        url += "&timeout=25";
+        url += "&timeout=";
+        url += std::to_string(kCommandLongPollSeconds);
         std::string response;
-        if (http_get_string(url, &response, 35000) && !response.empty()) {
+        if (http_get_string(url, &response, kCommandLongPollHttpTimeoutMs) && !response.empty()) {
             handle_command_response(response);
         } else {
             vTaskDelay(pdMS_TO_TICKS(1000));
