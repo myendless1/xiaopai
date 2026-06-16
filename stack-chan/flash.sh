@@ -3,8 +3,18 @@ set -euo pipefail
 
 PORT="${1:-/dev/ttyACM0}"
 MODE="${2:-}"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env.sh"
+. "$PROJECT_DIR/env.sh"
+cd "$PROJECT_DIR"
+
+if [ ! -f "$PROJECT_DIR/build/flash_args" ]; then
+  cat >&2 <<EOF
+Flash arguments were not found at build/flash_args.
+Run ./build_and_flash.sh first so the firmware is configured and built.
+EOF
+  exit 1
+fi
 
 (
   cd build

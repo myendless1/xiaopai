@@ -3,10 +3,11 @@ set -euo pipefail
 
 PORT="${1:-/dev/ttyACM0}"
 MODE="${2:-}"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env.sh"
+. "$PROJECT_DIR/env.sh"
+cd "$PROJECT_DIR"
 
-idf.py set-target esp32s3
 idf.py build
 
 (
