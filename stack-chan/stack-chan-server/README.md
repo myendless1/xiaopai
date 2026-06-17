@@ -193,6 +193,22 @@ Aliyun TTS endpoint. Text is split by sentence, synthesized with retries, and re
 - format: `pcm_s16le`
 - sample rate: default `16000`
 - channels: `1`
+- optional query/body params: `voice`, `volume`, `speech_rate`, `pitch_rate`, `sample_rate`
+
+For robot playback with a fixed debug voice, include the voice in the configured stream TTS URL, for example:
+
+```text
+CONFIG_STACKCHAN_STREAM_TTS_URL = http://<lan-ip>:8091/stream-speak?voice=zhimiao_emo
+```
+
+Or test the raw stream directly:
+
+```bash
+curl -G 'http://127.0.0.1:8091/stream-speak' \
+  --data-urlencode 'text=你好，我是知妙。' \
+  --data-urlencode 'voice=zhimiao_emo' \
+  -o /tmp/xiaopai-zhimiao.pcm
+```
 
 `GET /tts/voices`
 

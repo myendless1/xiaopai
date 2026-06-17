@@ -1284,7 +1284,7 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_event_audio(path.rsplit("/", 1)[-1])
             return
         if path == "/stream-speak":
-            self._handle_stream_speak(query.get("text", [""])[0])
+            self._handle_stream_speak(query)
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -1320,14 +1320,7 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_tts_debug(query, body)
             return
         if path == "/stream-speak":
-            text = query.get("text", [""])[0]
-            content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-            if not text and content_type == "application/json" and body:
-                payload = json.loads(body.decode("utf-8"))
-                text = payload.get("text") or payload.get("input") or ""
-            elif not text and body:
-                text = body.decode("utf-8")
-            self._handle_stream_speak(text)
+            self._handle_stream_speak(query, body)
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -1978,7 +1971,7 @@ class Handler(BaseHTTPRequestHandler):
             }
         )
 
-    def _tts_debug_params(self, query: dict, body: bytes | None = None) -> dict:
+    def _tts_request_params(self, query: dict, body: bytes | None = None) -> dict:
         params: dict = {}
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if body:
@@ -1998,7 +1991,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_tts_debug(self, query: dict, body: bytes | None = None) -> None:
         try:
-            params = self._tts_debug_params(query, body)
+            params = self._tts_request_params(query, body)
             options = tts_request_options_from_params(self.server, params)
         except (json.JSONDecodeError, ValueError) as exc:
             self._send_json({"type": "error", "message": str(exc)}, HTTPStatus.BAD_REQUEST)
@@ -2319,8 +2312,16 @@ class Handler(BaseHTTPRequestHandler):
         with urllib.request.urlopen(req, timeout=60) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
-    def _handle_stream_speak(self, text: str):
-        text = normalize_speech_text_for_voice(text)
+    def _handle_stream_speak(self, query: dict, body: bytes | None = None):
+        try:
+            params = self._tts_request_params(query, body)
+            params["format"] = "pcm"
+            options = tts_request_options_from_params(self.server, params)
+        except (json.JSONDecodeError, ValueError) as exc:
+            self._send_json({"type": "error", "message": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        text = normalize_speech_text_for_voice(str(params.get("text") or ""))
         if not text:
             self.send_error(HTTPStatus.BAD_REQUEST, "missing text")
             return
@@ -2332,21 +2333,28 @@ class Handler(BaseHTTPRequestHandler):
 
         stream_started = time.perf_counter()
         try:
-            self._log_info(f"TTS prepare first sentence: {parts[0]!r}")
-            first_audio = self._aliyun_tts_pcm_with_retries(parts[0])
+            self._log_info(f"TTS prepare first sentence: voice={options.voice} text={parts[0]!r}")
+            first_audio = self._aliyun_tts_pcm_with_retries(parts[0], options)
         except Exception as exc:
             self._log_error(f"TTS failed before stream started: {exc}")
             self._send_json({"type": "error", "message": str(exc)}, HTTPStatus.BAD_GATEWAY)
             return
 
         first_ready_ms = (time.perf_counter() - stream_started) * 1000
-        tail_silence = self._tts_tail_silence()
-        self._log_info(f"TTS stream: {len(parts)} sentence(s), first_ready_ms={first_ready_ms:.0f}, text={text!r}")
+        tail_silence = self._tts_tail_silence(options.sample_rate)
+        self._log_info(
+            f"TTS stream: voice={options.voice} sentences={len(parts)} "
+            f"first_ready_ms={first_ready_ms:.0f}, text={text!r}"
+        )
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("X-Audio-Format", "pcm_s16le")
-        self.send_header("X-Sample-Rate", str(self.server.sample_rate))
+        self.send_header("X-Sample-Rate", str(options.sample_rate))
         self.send_header("X-Channels", "1")
+        self.send_header("X-TTS-Voice", options.voice)
+        self.send_header("X-TTS-Volume", str(options.volume))
+        self.send_header("X-TTS-Speech-Rate", str(options.speech_rate))
+        self.send_header("X-TTS-Pitch-Rate", str(options.pitch_rate))
         if len(parts) == 1:
             self.send_header("Content-Length", str(len(first_audio) + len(tail_silence)))
         self.send_header("Connection", "close")
@@ -2372,7 +2380,7 @@ class Handler(BaseHTTPRequestHandler):
 
             workers = max(1, min(self.server.tts_prefetch_workers, len(remaining)))
             with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = [pool.submit(self._aliyun_tts_pcm_with_retries, part) for part in remaining]
+                futures = [pool.submit(self._aliyun_tts_pcm_with_retries, part, options) for part in remaining]
                 future_timeout = self.server.tts_request_timeout * (self.server.tts_retries + 1) + 5
                 for part, future in zip(remaining, futures):
                     wait_started = time.perf_counter()
