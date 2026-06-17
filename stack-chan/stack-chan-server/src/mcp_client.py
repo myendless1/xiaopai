@@ -26,6 +26,8 @@ ACTION_NAMES = {
     "speaking",
     "happy_dynamic",
     "happy_squint_dynamic",
+    "node_head",
+    "nod_head",
 }
 
 
@@ -37,8 +39,20 @@ EXPRESSION_ALIASES = {
     "愛心": "heart_action",
     "点头": "nod",
     "點頭": "nod",
+    "物理点头": "node_head",
+    "頭部點頭": "node_head",
+    "头部点头": "node_head",
+    "node_head": "node_head",
+    "nod_head": "nod_head",
     "开心": "happy_squint",
     "開心": "happy_squint",
+    "舒缓": "relaxed",
+    "舒缓轻松": "relaxed",
+    "放松": "relaxed",
+    "眨眼微笑": "smile_blink",
+    "微笑眨眼": "smile_blink",
+    "暗屏": "sleep_dark",
+    "休眠": "sleep_dark",
 }
 
 

@@ -125,6 +125,9 @@ function toStackChanPostBody(command) {
         case "face":
             return { ...base, payload: { expression: command.expression } };
         case "action":
+            if (isPhysicalAction(command.action)) {
+                return { ...base, type: command.action, payload: {} };
+            }
             return { ...base, payload: { expression: command.action } };
         case "move":
             return {
@@ -170,6 +173,8 @@ function toStackChanSequenceStep(step) {
         case "face":
             return { type: "face", expression: step.expression };
         case "action":
+            if (isPhysicalAction(step.action))
+                return { type: step.action };
             return { type: "face", expression: step.action };
         case "move":
             return {
@@ -179,6 +184,9 @@ function toStackChanSequenceStep(step) {
                 ...(step.duration_ms === undefined ? {} : { duration_ms: step.duration_ms })
             };
     }
+}
+function isPhysicalAction(action) {
+    return action === "node_head" || action === "nod_head";
 }
 function hasSpeakAfter(steps, index) {
     return steps.slice(index + 1).some((step) => step.type === "speak");

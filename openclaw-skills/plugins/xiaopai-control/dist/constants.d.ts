@@ -1,7 +1,7 @@
 export declare const DEFAULT_BASE_URL = "http://127.0.0.1:8091";
 export declare const DEFAULT_TIMEOUT_MS = 5000;
-export declare const XIAOPAI_EXPRESSIONS: readonly ["calm", "shy", "thinking", "speak1", "speak2", "blink_half", "blink_closed", "wink_half", "wink_closed", "heart_small", "heart", "nod_soft", "nod_down", "happy_squint", "happy_squint_soft"];
-export declare const XIAOPAI_ACTIONS: readonly ["blink", "wink", "heart_action", "hearting", "nod", "nodding", "speak", "speaking", "happy_dynamic", "happy_squint_dynamic"];
+export declare const XIAOPAI_EXPRESSIONS: readonly ["calm", "sleep_dark", "screen_off", "shy", "thinking", "relaxed", "smile_blink", "speak1", "speak2", "blink_half", "blink_closed", "wink_half", "wink_closed", "heart_small", "heart", "nod_soft", "nod_down", "happy_squint", "happy_squint_soft"];
+export declare const XIAOPAI_ACTIONS: readonly ["blink", "wink", "heart_action", "hearting", "nod", "nodding", "speak", "speaking", "happy_dynamic", "happy_squint_dynamic", "node_head", "nod_head"];
 export declare const XIAOPAI_MOVE_DIRECTIONS: readonly ["left", "right", "up", "down", "center"];
 export declare const MAX_SPEECH_LENGTH = 500;
 export declare const MIN_MOVE_DEGREE = 1;

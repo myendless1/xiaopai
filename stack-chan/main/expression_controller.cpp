@@ -9,6 +9,8 @@
 
 extern const uint8_t calm_face_png_start[] asm("_binary_calm_face_png_start");
 extern const uint8_t calm_face_png_end[] asm("_binary_calm_face_png_end");
+extern const uint8_t sleep_dark_face_png_start[] asm("_binary_sleep_dark_face_png_start");
+extern const uint8_t sleep_dark_face_png_end[] asm("_binary_sleep_dark_face_png_end");
 extern const uint8_t speak1_face_png_start[] asm("_binary_speak1_face_png_start");
 extern const uint8_t speak1_face_png_end[] asm("_binary_speak1_face_png_end");
 extern const uint8_t speak2_face_png_start[] asm("_binary_speak2_face_png_start");
@@ -17,6 +19,10 @@ extern const uint8_t shy_face_png_start[] asm("_binary_shy_face_png_start");
 extern const uint8_t shy_face_png_end[] asm("_binary_shy_face_png_end");
 extern const uint8_t thinking_face_png_start[] asm("_binary_thinking_face_png_start");
 extern const uint8_t thinking_face_png_end[] asm("_binary_thinking_face_png_end");
+extern const uint8_t relaxed_face_png_start[] asm("_binary_relaxed_face_png_start");
+extern const uint8_t relaxed_face_png_end[] asm("_binary_relaxed_face_png_end");
+extern const uint8_t smile_blink_face_png_start[] asm("_binary_smile_blink_face_png_start");
+extern const uint8_t smile_blink_face_png_end[] asm("_binary_smile_blink_face_png_end");
 extern const uint8_t blink_half_face_png_start[] asm("_binary_blink_half_face_png_start");
 extern const uint8_t blink_half_face_png_end[] asm("_binary_blink_half_face_png_end");
 extern const uint8_t blink_closed_face_png_start[] asm("_binary_blink_closed_face_png_start");
@@ -59,10 +65,13 @@ struct ExpressionAnimation {
 
 static const ExpressionAsset kExpressionAssets[] = {
     {"calm", calm_face_png_start, calm_face_png_end, 320, 240},
+    {"sleep_dark", sleep_dark_face_png_start, sleep_dark_face_png_end, 320, 240},
     {"speak1", speak1_face_png_start, speak1_face_png_end, 320, 240},
     {"speak2", speak2_face_png_start, speak2_face_png_end, 320, 240},
     {"shy", shy_face_png_start, shy_face_png_end, 320, 240},
     {"thinking", thinking_face_png_start, thinking_face_png_end, 320, 240},
+    {"relaxed", relaxed_face_png_start, relaxed_face_png_end, 320, 240},
+    {"smile_blink", smile_blink_face_png_start, smile_blink_face_png_end, 320, 240},
     {"blink_half", blink_half_face_png_start, blink_half_face_png_end, 320, 240},
     {"blink_closed", blink_closed_face_png_start, blink_closed_face_png_end, 320, 240},
     {"wink_half", wink_half_face_png_start, wink_half_face_png_end, 320, 240},
@@ -143,6 +152,8 @@ volatile bool speech_expression_overridden = false;
 bool expression_screen_visible = false;
 const ExpressionAsset* current_expression_asset = nullptr;
 const ExpressionAnimation* current_expression_animation = nullptr;
+volatile bool sleep_dark_visible = false;
+volatile uint32_t last_lit_expression_ms = 0;
 
 class DisplayLock {
 public:
@@ -168,7 +179,9 @@ private:
 static const ExpressionAsset* find_expression_asset(const char* expression)
 {
     const char* name = expression != nullptr && expression[0] != '\0' ? expression : kDefaultExpression;
-    if (strcmp(name, "listening") == 0 || strcmp(name, "default") == 0 || strcmp(name, "stopped") == 0) {
+    if (strcmp(name, "screen_off") == 0 || strcmp(name, "sleep") == 0 || strcmp(name, "stopped") == 0) {
+        name = "sleep_dark";
+    } else if (strcmp(name, "listening") == 0 || strcmp(name, "default") == 0) {
         name = kDefaultExpression;
     }
 
@@ -186,6 +199,13 @@ static const ExpressionAsset* find_expression_asset(const char* expression)
     return nullptr;
 }
 
+static bool is_sleep_dark_expression(const char* expression)
+{
+    const char* name = expression != nullptr && expression[0] != '\0' ? expression : "";
+    return strcmp(name, "sleep_dark") == 0 || strcmp(name, "screen_off") == 0 ||
+           strcmp(name, "sleep") == 0 || strcmp(name, "stopped") == 0;
+}
+
 static const ExpressionAnimation* find_expression_animation(const char* expression)
 {
     const char* name = expression != nullptr && expression[0] != '\0' ? expression : "";
@@ -199,6 +219,7 @@ static const ExpressionAnimation* find_expression_animation(const char* expressi
 
 static void render_expression_frame(const char* expression)
 {
+    const bool sleep_dark_requested = is_sleep_dark_expression(expression);
     {
         DisplayLock lock;
         auto& display = M5.Display;
@@ -212,11 +233,19 @@ static void render_expression_frame(const char* expression)
                 if (display.drawPng(asset->start, image_len, draw_x, draw_y)) {
                     expression_screen_visible = true;
                     current_expression_asset = asset;
+                    sleep_dark_visible = sleep_dark_requested;
+                    if (!sleep_dark_requested) {
+                        last_lit_expression_ms = M5.millis();
+                    }
                     return;
                 }
             } else if (current_expression_asset != asset) {
                 if (display.drawPng(asset->start, image_len, draw_x, draw_y)) {
                     current_expression_asset = asset;
+                    sleep_dark_visible = sleep_dark_requested;
+                    if (!sleep_dark_requested) {
+                        last_lit_expression_ms = M5.millis();
+                    }
                     return;
                 }
             } else {
@@ -225,6 +254,7 @@ static void render_expression_frame(const char* expression)
         }
         display.fillScreen(TFT_BLACK);
         mark_expression_screen_dirty();
+        sleep_dark_visible = true;
     }
 }
 
@@ -334,6 +364,21 @@ void expression_set_speech_overridden(bool overridden)
 void show_expression(const char* expression)
 {
     show_expression_internal(expression, true);
+}
+
+void show_idle_sleep_dark_if_due(uint32_t idle_ms)
+{
+    if (sleep_dark_visible || current_expression_animation != nullptr || speak_animation_running) {
+        return;
+    }
+    uint32_t last = last_lit_expression_ms;
+    if (last == 0) {
+        last_lit_expression_ms = M5.millis();
+        return;
+    }
+    if (static_cast<uint32_t>(M5.millis() - last) >= idle_ms) {
+        show_expression_internal("sleep_dark", false);
+    }
 }
 
 void show_temporary_expression(const char* expression, uint32_t duration_ms)

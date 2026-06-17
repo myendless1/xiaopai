@@ -121,12 +121,14 @@ if [ "$DEBUG" = "1" ] || [ "$DEBUG" = "true" ]; then
   echo "  ASR upload:   http://$HOST:$PORT/upload"
   echo "  TTS stream:   http://$HOST:$PORT/stream-speak?text=..."
   echo "  Image upload: http://$HOST:$PORT/upload-image"
+  echo "  OTA check:    http://$HOST:$PORT/xiaozhi/ota"
   echo "  health:       http://127.0.0.1:$PORT/health"
   echo
   echo "Firmware config examples:"
   echo "  CONFIG_STACKCHAN_RECORD_UPLOAD_URL = http://<this-computer-lan-ip>:$PORT/upload"
   echo "  CONFIG_STACKCHAN_STREAM_TTS_URL    = http://<this-computer-lan-ip>:$PORT/stream-speak"
   echo "  CONFIG_STACKCHAN_IMAGE_UPLOAD_URL  = http://<this-computer-lan-ip>:$PORT/upload-image"
+  echo "  CONFIG_OTA_URL                     = http://<this-computer-lan-ip>:$PORT/xiaozhi/ota"
 else
   DEBUG_ARGS=()
   echo "  debug:        disabled (run ./start.sh --debug for device IDs, task IDs, IPs, ports, and full API bodies)"

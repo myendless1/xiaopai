@@ -35,6 +35,7 @@ from server import (
     event_audio_cache_meta,
     has_dialog_sleep_word,
     sleep_reply_event_for_text,
+    tts_request_options_from_params,
 )
 from xiaozhi_protocol import build_hello, build_mcp_tools_call, build_stt
 
@@ -203,6 +204,44 @@ class RealtimeMappingTest(unittest.TestCase):
         second = event_audio_cache_meta(FakeServer, "拜拜")
         self.assertNotEqual(first, second)
         self.assertEqual(second["voice"], "xiaomei")
+
+    def test_tts_debug_options_override_server_defaults(self):
+        class FakeServer:
+            voice = "xiaoyun"
+            sample_rate = 16000
+            volume = 80
+            speech_rate = 0
+            pitch_rate = 0
+
+        options = tts_request_options_from_params(
+            FakeServer,
+            {
+                "voice": "xiaomei",
+                "sample_rate": "24000",
+                "volume": "60",
+                "speech_rate": "-80",
+                "pitch_rate": "20",
+                "format": "wav",
+            },
+        )
+
+        self.assertEqual(options.voice, "xiaomei")
+        self.assertEqual(options.sample_rate, 24000)
+        self.assertEqual(options.volume, 60)
+        self.assertEqual(options.speech_rate, -80)
+        self.assertEqual(options.pitch_rate, 20)
+        self.assertEqual(options.audio_format, "wav")
+
+    def test_tts_debug_options_validate_ranges(self):
+        class FakeServer:
+            voice = "xiaoyun"
+            sample_rate = 16000
+            volume = 80
+            speech_rate = 0
+            pitch_rate = 0
+
+        with self.assertRaisesRegex(ValueError, "speech_rate"):
+            tts_request_options_from_params(FakeServer, {"speech_rate": "999"})
 
     def test_openclaw_realtime_reply_is_not_spoken_twice(self):
         class FakeOpenClaw:

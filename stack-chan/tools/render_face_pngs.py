@@ -8,7 +8,8 @@ from pathlib import Path
 W = 320
 H = 240
 S = 3
-OUT = Path(__file__).resolve().parents[1] / "main"
+OUT = Path(__file__).resolve().parents[1] / "main" / "expressions"
+OUT.mkdir(parents=True, exist_ok=True)
 
 
 def lerp(a, b, t):
@@ -147,10 +148,15 @@ def mouth_gradient(y):
     return mix((115, 186, 255), (8, 115, 255), min(1, max(0, (y - 174) / 33)))
 
 
-def draw_common(c):
-    for p in [((67, 63), (77, 54), (92, 52), (103, 56)), ((217, 56), (229, 51), (244, 54), (255, 64))]:
-        c.stroke_cubic(*p, (12, 59, 128), 12)
-        c.stroke_cubic(*p, (102, 173, 255), 8)
+def draw_eyebrow(c, p):
+    c.stroke_cubic(*p, (12, 59, 128), 12)
+    c.stroke_cubic(*p, (102, 173, 255), 8)
+
+
+def draw_common(c, eyebrows=True):
+    if eyebrows:
+        for p in [((67, 63), (77, 54), (92, 52), (103, 56)), ((217, 56), (229, 51), (244, 54), (255, 64))]:
+            draw_eyebrow(c, p)
     for cx in (92, 228):
         c.fill_ellipse(cx, 123, 39, 39, (255, 255, 255))
         c.fill_ellipse(cx, 123, 37, 37, (255, 255, 255), (23, 61, 120), 2)
@@ -218,9 +224,65 @@ def draw_kiss_mouth(c):
     c.stroke_cubic((162, 186), (181, 196), (170, 209), (151, 199), (102, 173, 255), 7)
 
 
+def draw_thought_cloud(c):
+    for cx, cy, r in [(221, 58, 3), (234, 45, 4), (248, 33, 5)]:
+        c.fill_ellipse(cx, cy, r, r, (102, 173, 255))
+    for cx, cy, rx, ry in [
+        (260, 12, 12, 11),
+        (273, 7, 15, 15),
+        (288, 12, 15, 12),
+        (274, 19, 22, 8),
+    ]:
+        c.fill_ellipse(cx, cy, rx, ry, (12, 59, 128))
+    for cx, cy, rx, ry in [
+        (260, 12, 8, 7),
+        (273, 7, 11, 11),
+        (288, 12, 11, 8),
+        (274, 19, 18, 5),
+    ]:
+        c.fill_ellipse(cx, cy, rx, ry, (102, 173, 255))
+
+
+def draw_question_mark(c):
+    segments = [
+        ((254, 34), (260, 19), (284, 19), (298, 32)),
+        ((298, 32), (311, 45), (306, 65), (288, 73)),
+        ((288, 73), (278, 77), (270, 75), (266, 88)),
+    ]
+    for segment in segments:
+        c.stroke_cubic(*segment, (12, 59, 128), 14)
+    for segment in segments:
+        c.stroke_cubic(*segment, (102, 173, 255), 9)
+    c.fill_ellipse(266, 96, 6, 6, (12, 59, 128))
+    c.fill_ellipse(266, 96, 4, 4, (102, 173, 255))
+
+
+def draw_soft_upper_lid(c, cx):
+    c.stroke_cubic((cx - 36, 116), (cx - 22, 93), (cx + 22, 93), (cx + 36, 116), (10, 61, 135), 12)
+    c.stroke_cubic((cx - 36, 116), (cx - 22, 93), (cx + 22, 93), (cx + 36, 116), (102, 173, 255), 8)
+
+
+def draw_soft_smile(c, y=190, width=40):
+    half = width / 2
+    c.stroke_cubic((160 - half, y), (148, y + 14), (172, y + 14), (160 + half, y), (10, 61, 135), 12)
+    c.stroke_cubic((160 - half, y), (148, y + 14), (172, y + 14), (160 + half, y), (102, 173, 255), 8)
+
+
 def face(kind):
     c = Canvas()
-    if kind == "happy_squint":
+    if kind == "sleep_dark":
+        pass
+    elif kind == "relaxed":
+        draw_common(c)
+        draw_soft_upper_lid(c, 92)
+        draw_soft_upper_lid(c, 228)
+        draw_soft_smile(c, y=190, width=42)
+    elif kind == "smile_blink":
+        draw_common(c)
+        draw_soft_upper_lid(c, 92)
+        draw_closed_eye(c, 228, smile=True, width=14)
+        draw_soft_smile(c, y=187, width=54)
+    elif kind == "happy_squint":
         draw_common(c)
         draw_closed_eye(c, 92, smile=True)
         draw_closed_eye(c, 228, smile=True)
@@ -250,13 +312,12 @@ def face(kind):
             c.stroke_polyline([a, b], (255, 126, 168), 10)
         draw_mouth(c, [(146, 183), (150, 195), (160, 199), (170, 195), (174, 183)], [(149, 181), (153, 191), (160, 195), (167, 191), (171, 181)])
     elif kind == "thinking":
-        draw_common(c)
-        c.stroke_cubic((62, 58), (75, 45), (94, 43), (110, 54), (102, 173, 255), 8)
-        c.stroke_cubic((210, 69), (222, 62), (240, 63), (257, 75), (102, 173, 255), 8)
-        c.stroke_cubic((144, 189), (153, 183), (167, 183), (176, 189), (10, 61, 135), 10)
-        c.stroke_cubic((144, 189), (153, 183), (167, 183), (176, 189), (102, 173, 255), 6)
-        c.fill_ellipse(198, 178, 5, 5, (102, 173, 255))
-        c.fill_ellipse(209, 166, 4, 4, (102, 173, 255))
+        draw_common(c, eyebrows=False)
+        draw_eyebrow(c, ((64, 64), (77, 50), (100, 48), (113, 66)))
+        draw_eyebrow(c, ((207, 66), (220, 49), (244, 50), (257, 63)))
+        c.stroke_cubic((144, 188), (153, 181), (168, 184), (176, 193), (10, 61, 135), 10)
+        c.stroke_cubic((144, 188), (153, 181), (168, 184), (176, 193), (102, 173, 255), 6)
+        draw_question_mark(c)
     elif kind == "wink_half":
         draw_common(c)
         draw_half_eye(c, 228)
@@ -303,10 +364,13 @@ def face(kind):
 
 for name in (
     "calm",
+    "sleep_dark",
     "speak1",
     "speak2",
     "shy",
     "thinking",
+    "relaxed",
+    "smile_blink",
     "blink_half",
     "blink_closed",
     "wink_half",

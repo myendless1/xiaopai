@@ -144,6 +144,9 @@ function toStackChanPostBody(command: Exclude<XiaopaiCommand, { type: "stop" }>)
     case "face":
       return { ...base, payload: { expression: command.expression } };
     case "action":
+      if (isPhysicalAction(command.action)) {
+        return { ...base, type: command.action, payload: {} };
+      }
       return { ...base, payload: { expression: command.action } };
     case "move":
       return {
@@ -189,6 +192,7 @@ function toStackChanSequenceStep(step: XiaopaiSequenceStep): Record<string, unkn
     case "face":
       return { type: "face", expression: step.expression };
     case "action":
+      if (isPhysicalAction(step.action)) return { type: step.action };
       return { type: "face", expression: step.action };
     case "move":
       return {
@@ -198,6 +202,10 @@ function toStackChanSequenceStep(step: XiaopaiSequenceStep): Record<string, unkn
         ...(step.duration_ms === undefined ? {} : { duration_ms: step.duration_ms })
       };
   }
+}
+
+function isPhysicalAction(action: string): action is "node_head" | "nod_head" {
+  return action === "node_head" || action === "nod_head";
 }
 
 function hasSpeakAfter(steps: XiaopaiSequenceStep[], index: number): boolean {

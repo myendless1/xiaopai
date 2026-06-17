@@ -17,6 +17,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import zlib
+from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -91,8 +92,12 @@ DIALOG_WAKE_ONLY_FILLERS = ("你好", "您好", "在吗", "在嗎", "醒醒", "h
 
 AVAILABLE_EXPRESSIONS = (
     "calm",
+    "sleep_dark",
+    "screen_off",
     "shy",
     "thinking",
+    "relaxed",
+    "smile_blink",
     "speak1",
     "speak2",
     "blink_half",
@@ -118,7 +123,11 @@ AVAILABLE_ACTIONS = (
     "speaking",
     "happy_dynamic",
     "happy_squint_dynamic",
+    "node_head",
+    "nod_head",
 )
+
+PHYSICAL_ACTIONS = {"node_head", "nod_head"}
 
 COMMAND_QUEUE_MAX_SIZE = 24
 COMMAND_DEFAULT_PRIORITIES = {
@@ -133,6 +142,8 @@ COMMAND_DEFAULT_PRIORITIES = {
     "face": 65,
     "expression": 65,
     "action": 65,
+    "node_head": 45,
+    "nod_head": 45,
     "motion": 45,
     "move": 45,
     "sequence": 30,
@@ -143,13 +154,15 @@ COMMAND_DEFAULT_TTL_SECONDS = {
     "face": 8.0,
     "expression": 8.0,
     "action": 8.0,
+    "node_head": 5.0,
+    "nod_head": 5.0,
     "motion": 5.0,
     "move": 5.0,
     "speak": 30.0,
     "sequence": 45.0,
 }
-COMMAND_COALESCE_BY_TYPE = {"face", "expression", "action", "motion", "move", "speak"}
-COMMAND_DISCARDABLE_TYPES = {"face", "expression", "action", "motion", "move", "speak", "sequence"}
+COMMAND_COALESCE_BY_TYPE = {"face", "expression", "action", "node_head", "nod_head", "motion", "move", "speak"}
+COMMAND_DISCARDABLE_TYPES = {"face", "expression", "action", "node_head", "nod_head", "motion", "move", "speak", "sequence"}
 
 WAKE_REPLY_EVENTS = (
     ("wake_reply", "我在。"),
@@ -171,6 +184,12 @@ SLEEP_REPLY_REST_EVENTS = (
 SLEEP_REPLY_EVENTS = tuple({name: text for name, text in SLEEP_REPLY_BYE_EVENTS + SLEEP_REPLY_REST_EVENTS}.items())
 PREWARM_EVENT_AUDIO_NAMES = tuple(name for name, _text in WAKE_REPLY_EVENTS + SLEEP_REPLY_EVENTS)
 EVENT_AUDIO_CACHE_META_VERSION = 2
+ESP_APP_DESC_MAGIC_WORD = 0xABCD5432
+ESP_IMAGE_HEADER_SIZE = 24
+ESP_IMAGE_SEGMENT_HEADER_SIZE = 8
+ESP_APP_DESC_OFFSET = ESP_IMAGE_HEADER_SIZE + ESP_IMAGE_SEGMENT_HEADER_SIZE
+ESP_APP_DESC_VERSION_OFFSET = ESP_APP_DESC_OFFSET + 16
+ESP_APP_DESC_PROJECT_NAME_OFFSET = ESP_APP_DESC_VERSION_OFFSET + 32
 
 HEAD_TOUCH_EVENT_TEXT = {name: text for name, text in WAKE_REPLY_EVENTS}
 HEAD_TOUCH_EVENT_TEXT.update({name: text for name, text in SLEEP_REPLY_EVENTS})
@@ -183,6 +202,48 @@ HEAD_TOUCH_EVENT_TEXT.update(
     }
 )
 
+ALIYUN_TTS_VOICE_DOC_URL = "https://help.aliyun.com/zh/isi/developer-reference/overview-of-speech-synthesis"
+ALIYUN_TTS_DEBUG_VOICES = (
+    {"name": "小云", "voice": "xiaoyun", "type": "标准女声", "language": "中文/中英混合"},
+    {"name": "小刚", "voice": "xiaogang", "type": "标准男声", "language": "中文/中英混合"},
+    {"name": "小美", "voice": "xiaomei", "type": "甜美女声", "language": "中文/中英混合"},
+    {"name": "若兮", "voice": "ruoxi", "type": "温柔女声", "language": "中文/中英混合"},
+    {"name": "思琪", "voice": "siqi", "type": "温柔女声", "language": "中文/中英混合"},
+    {"name": "思佳", "voice": "sijia", "type": "标准女声", "language": "中文/中英混合"},
+    {"name": "思诚", "voice": "sicheng", "type": "标准男声", "language": "中文/中英混合"},
+    {"name": "艾琪", "voice": "aiqi", "type": "温柔女声", "language": "中文/中英混合"},
+    {"name": "艾佳", "voice": "aijia", "type": "标准女声", "language": "中文/中英混合"},
+    {"name": "艾诚", "voice": "aicheng", "type": "标准男声", "language": "中文/中英混合"},
+    {"name": "艾达", "voice": "aida", "type": "标准男声", "language": "中文/中英混合"},
+    {"name": "宁儿", "voice": "ninger", "type": "标准女声", "language": "纯中文"},
+    {"name": "瑞琳", "voice": "ruilin", "type": "标准女声", "language": "纯中文"},
+    {"name": "思悦", "voice": "siyue", "type": "温柔女声", "language": "中文/中英混合"},
+    {"name": "艾雅", "voice": "aiya", "type": "严厉女声", "language": "中文/中英混合"},
+    {"name": "艾美", "voice": "aimei", "type": "甜美女声", "language": "中文/中英混合"},
+    {"name": "艾雨", "voice": "aiyu", "type": "自然女声", "language": "中文/中英混合"},
+    {"name": "艾悦", "voice": "aiyue", "type": "温柔女声", "language": "中文/中英混合"},
+    {"name": "艾婧", "voice": "aijing", "type": "严厉女声", "language": "中文/中英混合"},
+    {"name": "思彤", "voice": "sitong", "type": "儿童音", "language": "纯中文"},
+    {"name": "小北", "voice": "xiaobei", "type": "萝莉女声", "language": "纯中文"},
+    {"name": "艾彤", "voice": "aitong", "type": "儿童音", "language": "纯中文"},
+    {"name": "艾薇", "voice": "aiwei", "type": "萝莉女声", "language": "纯中文"},
+    {"name": "艾宝", "voice": "aibao", "type": "萝莉女声", "language": "纯中文"},
+    {"name": "知小白", "voice": "zhixiaobai", "type": "普通话女声", "language": "中文/中英混合"},
+    {"name": "知小夏", "voice": "zhixiaoxia", "type": "普通话女声", "language": "中文/中英混合"},
+    {"name": "知小妹", "voice": "zhixiaomei", "type": "普通话女声", "language": "中文/中英混合"},
+    {"name": "知硕", "voice": "zhishuo", "type": "普通话男声", "language": "中文/中英混合"},
+    {"name": "知锋_多情感", "voice": "zhifeng_emo", "type": "多情感男声", "language": "中文/中英混合"},
+    {"name": "知冰_多情感", "voice": "zhibing_emo", "type": "多情感男声", "language": "纯中文"},
+    {"name": "知妙_多情感", "voice": "zhimiao_emo", "type": "多情感女声", "language": "中文/英文"},
+    {"name": "知米_多情感", "voice": "zhimi_emo", "type": "多情感女声", "language": "中文/中英混合"},
+    {"name": "知燕_多情感", "voice": "zhiyan_emo", "type": "多情感女声", "language": "中文/中英混合"},
+    {"name": "知贝_多情感", "voice": "zhibei_emo", "type": "多情感童声", "language": "中文/中英混合"},
+    {"name": "知甜_多情感", "voice": "zhitian_emo", "type": "多情感女声", "language": "中文/中英混合"},
+    {"name": "Harry", "voice": "harry", "type": "英音男声", "language": "英文"},
+    {"name": "Abby", "voice": "abby", "type": "美音女声", "language": "英文"},
+    {"name": "Cally", "voice": "cally", "type": "美式英文女声", "language": "英文"},
+)
+
 def log_timestamp() -> str:
     return _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
@@ -193,9 +254,14 @@ def log_print(message: str, *, file=None) -> None:
 EXPRESSION_ALIASES = {
     "default": "calm",
     "listening": "calm",
-    "stopped": "calm",
+    "stopped": "sleep_dark",
+    "sleep": "sleep_dark",
+    "screen_off": "sleep_dark",
     "think": "thinking",
     "thinking": "thinking",
+    "relax": "relaxed",
+    "relaxed": "relaxed",
+    "smile_blink": "smile_blink",
     "heart": "heart_action",
     "love": "heart_action",
     "wink": "wink",
@@ -204,11 +270,22 @@ EXPRESSION_ALIASES = {
     "happy": "happy_squint",
     "calm": "calm",
     "开心": "happy_squint",
+    "微笑眨眼": "smile_blink",
+    "眨眼微笑": "smile_blink",
+    "舒缓": "relaxed",
+    "舒缓轻松": "relaxed",
+    "放松": "relaxed",
+    "暗屏": "sleep_dark",
+    "休眠": "sleep_dark",
     "害羞": "shy",
     "爱心": "heart_action",
     "思考": "thinking",
     "眨眼": "wink",
     "点头": "nod",
+    "物理点头": "node_head",
+    "头部点头": "node_head",
+    "node_head": "node_head",
+    "nod_head": "nod_head",
 }
 
 MOTION_DIRECTION_ALIASES = {
@@ -289,6 +366,8 @@ VOICE_FACE_ALIASES = (
     ("thinking", ("思考", "思考表情", "想一想", "想一下", "thinking", "think")),
     ("happy_squint_soft", ("眯眼笑", "眯眼微笑", "happy squint soft", "happy_squint_soft", "柔和眯眼笑", "柔和眯眼开心")),
     ("happy_squint", ("开心表情", "开心", "高兴表情", "高兴", "快乐表情", "快乐", "happy squint", "happy_squint", "happy")),
+    ("smile_blink", ("眨眼微笑", "微笑眨眼", "smile blink", "smile_blink")),
+    ("relaxed", ("舒缓轻松", "舒缓", "放松表情", "放松", "relaxed", "relax")),
     ("speak", ("说话动作", "说话表情", "说话脸", "讲话动作", "讲话表情", "讲话脸", "speak", "speaking")),
     ("calm", ("平静表情", "平静", "冷静表情", "冷静", "calm")),
     ("shy", ("害羞表情", "害羞", "羞涩表情", "羞涩", "shy")),
@@ -671,6 +750,160 @@ def parse_voice_speak_command(text: str) -> dict | None:
     return None
 
 
+@dataclass(frozen=True)
+class TtsRequestOptions:
+    voice: str
+    sample_rate: int
+    volume: int
+    speech_rate: int
+    pitch_rate: int
+    audio_format: str = "pcm"
+
+
+def parse_int_range(value, *, default: int, name: str, min_value: int, max_value: int) -> int:
+    if value is None or value == "":
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if parsed < min_value or parsed > max_value:
+        raise ValueError(f"{name} must be between {min_value} and {max_value}")
+    return parsed
+
+
+def tts_request_options_from_params(server, params: dict) -> TtsRequestOptions:
+    voice = str(params.get("voice") or getattr(server, "voice", "xiaoyun") or "xiaoyun").strip()
+    if not voice:
+        raise ValueError("voice must not be empty")
+    audio_format = str(params.get("format") or params.get("audio_format") or "pcm").strip().lower().lstrip(".")
+    if audio_format in ("raw", "s16le", "pcm_s16le"):
+        audio_format = "pcm"
+    if audio_format not in ("pcm", "wav"):
+        raise ValueError("format must be pcm or wav")
+    return TtsRequestOptions(
+        voice=voice,
+        sample_rate=parse_int_range(
+            params.get("sample_rate"),
+            default=int(getattr(server, "sample_rate", 16000)),
+            name="sample_rate",
+            min_value=8000,
+            max_value=48000,
+        ),
+        volume=parse_int_range(
+            params.get("volume"),
+            default=int(getattr(server, "volume", 80)),
+            name="volume",
+            min_value=0,
+            max_value=100,
+        ),
+        speech_rate=parse_int_range(
+            params.get("speech_rate"),
+            default=int(getattr(server, "speech_rate", 0)),
+            name="speech_rate",
+            min_value=-500,
+            max_value=500,
+        ),
+        pitch_rate=parse_int_range(
+            params.get("pitch_rate"),
+            default=int(getattr(server, "pitch_rate", 0)),
+            name="pitch_rate",
+            min_value=-500,
+            max_value=500,
+        ),
+        audio_format=audio_format,
+    )
+
+
+@dataclass(frozen=True)
+class OtaFirmwareInfo:
+    path: str
+    version: str
+    project_name: str
+    size: int
+    mtime: float
+    sha256: str
+
+
+def _read_c_string(blob: bytes) -> str:
+    value = blob.split(b"\x00", 1)[0]
+    return value.decode("utf-8", errors="replace").strip()
+
+
+def is_xiaozhi_ota_version(version: str) -> bool:
+    return bool(re.fullmatch(r"\d+(?:\.\d+)*", str(version or "").strip()))
+
+
+def parse_esp_app_firmware_info(path: str) -> OtaFirmwareInfo | None:
+    try:
+        stat = os.stat(path)
+        with open(path, "rb") as fp:
+            header = fp.read(ESP_APP_DESC_PROJECT_NAME_OFFSET + 32)
+            fp.seek(0)
+            digest = hashlib.sha256()
+            while True:
+                chunk = fp.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    except OSError:
+        return None
+
+    if len(header) < ESP_APP_DESC_PROJECT_NAME_OFFSET + 32:
+        return None
+    magic = struct.unpack_from("<I", header, ESP_APP_DESC_OFFSET)[0]
+    if magic != ESP_APP_DESC_MAGIC_WORD:
+        return None
+
+    version = _read_c_string(header[ESP_APP_DESC_VERSION_OFFSET : ESP_APP_DESC_VERSION_OFFSET + 32])
+    project_name = _read_c_string(header[ESP_APP_DESC_PROJECT_NAME_OFFSET : ESP_APP_DESC_PROJECT_NAME_OFFSET + 32])
+    if not version:
+        return None
+    return OtaFirmwareInfo(
+        path=os.path.abspath(path),
+        version=version,
+        project_name=project_name,
+        size=stat.st_size,
+        mtime=stat.st_mtime,
+        sha256=digest.hexdigest(),
+    )
+
+
+def find_latest_ota_firmware(firmware_file: str, firmware_dir: str) -> OtaFirmwareInfo | None:
+    if firmware_file:
+        info = parse_esp_app_firmware_info(firmware_file)
+        if info is None or not is_xiaozhi_ota_version(info.version):
+            return None
+        return info
+    if not firmware_dir or not os.path.isdir(firmware_dir):
+        return None
+
+    candidates: list[OtaFirmwareInfo] = []
+    for root, _dirs, files in os.walk(firmware_dir):
+        for name in files:
+            if not name.endswith(".bin"):
+                continue
+            if name in ("bootloader.bin", "partition-table.bin"):
+                continue
+            info = parse_esp_app_firmware_info(os.path.join(root, name))
+            if info is not None and is_xiaozhi_ota_version(info.version):
+                candidates.append(info)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (item.mtime, item.path))
+
+
+def ota_firmware_public_url(server, request_headers, firmware: OtaFirmwareInfo) -> str:
+    base_url = str(getattr(server, "ota_public_base_url", "") or "").rstrip("/")
+    if not base_url:
+        host = request_headers.get("Host", "")
+        if not host:
+            host = f"127.0.0.1:{getattr(server, 'server_port', 80)}"
+        base_url = f"http://{host}"
+    filename = urllib.parse.quote(os.path.basename(firmware.path))
+    return f"{base_url}/firmware/{filename}"
+
+
 def command_default_priority(command_type: str) -> int:
     return COMMAND_DEFAULT_PRIORITIES.get(str(command_type or ""), 20)
 
@@ -880,6 +1113,10 @@ class AliyunVoiceServer(ThreadingHTTPServer):
     xiaozhi_ws_port: int
     xiaozhi_public_host: str
     xiaozhi_local_token: str
+    ota_firmware_dir: str
+    ota_firmware_file: str
+    ota_public_base_url: str
+    ota_force: bool
     device_queues: dict[str, DeviceCommandQueue]
     last_ack: dict[str, dict]
     last_seen: dict[str, float]
@@ -924,6 +1161,8 @@ class Handler(BaseHTTPRequestHandler):
                     "service": "xiaopai-aliyun-voice",
                     "asr": "/upload",
                     "tts": "/stream-speak?text=...",
+                    "tts_debug": "/tts/debug?text=...&voice=xiaoyun&format=wav",
+                    "tts_voices": "/tts/voices",
                     "image": "/upload-image",
                     "tts_format": "pcm_s16le",
                     "sample_rate": self.server.sample_rate,
@@ -959,6 +1198,7 @@ class Handler(BaseHTTPRequestHandler):
                         "model": self.server.openclaw_model,
                     },
                     "realtime": self._realtime_status(),
+                    "ota": self._ota_status(),
                     "command_queue": {
                         "max_size": self.server.command_queue_max_size,
                         "default_priorities": COMMAND_DEFAULT_PRIORITIES,
@@ -968,8 +1208,11 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
             return
-        if path in ("/xiaozhi/ota", "/realtime/config"):
+        if path in ("/xiaozhi/ota", "/xiaozhi/ota/", "/realtime/config"):
             self._handle_xiaozhi_ota(query)
+            return
+        if path.startswith("/firmware/"):
+            self._handle_firmware_download(path.rsplit("/", 1)[-1])
             return
         if path == "/expressions":
             self._send_json(
@@ -1031,6 +1274,12 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
             return
+        if path == "/tts/voices":
+            self._handle_tts_voices()
+            return
+        if path == "/tts/debug":
+            self._handle_tts_debug(query)
+            return
         if path.startswith("/event-audio/"):
             self._handle_event_audio(path.rsplit("/", 1)[-1])
             return
@@ -1049,6 +1298,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/upload-audio":
             self._handle_upload(body)
             return
+        if path in ("/xiaozhi/ota", "/xiaozhi/ota/", "/realtime/config"):
+            self._handle_xiaozhi_ota(query)
+            return
         if path == "/command":
             payload = json.loads(body.decode("utf-8")) if body else {}
             self._handle_command(query, posted=payload)
@@ -1063,6 +1315,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/upload-image":
             self._handle_upload_image(body)
+            return
+        if path == "/tts/debug":
+            self._handle_tts_debug(query, body)
             return
         if path == "/stream-speak":
             text = query.get("text", [""])[0]
@@ -1089,6 +1344,26 @@ class Handler(BaseHTTPRequestHandler):
             "devices": len(manager.devices_snapshot()) if manager else 0,
         }
 
+    def _ota_status(self) -> dict:
+        firmware = find_latest_ota_firmware(self.server.ota_firmware_file, self.server.ota_firmware_dir)
+        body = {
+            "enabled": firmware is not None,
+            "firmware_dir": self.server.ota_firmware_dir,
+            "firmware_file": self.server.ota_firmware_file,
+            "public_base_url": self.server.ota_public_base_url,
+            "force": self.server.ota_force,
+        }
+        if firmware is not None:
+            body["firmware"] = {
+                "path": firmware.path,
+                "version": firmware.version,
+                "project_name": firmware.project_name,
+                "size": firmware.size,
+                "sha256": firmware.sha256,
+                "updated_at": _dt.datetime.fromtimestamp(firmware.mtime).isoformat(timespec="seconds"),
+            }
+        return body
+
     def _handle_xiaozhi_ota(self, query: dict) -> None:
         host = first_value(query, "host") or getattr(self.server, "xiaozhi_public_host", "")
         if not host:
@@ -1099,7 +1374,49 @@ class Handler(BaseHTTPRequestHandler):
         token = getattr(self.server, "xiaozhi_local_token", "")
         ws_url = f"ws://{host}:{port}{path}"
         self._log_info(f"Realtime config: host_header={self.headers.get('Host', '')!r} ws_url={ws_url}")
-        self._send_json(ota_config(ws_url, token))
+        body = ota_config(ws_url, token)
+        firmware = find_latest_ota_firmware(self.server.ota_firmware_file, self.server.ota_firmware_dir)
+        if firmware is not None:
+            firmware_body = {
+                "version": firmware.version,
+                "url": ota_firmware_public_url(self.server, self.headers, firmware),
+            }
+            if self.server.ota_force:
+                firmware_body["force"] = 1
+            body["firmware"] = firmware_body
+            self._log_info(
+                f"OTA firmware advertised: version={firmware.version} "
+                f"file={os.path.basename(firmware.path)} size={firmware.size}"
+            )
+        self._send_json(body)
+
+    def _handle_firmware_download(self, raw_name: str) -> None:
+        requested_name = urllib.parse.unquote(raw_name)
+        firmware = find_latest_ota_firmware(self.server.ota_firmware_file, self.server.ota_firmware_dir)
+        if firmware is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "OTA firmware is not configured")
+            return
+        if requested_name != os.path.basename(firmware.path):
+            self.send_error(HTTPStatus.NOT_FOUND, "unknown firmware")
+            return
+        try:
+            stat = os.stat(firmware.path)
+            fp = open(firmware.path, "rb")
+        except OSError:
+            self.send_error(HTTPStatus.NOT_FOUND, "firmware unavailable")
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(stat.st_size))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        with fp:
+            while True:
+                chunk = fp.read(1024 * 1024)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        self._log_info(f"OTA firmware served: {os.path.basename(firmware.path)} bytes={stat.st_size}")
 
     def _handle_upload(self, body: bytes):
         if not body:
@@ -1356,7 +1673,15 @@ class Handler(BaseHTTPRequestHandler):
         else:
             payload = command_payload_from_query(command_type, query)
 
-        if command_type in ("expression", "action"):
+        if command_type == "action" and isinstance(payload, dict):
+            action_name = normalize_expression_name(payload.get("expression") or payload.get("action") or payload.get("face"))
+            if action_name in PHYSICAL_ACTIONS:
+                command_wire_type = action_name
+                payload = {}
+            else:
+                command_wire_type = "face"
+                payload["expression"] = action_name
+        elif command_type in ("expression", "action"):
             command_wire_type = "face"
         else:
             command_wire_type = "motion" if command_type == "move" else command_type
@@ -1367,7 +1692,20 @@ class Handler(BaseHTTPRequestHandler):
         elif command_wire_type == "sequence" and isinstance(payload, list):
             for step in payload:
                 if isinstance(step, dict) and step.get("type") == "face":
-                    step["expression"] = normalize_expression_name(step.get("expression") or step.get("face") or "calm")
+                    expression = normalize_expression_name(step.get("expression") or step.get("face") or "calm")
+                    if expression in PHYSICAL_ACTIONS:
+                        step.clear()
+                        step["type"] = expression
+                    else:
+                        step["expression"] = expression
+                elif isinstance(step, dict) and step.get("type") == "action":
+                    action = normalize_expression_name(step.get("action") or step.get("expression") or "calm")
+                    if action in PHYSICAL_ACTIONS:
+                        step.clear()
+                        step["type"] = action
+                    else:
+                        step["type"] = "face"
+                        step["expression"] = action
                 elif isinstance(step, dict) and step.get("type") == "speak":
                     step.setdefault("pause_listener", True)
         normalize_command_speech_payload(command_wire_type, payload)
@@ -1411,7 +1749,10 @@ class Handler(BaseHTTPRequestHandler):
         device_id = self._resolve_command_device_id(requested_device_id)
         priority = int(first_value(query, "priority") or 0)
         interrupt = parse_bool(first_value(query, "interrupt") or "false")
-        command = make_command("face", {"expression": expression}, priority=priority, interrupt=interrupt)
+        if expression in PHYSICAL_ACTIONS:
+            command = make_command(expression, {}, priority=priority, interrupt=interrupt)
+        else:
+            command = make_command("face", {"expression": expression}, priority=priority, interrupt=interrupt)
         queued = self._enqueue_command(device_id, command)
         self._send_json(
             {
@@ -1623,6 +1964,95 @@ class Handler(BaseHTTPRequestHandler):
             f"device={device_id} event={event_type} session_key={session_key} status={status} "
             f"body={truncate_log_text(response_text)!r}"
         )
+
+    def _handle_tts_voices(self) -> None:
+        self._send_json(
+            {
+                "type": "tts_voices",
+                "current_voice": self.server.voice,
+                "default_sample_rate": self.server.sample_rate,
+                "voices": list(ALIYUN_TTS_DEBUG_VOICES),
+                "note": "This is a curated debug list. The debug synthesis endpoint accepts any voice supported by Aliyun NLS.",
+                "source": ALIYUN_TTS_VOICE_DOC_URL,
+                "debug_endpoint": "/tts/debug?text=你好&voice=xiaoyun&format=wav",
+            }
+        )
+
+    def _tts_debug_params(self, query: dict, body: bytes | None = None) -> dict:
+        params: dict = {}
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if body:
+            if content_type == "application/json":
+                payload = json.loads(body.decode("utf-8"))
+                if isinstance(payload, dict):
+                    params.update(payload)
+            else:
+                params["text"] = body.decode("utf-8")
+        for key in ("text", "input", "voice", "sample_rate", "volume", "speech_rate", "pitch_rate", "format", "audio_format"):
+            value = first_value(query, key)
+            if value != "":
+                params[key] = value
+        if "text" not in params and "input" in params:
+            params["text"] = params["input"]
+        return params
+
+    def _handle_tts_debug(self, query: dict, body: bytes | None = None) -> None:
+        try:
+            params = self._tts_debug_params(query, body)
+            options = tts_request_options_from_params(self.server, params)
+        except (json.JSONDecodeError, ValueError) as exc:
+            self._send_json({"type": "error", "message": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+
+        text = normalize_speech_text_for_voice(str(params.get("text") or ""))
+        if not text:
+            self.send_error(HTTPStatus.BAD_REQUEST, "missing text")
+            return
+        parts = list(split_sentences(text, self.server.max_sentence_chars))
+        if not parts:
+            self.send_error(HTTPStatus.BAD_REQUEST, "empty text")
+            return
+
+        started = time.perf_counter()
+        try:
+            audio_parts = []
+            for part in parts:
+                self._log_info(f"TTS debug synthesize: voice={options.voice} format={options.audio_format} text={part!r}")
+                audio_parts.append(self._aliyun_tts_pcm_with_retries(part, options))
+            pcm = b"".join(audio_parts) + self._tts_tail_silence(options.sample_rate)
+        except Exception as exc:
+            self._log_error(f"TTS debug failed: {exc}")
+            self._send_json({"type": "error", "message": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            return
+
+        if options.audio_format == "wav":
+            audio = pcm_to_wav(pcm, options.sample_rate)
+            content_type = "audio/wav"
+            audio_header = "wav"
+        else:
+            audio = pcm
+            content_type = "application/octet-stream"
+            audio_header = "pcm_s16le"
+
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        self._log_info(
+            f"TTS debug ok: voice={options.voice} format={options.audio_format} "
+            f"sentences={len(parts)} bytes={len(audio)} elapsed_ms={elapsed_ms:.0f}"
+        )
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(audio)))
+        self.send_header("X-Audio-Format", audio_header)
+        self.send_header("X-Sample-Rate", str(options.sample_rate))
+        self.send_header("X-Channels", "1")
+        self.send_header("X-TTS-Voice", options.voice)
+        self.send_header("X-TTS-Volume", str(options.volume))
+        self.send_header("X-TTS-Speech-Rate", str(options.speech_rate))
+        self.send_header("X-TTS-Pitch-Rate", str(options.pitch_rate))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        self.wfile.write(audio)
 
     def _handle_event_audio(self, filename: str):
         audio_ext = "wav" if filename.endswith(".wav") else "pcm"
@@ -1967,33 +2397,38 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._log_error(f"TTS failed after stream started: {exc}")
 
-    def _aliyun_tts_pcm_with_retries(self, text: str) -> bytes:
+    def _aliyun_tts_pcm_with_retries(self, text: str, options: TtsRequestOptions | None = None) -> bytes:
         last_error: Exception | None = None
         for attempt in range(1, self.server.tts_retries + 2):
             try:
-                return self._aliyun_tts_pcm(text)
+                return self._aliyun_tts_pcm(text, options)
             except Exception as exc:
                 last_error = exc
                 self._log_error(f"TTS attempt {attempt} failed for {text!r}: {exc}")
         raise RuntimeError(f"Aliyun TTS failed after {self.server.tts_retries + 1} attempt(s): {last_error}")
 
-    def _tts_tail_silence(self) -> bytes:
+    def _tts_tail_silence(self, sample_rate: int | None = None) -> bytes:
         ms = max(0, int(self.server.tts_tail_silence_ms))
-        samples = self.server.sample_rate * ms // 1000
+        samples = int(sample_rate or self.server.sample_rate) * ms // 1000
         return b"\x00\x00" * samples
 
-    def _aliyun_tts_pcm(self, text: str) -> bytes:
+    def _aliyun_tts_pcm(self, text: str, options: TtsRequestOptions | None = None) -> bytes:
         started = time.perf_counter()
+        voice = options.voice if options is not None else self.server.voice
+        sample_rate = options.sample_rate if options is not None else self.server.sample_rate
+        volume = options.volume if options is not None else self.server.volume
+        speech_rate = options.speech_rate if options is not None else self.server.speech_rate
+        pitch_rate = options.pitch_rate if options is not None else self.server.pitch_rate
         params = {
             "appkey": self.server.appkey,
             "token": self.server.get_token(),
             "text": text,
             "format": "pcm",
-            "sample_rate": self.server.sample_rate,
-            "voice": self.server.voice,
-            "volume": self.server.volume,
-            "speech_rate": self.server.speech_rate,
-            "pitch_rate": self.server.pitch_rate,
+            "sample_rate": sample_rate,
+            "voice": voice,
+            "volume": volume,
+            "speech_rate": speech_rate,
+            "pitch_rate": pitch_rate,
         }
         url = self.server.tts_url + "?" + urllib.parse.urlencode(params)
         req = urllib.request.Request(url, method="GET")
@@ -2706,6 +3141,27 @@ def main():
     )
     parser.add_argument("--xiaozhi-public-host", default=os.environ.get("STACKCHAN_XIAOZHI_PUBLIC_HOST", ""))
     parser.add_argument("--xiaozhi-local-token", default=os.environ.get("STACKCHAN_XIAOZHI_LOCAL_TOKEN", ""))
+    parser.add_argument(
+        "--ota-firmware-dir",
+        default=os.environ.get("STACKCHAN_OTA_FIRMWARE_DIR", ""),
+        help="Directory to scan for the newest valid ESP-IDF app .bin advertised through /xiaozhi/ota.",
+    )
+    parser.add_argument(
+        "--ota-firmware-file",
+        default=os.environ.get("STACKCHAN_OTA_FIRMWARE_FILE", ""),
+        help="Specific ESP-IDF app .bin to advertise through /xiaozhi/ota. Overrides --ota-firmware-dir.",
+    )
+    parser.add_argument(
+        "--ota-public-base-url",
+        default=os.environ.get("STACKCHAN_OTA_PUBLIC_BASE_URL", ""),
+        help="Public HTTP base URL used in firmware download links, for example http://192.168.1.20:8091.",
+    )
+    parser.add_argument(
+        "--ota-force",
+        action=argparse.BooleanOptionalAction,
+        default=parse_bool(os.environ.get("STACKCHAN_OTA_FORCE", "false")),
+        help="Ask devices to install the advertised firmware even when its version is not newer.",
+    )
     parser.add_argument("--aliyun-asr-ws-url", default=os.environ.get("STACKCHAN_ALIYUN_ASR_WS_URL", ""))
     parser.add_argument("--aliyun-tts-ws-url", default=os.environ.get("STACKCHAN_ALIYUN_TTS_WS_URL", ""))
     parser.add_argument("--audio-upstream-format", default=os.environ.get("STACKCHAN_AUDIO_UPSTREAM_FORMAT", "opus"))
@@ -2787,6 +3243,10 @@ def main():
     httpd.xiaozhi_ws_port = args.xiaozhi_ws_port or (args.port + 1)
     httpd.xiaozhi_public_host = args.xiaozhi_public_host
     httpd.xiaozhi_local_token = args.xiaozhi_local_token
+    httpd.ota_firmware_dir = args.ota_firmware_dir
+    httpd.ota_firmware_file = args.ota_firmware_file
+    httpd.ota_public_base_url = args.ota_public_base_url
+    httpd.ota_force = args.ota_force
     httpd.device_lock = threading.Lock()
     httpd.device_queues = {}
     httpd.last_ack = {}
@@ -2838,6 +3298,15 @@ def main():
     log_print(f"  visual tracking: {'enabled' if args.visual_tracking_enabled else 'disabled'}")
     log_print(f"  command queue: max_size={args.command_queue_max_size}")
     log_print(f"  OpenClaw: {'enabled' if httpd.openclaw_base_url and httpd.openclaw_token else 'disabled'}")
+    ota_firmware = find_latest_ota_firmware(httpd.ota_firmware_file, httpd.ota_firmware_dir)
+    log_print(
+        "  OTA firmware: "
+        + (
+            f"{ota_firmware.version} {ota_firmware.path}"
+            if ota_firmware is not None
+            else "disabled (no valid app .bin found)"
+        )
+    )
     log_print(
         "  Realtime: "
         + (
@@ -2853,6 +3322,7 @@ def main():
         log_print(f"  TTS:    http://{args.host}:{args.port}/stream-speak?text=...")
         log_print(f"  Events: http://{args.host}:{args.port}/head-touch-events -> {args.static_dir}/event-audio")
         log_print(f"  Image:  http://{args.host}:{args.port}/upload-image -> {args.capture_dir}")
+        log_print(f"  OTA:    http://{args.host}:{args.port}/xiaozhi/ota")
         log_print(f"  Face detector detail: {args.face_detector}{' ' + args.yunet_model if args.face_detector == 'yunet' else ''}")
         log_print(
             f"  Visual tracking detail: deadzone={args.visual_tracking_deadzone_px}px "

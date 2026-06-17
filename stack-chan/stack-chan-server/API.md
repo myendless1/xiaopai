@@ -56,16 +56,17 @@ GET /action/<name>?device_id=<optional>
 Expressions:
 
 ```text
-calm, shy, thinking, speak1, speak2, blink_half, blink_closed,
-wink_half, wink_closed, heart_small, heart, nod_soft, nod_down,
-happy_squint, happy_squint_soft
+calm, sleep_dark, screen_off, shy, thinking, relaxed, smile_blink,
+speak1, speak2, blink_half, blink_closed, wink_half, wink_closed,
+heart_small, heart, nod_soft, nod_down, happy_squint, happy_squint_soft
 ```
 
 Actions / animations:
 
 ```text
 blink, wink, heart_action, hearting, nod, nodding,
-speak, speaking, happy_dynamic, happy_squint_dynamic
+speak, speaking, happy_dynamic, happy_squint_dynamic,
+node_head, nod_head
 ```
 
 Examples:

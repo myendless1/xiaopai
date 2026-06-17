@@ -11,6 +11,7 @@ Local bridge server for the Xiaopai firmware in this repository. It keeps cloud 
 - Optional RGB565 conversion to PNG and BMP. The Xiaopai camera data is decoded as big-endian RGB565.
 - Local CPU face/head detection using OpenCV YuNet. Detected boxes are returned in the `/upload-image` response; visualizations are saved only in debug capture mode.
 - Visual tracking loop: `/upload-image` can turn the largest detected face into queued Xiaopai head-motion commands.
+- Xiaozhi-compatible OTA config endpoint. The server can advertise the newest compiled ESP-IDF app firmware and serve it over WiFi.
 - Legacy local open-source STT/TTS utilities are kept under `legacy/`.
 
 ## Setup
@@ -58,6 +59,38 @@ See [HTTP_COMMAND_API.md](HTTP_COMMAND_API.md) for the full command API referenc
 `GET /health`
 
 Returns service status and endpoint metadata.
+
+`GET|POST /xiaozhi/ota`
+
+Returns the Xiaozhi realtime config and, when an ESP-IDF app firmware is available, a `firmware` section compatible with `xiaozhi-esp32` OTA:
+
+```json
+{
+  "websocket": {"url": "ws://192.168.1.20:8092/xiaozhi/ws", "token": "", "version": 1},
+  "server_time": {"timestamp": 1781692800000, "timezone_offset": 480},
+  "firmware": {"version": "2.2.7", "url": "http://192.168.1.20:8091/firmware/xiaopai.bin"}
+}
+```
+
+Firmware OTA publishing is disabled until a firmware file or directory is configured. Enable it with:
+
+```bash
+STACKCHAN_OTA_FIRMWARE_FILE=/path/to/app.bin ./start.sh
+STACKCHAN_OTA_FIRMWARE_DIR=/path/to/build ./start.sh
+STACKCHAN_OTA_PUBLIC_BASE_URL=http://192.168.1.20:8091 ./start.sh
+```
+
+When a directory is configured, the server scans it for the newest valid ESP-IDF app `.bin` whose embedded version is compatible with `xiaozhi-esp32` numeric dotted version comparison, such as `2.2.7`.
+
+Point `xiaozhi-esp32` firmware at this endpoint by setting `CONFIG_OTA_URL` to:
+
+```text
+http://<server-lan-ip>:8091/xiaozhi/ota
+```
+
+The app version embedded in the `.bin` must be newer than the running firmware version, otherwise the device will correctly skip the update. For one-off testing only, `STACKCHAN_OTA_FORCE=true` asks the device to install the advertised firmware even when the version is not newer.
+
+OTA requires an OTA-capable partition table with two app slots, such as the `xiaozhi-esp32` v2 8M/16M layouts. A single `factory` app layout, such as the v2 4M table, cannot use the current OTA flow.
 
 `GET /devices`
 
@@ -160,6 +193,43 @@ Aliyun TTS endpoint. Text is split by sentence, synthesized with retries, and re
 - format: `pcm_s16le`
 - sample rate: default `16000`
 - channels: `1`
+
+`GET /tts/voices`
+
+Returns a curated Aliyun TTS voice list for quick testing. This is not meant to mirror the full upstream catalog; `/tts/debug` accepts any valid Aliyun `voice` value.
+
+`GET /tts/debug?text=...&voice=...`
+
+`POST /tts/debug`
+
+Debug-only Aliyun TTS endpoint for comparing voices without restarting the server. It accepts:
+
+- `voice`: Aliyun voice ID, for example `xiaoyun`, `xiaogang`, `xiaomei`, `ruoxi`, `zhixiaobai`, or `zhifeng_emo`
+- `format`: `pcm` or `wav`; use `wav` for easier desktop playback
+- `sample_rate`: `8000` to `48000`, depending on voice support
+- `volume`: `0` to `100`
+- `speech_rate`: `-500` to `500`
+- `pitch_rate`: `-500` to `500`
+
+Examples:
+
+```bash
+curl 'http://127.0.0.1:8091/tts/voices'
+
+curl -G 'http://127.0.0.1:8091/tts/debug' \
+  --data-urlencode 'text=你好，我是小派。' \
+  --data-urlencode 'voice=xiaomei' \
+  --data-urlencode 'format=wav' \
+  -o /tmp/xiaopai-xiaomei.wav
+
+curl -G 'http://127.0.0.1:8091/tts/debug' \
+  --data-urlencode 'text=我换一个更温柔的声音试试。' \
+  --data-urlencode 'voice=ruoxi' \
+  --data-urlencode 'speech_rate=-80' \
+  --data-urlencode 'pitch_rate=20' \
+  --data-urlencode 'format=wav' \
+  -o /tmp/xiaopai-ruoxi.wav
+```
 
 `GET /head-touch-events`
 

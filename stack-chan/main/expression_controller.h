@@ -22,6 +22,7 @@ bool expression_screen_is_visible();
 bool speaking_animation_is_running();
 void expression_set_speech_overridden(bool overridden);
 void show_expression(const char* expression);
+void show_idle_sleep_dark_if_due(uint32_t idle_ms);
 void show_temporary_expression(const char* expression, uint32_t duration_ms);
 void start_speaking_animation();
 void stop_speaking_animation();

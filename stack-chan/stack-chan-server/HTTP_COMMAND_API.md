@@ -96,8 +96,12 @@ Common expression values are free-form strings for now, such as:
 
 ```text
 calm
+sleep_dark
+screen_off
 shy
 thinking
+relaxed
+smile_blink
 heart
 heart_small
 wink_half
@@ -123,6 +127,8 @@ speak
 speaking
 happy_dynamic
 happy_squint_dynamic
+node_head
+nod_head
 ```
 
 Shortcut routes are available for browser/manual testing:

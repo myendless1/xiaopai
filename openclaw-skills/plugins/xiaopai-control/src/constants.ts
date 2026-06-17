@@ -3,8 +3,12 @@ export const DEFAULT_TIMEOUT_MS = 5000;
 
 export const XIAOPAI_EXPRESSIONS = [
   "calm",
+  "sleep_dark",
+  "screen_off",
   "shy",
   "thinking",
+  "relaxed",
+  "smile_blink",
   "speak1",
   "speak2",
   "blink_half",
@@ -29,7 +33,9 @@ export const XIAOPAI_ACTIONS = [
   "speak",
   "speaking",
   "happy_dynamic",
-  "happy_squint_dynamic"
+  "happy_squint_dynamic",
+  "node_head",
+  "nod_head"
 ] as const;
 
 export const XIAOPAI_MOVE_DIRECTIONS = ["left", "right", "up", "down", "center"] as const;
