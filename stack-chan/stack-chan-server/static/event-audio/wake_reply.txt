@@ -1,1 +1,1 @@
-{"appkey":"goL2yAc2saTaT42D","format":"pcm_s16le","pitch_rate":0,"sample_rate":16000,"speech_rate":0,"text":"我在。","tts_url":"https://nls-gateway-cn-shanghai.aliyuncs.com/stream/v1/tts","version":2,"voice":"xiaoyun","volume":80}
+{"appkey":"goL2yAc2saTaT42D","format":"pcm_s16le","pitch_rate":0,"sample_rate":16000,"speech_rate":0,"text":"我在。","tts_url":"https://nls-gateway-cn-shanghai.aliyuncs.com/stream/v1/tts","version":2,"voice":"zhimiao_emo","volume":80}

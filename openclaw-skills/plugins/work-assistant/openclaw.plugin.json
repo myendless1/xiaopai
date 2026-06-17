@@ -205,7 +205,15 @@
               },
               "sessionKey": {
                 "type": "string",
-                "description": "Target OpenClaw session key for proactive reminder turns, for example a Xiaopai/stack-chan session."
+                "description": "Target OpenClaw session key for proactive reminder turns. In online_xiaopai mode this may contain {device_id}, for example agent:main:xiaopai-{device_id}."
+              },
+              "sessionKeyMode": {
+                "type": "string",
+                "enum": [
+                  "static",
+                  "online_xiaopai"
+                ],
+                "description": "How to resolve the target session key. static uses sessionKey as-is; online_xiaopai resolves the current online stack-chan device and builds a matching Xiaopai session."
               },
               "agentId": {
                 "type": "string",
@@ -222,6 +230,15 @@
               "deviceId": {
                 "type": "string",
                 "description": "Optional Xiaopai device id included in the stack-chan render envelope."
+              },
+              "xiaopaiBaseUrl": {
+                "type": "string",
+                "description": "Base URL used by online_xiaopai mode to read the stack-chan /devices endpoint."
+              },
+              "xiaopaiDeviceLookupTimeoutMs": {
+                "type": "number",
+                "minimum": 100,
+                "description": "Timeout for online_xiaopai device discovery."
               },
               "interrupt": {
                 "type": "boolean",

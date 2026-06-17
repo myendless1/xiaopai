@@ -47,17 +47,23 @@ export function readSchedulerConfig(value) {
 function readAgentDispatchConfig(value) {
     const raw = isRecord(value) ? value : {};
     const sessionKey = readNonEmptyString(raw.sessionKey);
+    const sessionKeyMode = raw.sessionKeyMode === "online_xiaopai" ? "online_xiaopai" : undefined;
     const agentId = readNonEmptyString(raw.agentId);
     const deviceId = readNonEmptyString(raw.deviceId);
+    const xiaopaiBaseUrl = readNonEmptyString(raw.xiaopaiBaseUrl);
+    const xiaopaiDeviceLookupTimeoutMs = readPositiveNumber(raw.xiaopaiDeviceLookupTimeoutMs);
     const deliveryMode = raw.deliveryMode === "announce" || raw.deliveryMode === "none"
         ? raw.deliveryMode
         : DEFAULT_AGENT_DISPATCH_DELIVERY_MODE;
     return {
         enabled: raw.enabled === true,
         ...(sessionKey ? { sessionKey } : {}),
+        ...(sessionKeyMode ? { sessionKeyMode } : {}),
         ...(agentId ? { agentId } : {}),
         deliveryMode,
         ...(deviceId ? { deviceId } : {}),
+        ...(xiaopaiBaseUrl ? { xiaopaiBaseUrl } : {}),
+        ...(xiaopaiDeviceLookupTimeoutMs ? { xiaopaiDeviceLookupTimeoutMs } : {}),
         interrupt: typeof raw.interrupt === "boolean" ? raw.interrupt : true
     };
 }

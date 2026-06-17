@@ -12,8 +12,11 @@ import {
   createDailyBriefingPlans,
   createMeetingStartingSoonPlans,
   createOutdoorEventPlans,
+  buildDynamicXiaopaiSessionKey,
   buildOpenClawCronAddArgs,
   buildSchedulerAgentTurnMessage,
+  dispatchSchedulerResponseToAgent,
+  selectOnlineXiaopaiDeviceId,
   WORK_ASSISTANT_SCHEDULER_RESPONSE_SCHEMA,
   deriveInputEventId,
   deriveTriggerKey,
@@ -95,10 +98,13 @@ describe("scheduler config", () => {
       statePath: "/tmp/state.json",
       agentDispatch: {
         enabled: true,
-        sessionKey: "xiaopai-device-1",
+        sessionKey: "agent:main:xiaopai-{device_id}",
+        sessionKeyMode: "online_xiaopai",
         agentId: "work-agent",
         deliveryMode: "announce",
         deviceId: "device-1",
+        xiaopaiBaseUrl: "http://127.0.0.1:8091",
+        xiaopaiDeviceLookupTimeoutMs: 1500,
         interrupt: false
       },
       rules: {
@@ -116,10 +122,13 @@ describe("scheduler config", () => {
       statePath: "/tmp/state.json",
       agentDispatch: {
         enabled: true,
-        sessionKey: "xiaopai-device-1",
+        sessionKey: "agent:main:xiaopai-{device_id}",
+        sessionKeyMode: "online_xiaopai",
         agentId: "work-agent",
         deliveryMode: "announce",
         deviceId: "device-1",
+        xiaopaiBaseUrl: "http://127.0.0.1:8091",
+        xiaopaiDeviceLookupTimeoutMs: 1500,
         interrupt: false
       }
     });
@@ -133,6 +142,27 @@ describe("scheduler config", () => {
 });
 
 describe("scheduler agent dispatch envelope", () => {
+  it("selects a realtime online Xiaopai device and builds a matching OpenClaw session key", () => {
+    const deviceId = selectOnlineXiaopaiDeviceId({
+      default_device_id: "default",
+      devices: [{ device_id: "http-stale", online: true }],
+      realtime_devices: [
+        { device_id: "44:1b:f6:df:5d:b8", online: true },
+        { device_id: "44:1b:f6:e4:83:8c", online: false }
+      ]
+    });
+    expect(deviceId).toBe("44:1b:f6:df:5d:b8");
+    expect(
+      buildDynamicXiaopaiSessionKey(
+        {
+          sessionKey: "agent:main:xiaopai-{device_id}",
+          agentId: "main"
+        },
+        deviceId ?? ""
+      )
+    ).toBe("agent:main:xiaopai-44:1b:f6:df:5d:b8");
+  });
+
   it("builds CLI fallback cron args with the current duration syntax", () => {
     const args = buildOpenClawCronAddArgs({
       sessionKey: "agent:main:xiaopai-device-1",
@@ -215,6 +245,70 @@ describe("scheduler agent dispatch envelope", () => {
     expect(payload.structured_response).toMatchObject({
       speech: "ok",
       follow_up: { expected: false }
+    });
+  });
+
+  it("resolves online Xiaopai device into both scheduler session key and render envelope", async () => {
+    const scheduledTurns: SchedulerAgentTurnScheduleParams[] = [];
+    const event: InputEvent = {
+      event_id: "scheduler-event-online-device",
+      type: "meeting_starting_soon",
+      timestamp: "2026-06-06T09:20:00+08:00",
+      user_id: "ou_requester",
+      payload: {
+        trigger: {
+          rule_id: "meeting_starting_soon",
+          scheduled_for: "2026-06-06T01:20:00.000Z",
+          fired_at: "2026-06-06T01:20:00.000Z",
+          source: "proactive_calendar_scheduler",
+          trigger_key: "trigger_online_device"
+        }
+      },
+      context: { timezone: "Asia/Shanghai" }
+    };
+
+    const result = await dispatchSchedulerResponseToAgent({
+      event,
+      response: successResponse,
+      config: {
+        enabled: true,
+        sessionKey: "agent:main:xiaopai-{device_id}",
+        sessionKeyMode: "online_xiaopai",
+        agentId: "main",
+        deliveryMode: "none",
+        interrupt: true
+      },
+      api: {
+        async resolveOnlineXiaopaiDeviceId() {
+          return "44:1b:f6:df:5d:b8";
+        },
+        session: {
+          workflow: {
+            async scheduleSessionTurn(params: SchedulerAgentTurnScheduleParams) {
+              scheduledTurns.push(params);
+              return {
+                id: "job_online_device",
+                pluginId: "work-assistant",
+                sessionKey: params.sessionKey,
+                kind: "session-turn"
+              };
+            }
+          }
+        }
+      }
+    });
+
+    expect(result).toMatchObject({
+      status: "success",
+      sessionKey: "agent:main:xiaopai-44:1b:f6:df:5d:b8"
+    });
+    expect(scheduledTurns).toHaveLength(1);
+    expect(scheduledTurns[0]?.sessionKey).toBe("agent:main:xiaopai-44:1b:f6:df:5d:b8");
+    const envelope = JSON.parse(scheduledTurns[0]?.message ?? "{}") as Record<string, unknown>;
+    expect(envelope).toMatchObject({
+      schema: "openclaw.stackchan.event.v1",
+      device_id: "44:1b:f6:df:5d:b8",
+      render: { target: "xiaopai", interrupt: true }
     });
   });
 });

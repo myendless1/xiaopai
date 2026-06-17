@@ -60,9 +60,12 @@ export type ProactiveCalendarSchedulerConfig = {
 export type ProactiveCalendarAgentDispatchConfig = {
   enabled: boolean;
   sessionKey?: string;
+  sessionKeyMode?: "static" | "online_xiaopai";
   agentId?: string;
   deliveryMode: "none" | "announce";
   deviceId?: string;
+  xiaopaiBaseUrl?: string;
+  xiaopaiDeviceLookupTimeoutMs?: number;
   interrupt: boolean;
 };
 

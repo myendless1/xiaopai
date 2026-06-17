@@ -27,6 +27,7 @@ export type SchedulerAgentDispatchRuntimeApi = {
     };
     scheduleSessionTurn?: SchedulerAgentTurnScheduler;
     runAgentTurnCli?: SchedulerAgentTurnScheduler;
+    resolveOnlineXiaopaiDeviceId?: (config: ProactiveCalendarAgentDispatchConfig) => Promise<string | undefined>;
     logger?: {
         info?: (message: string) => void;
         warn?: (message: string) => void;
@@ -55,5 +56,7 @@ export declare function dispatchSchedulerResponseToAgent(options: {
     response: StructuredResponse;
     config: ProactiveCalendarAgentDispatchConfig;
 }): Promise<SchedulerAgentDispatchResult>;
+export declare function buildDynamicXiaopaiSessionKey(config: Pick<ProactiveCalendarAgentDispatchConfig, "sessionKey" | "agentId">, deviceId: string): string;
+export declare function selectOnlineXiaopaiDeviceId(value: unknown): string | undefined;
 export declare function scheduleAgentTurnWithOpenClawCron(params: SchedulerAgentTurnScheduleParams): Promise<SchedulerAgentTurnHandle | undefined>;
 export declare function buildOpenClawCronAddArgs(params: SchedulerAgentTurnScheduleParams): string[];

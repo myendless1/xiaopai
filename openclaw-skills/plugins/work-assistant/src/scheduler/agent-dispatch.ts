@@ -4,6 +4,8 @@ import type { ProactiveCalendarAgentDispatchConfig } from "./types.js";
 
 export const STACKCHAN_EVENT_SCHEMA = "openclaw.stackchan.event.v1";
 export const WORK_ASSISTANT_SCHEDULER_RESPONSE_SCHEMA = "openclaw.work_assistant.scheduler_response.v1";
+const DEFAULT_XIAOPAI_BASE_URL = "http://127.0.0.1:8091";
+const DEFAULT_XIAOPAI_DEVICE_LOOKUP_TIMEOUT_MS = 2_000;
 
 export type SchedulerAgentTurnScheduleParams = {
   sessionKey: string;
@@ -35,6 +37,7 @@ export type SchedulerAgentDispatchRuntimeApi = {
   };
   scheduleSessionTurn?: SchedulerAgentTurnScheduler;
   runAgentTurnCli?: SchedulerAgentTurnScheduler;
+  resolveOnlineXiaopaiDeviceId?: (config: ProactiveCalendarAgentDispatchConfig) => Promise<string | undefined>;
   logger?: {
     info?: (message: string) => void;
     warn?: (message: string) => void;
@@ -53,6 +56,19 @@ export type SchedulerAgentDispatchResult =
     }
   | {
       status: "failed";
+      code: string;
+      message: string;
+    };
+
+type SchedulerAgentSessionResolution =
+  | {
+      ok: true;
+      sessionKey: string;
+      source: "static" | "online_xiaopai";
+      deviceId?: string;
+    }
+  | {
+      ok: false;
       code: string;
       message: string;
     };
@@ -99,17 +115,16 @@ export async function dispatchSchedulerResponseToAgent(options: {
   const { api, event, response, config } = options;
   if (!config.enabled) return { status: "skipped", reason: "disabled" };
   if (response.speech.trim() === "") return { status: "skipped", reason: "missing_speech" };
-  if (!config.sessionKey) {
-    return {
-      status: "failed",
-      code: "AGENT_SESSION_KEY_MISSING",
-      message: "Scheduler agent dispatch is enabled but scheduler.agentDispatch.sessionKey is missing."
-    };
-  }
+  const sessionResolution = await resolveSchedulerAgentSession({ api, config });
+  if (!sessionResolution.ok) return { status: "failed", code: sessionResolution.code, message: sessionResolution.message };
 
-  const message = buildSchedulerAgentTurnMessage({ event, response, config });
+  const effectiveConfig =
+    sessionResolution.deviceId && !config.deviceId
+      ? { ...config, deviceId: sessionResolution.deviceId }
+      : config;
+  const message = buildSchedulerAgentTurnMessage({ event, response, config: effectiveConfig });
   const scheduleParams: SchedulerAgentTurnScheduleParams = {
-    sessionKey: config.sessionKey,
+    sessionKey: sessionResolution.sessionKey,
     message,
     delayMs: 0,
     deleteAfterRun: true,
@@ -126,7 +141,9 @@ export async function dispatchSchedulerResponseToAgent(options: {
         event_id: event.event_id,
         sessionKey: handle.sessionKey,
         jobId: handle.id,
-        scheduler: "session_workflow"
+        scheduler: "session_workflow",
+        sessionKeySource: sessionResolution.source,
+        ...(sessionResolution.deviceId ? { deviceId: sessionResolution.deviceId } : {})
       })}`
     );
     return {
@@ -151,7 +168,9 @@ export async function dispatchSchedulerResponseToAgent(options: {
         event_id: event.event_id,
         sessionKey: cliHandle.sessionKey,
         jobId: cliHandle.id,
-        scheduler: "openclaw_cron_cli"
+        scheduler: "openclaw_cron_cli",
+        sessionKeySource: sessionResolution.source,
+        ...(sessionResolution.deviceId ? { deviceId: sessionResolution.deviceId } : {})
       })}`
     );
     return {
@@ -166,6 +185,124 @@ export async function dispatchSchedulerResponseToAgent(options: {
       code: "AGENT_TURN_SCHEDULE_FAILED",
       message: messageText
     };
+  }
+}
+
+async function resolveSchedulerAgentSession(options: {
+  api: SchedulerAgentDispatchRuntimeApi;
+  config: ProactiveCalendarAgentDispatchConfig;
+}): Promise<SchedulerAgentSessionResolution> {
+  const { api, config } = options;
+  if ((config.sessionKeyMode ?? "static") !== "online_xiaopai") {
+    if (!config.sessionKey) {
+      return {
+        ok: false,
+        code: "AGENT_SESSION_KEY_MISSING",
+        message: "Scheduler agent dispatch is enabled but scheduler.agentDispatch.sessionKey is missing."
+      };
+    }
+    return { ok: true, sessionKey: config.sessionKey, source: "static" };
+  }
+
+  let deviceId: string | undefined;
+  try {
+    deviceId = api.resolveOnlineXiaopaiDeviceId
+      ? await api.resolveOnlineXiaopaiDeviceId(config)
+      : await resolveOnlineXiaopaiDeviceIdFromStackChan(config);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      code: "AGENT_SESSION_KEY_DEVICE_LOOKUP_FAILED",
+      message: `Unable to resolve an online Xiaopai device for scheduler.agentDispatch.sessionKeyMode=online_xiaopai: ${message}`
+    };
+  }
+  if (!deviceId) {
+    return {
+      ok: false,
+      code: "AGENT_SESSION_KEY_DEVICE_MISSING",
+      message: "Unable to resolve an online Xiaopai device for scheduler.agentDispatch.sessionKeyMode=online_xiaopai."
+    };
+  }
+  return {
+    ok: true,
+    sessionKey: buildDynamicXiaopaiSessionKey(config, deviceId),
+    source: "online_xiaopai",
+    deviceId
+  };
+}
+
+async function resolveOnlineXiaopaiDeviceIdFromStackChan(
+  config: ProactiveCalendarAgentDispatchConfig
+): Promise<string | undefined> {
+  const baseUrl = (config.xiaopaiBaseUrl ?? process.env.STACKCHAN_BASE_URL ?? DEFAULT_XIAOPAI_BASE_URL).replace(/\/+$/, "");
+  const timeoutMs = config.xiaopaiDeviceLookupTimeoutMs ?? DEFAULT_XIAOPAI_DEVICE_LOOKUP_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${baseUrl}/devices`, { signal: controller.signal });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`stack-chan /devices returned HTTP ${response.status}`);
+    const parsed = parseJson(text);
+    if (parsed === undefined) throw new Error("stack-chan /devices returned malformed JSON");
+    return selectOnlineXiaopaiDeviceId(parsed);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function buildDynamicXiaopaiSessionKey(
+  config: Pick<ProactiveCalendarAgentDispatchConfig, "sessionKey" | "agentId">,
+  deviceId: string
+): string {
+  const safeDeviceId = safeOpenClawSessionPart(deviceId);
+  if (config.sessionKey?.includes("{device_id}")) {
+    return config.sessionKey.replaceAll("{device_id}", safeDeviceId);
+  }
+  const marker = "xiaopai-";
+  const markerIndex = config.sessionKey?.lastIndexOf(marker) ?? -1;
+  if (config.sessionKey && markerIndex >= 0) {
+    return `${config.sessionKey.slice(0, markerIndex + marker.length)}${safeDeviceId}`;
+  }
+  const agentId = safeOpenClawSessionPart(config.agentId ?? "main");
+  return `agent:${agentId}:xiaopai-${safeDeviceId}`;
+}
+
+export function selectOnlineXiaopaiDeviceId(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+  const realtimeDeviceId = selectDeviceId(value.realtime_devices, true);
+  if (realtimeDeviceId) return realtimeDeviceId;
+  const onlineDeviceId = selectDeviceId(value.devices, true);
+  if (onlineDeviceId) return onlineDeviceId;
+  const defaultDeviceId = readDeviceId(value.default_device_id);
+  return defaultDeviceId && defaultDeviceId !== "default" ? defaultDeviceId : undefined;
+}
+
+function selectDeviceId(value: unknown, requireOnline: boolean): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    if (requireOnline && item.online !== true) continue;
+    const deviceId = readDeviceId(item.device_id);
+    if (deviceId) return deviceId;
+  }
+  return undefined;
+}
+
+function readDeviceId(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+function safeOpenClawSessionPart(value: string): string {
+  const safe = value.trim().replace(/[^A-Za-z0-9_.:-]+/g, "_").slice(0, 64);
+  return safe || "default";
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
   }
 }
 

@@ -357,9 +357,10 @@ Scheduler example:
     "statePath": ".openclaw/work-assistant-scheduler-state.json",
     "agentDispatch": {
       "enabled": true,
-      "sessionKey": "xiaopai-device-1",
+      "sessionKeyMode": "online_xiaopai",
+      "sessionKey": "agent:main:xiaopai-{device_id}",
+      "xiaopaiBaseUrl": "http://127.0.0.1:8091",
       "deliveryMode": "none",
-      "deviceId": "44:1b:f6:e4:83:8c",
       "interrupt": true
     },
     "rules": {
@@ -386,7 +387,7 @@ Scheduler example:
 
 Only `dailyBriefing` is enabled by default once the scheduler itself is enabled. `meetingStartingSoon`, `outdoorEvent`, and `businessTripTomorrow` stay disabled unless explicitly configured; enable proactive rules only for deployments ready for robot speech. For travel reminders, configure `travel.originAddress` or use dry-run profile defaults if route-aware outdoor departure times are expected.
 
-`agentDispatch` is also opt-in. Use a Xiaopai/stack-chan session key when the proactive reminder should be handled by the OpenClaw agent/LLM layer and rendered by `xiaopai-control`. The default `deliveryMode` is `none`, so the scheduled agent turn can render voice without also posting a normal chat announcement; set `announce` only when a channel-visible cron reply is desired.
+`agentDispatch` is also opt-in. Use a Xiaopai/stack-chan session key when the proactive reminder should be handled by the OpenClaw agent/LLM layer and rendered by `xiaopai-control`. For a single actively connected robot, prefer `sessionKeyMode: "online_xiaopai"` with a `{device_id}` session key template; the scheduler reads the stack-chan `/devices` endpoint, selects the current online realtime device, and uses the same device id for both the OpenClaw session key and Xiaopai render envelope. If no online Xiaopai device can be resolved, the scheduler dispatch fails instead of falling back to a stale session. The default `deliveryMode` is `none`, so the scheduled agent turn can render voice without also posting a normal chat announcement; set `announce` only when a channel-visible cron reply is desired.
 
 Scheduler-produced events keep the existing `InputEvent` envelope. Their payload includes `payload.trigger` with rule id, scheduled time, fired time, trigger key, calendar id, and source metadata; calendar-derived events also include `payload.calendar_event` with source event id, title, start, end, optional location or description, and optional notification target metadata.
 
