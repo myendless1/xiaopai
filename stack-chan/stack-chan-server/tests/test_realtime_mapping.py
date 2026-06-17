@@ -166,6 +166,42 @@ class RealtimeMappingTest(unittest.TestCase):
         self.assertEqual(session.asr_bridge.device_id, "44:1b_f6_e4:83:8c")
         self.assertEqual(set(manager._sessions), {"44:1b_f6_e4:83:8c"})
 
+    def test_realtime_session_starts_listening(self):
+        manager = RealtimeManager(RealtimeConfig(), logger=lambda _msg: None)
+        registered = []
+
+        class FakeWebSocket:
+            request_headers = {}
+
+            def __init__(self):
+                self.sent = []
+
+            async def send(self, payload):
+                self.sent.append(payload)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+            async def close(self, code=None, reason=None):
+                pass
+
+        original_register_session = manager._register_session
+
+        def capture_register_session(session):
+            registered.append(session)
+            original_register_session(session)
+
+        manager._register_session = capture_register_session
+        websocket = FakeWebSocket()
+        asyncio.run(manager._dispatch(websocket, "/xiaozhi/ws"))
+
+        self.assertTrue(registered[0].dialog_awake)
+        self.assertTrue(any('"type":"device_state"' in payload and '"state":"listening"' in payload for payload in websocket.sent))
+        self.assertFalse(any('"type":"device_state"' in payload and '"state":"idle"' in payload for payload in websocket.sent))
+
     def test_realtime_sleep_text(self):
         self.assertTrue(has_realtime_sleep_word("小派，先休息吧"))
         self.assertTrue(has_realtime_sleep_word("不用了，拜拜"))

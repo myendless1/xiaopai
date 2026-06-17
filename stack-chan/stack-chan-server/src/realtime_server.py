@@ -500,13 +500,14 @@ class RealtimeManager:
             websocket=websocket,
             session_id=make_request_id("sess"),
         )
+        session.dialog_awake = True
         self._register_session(session)
         try:
             hello = json_dumps(build_hello(session.session_id))
             hello_resent_after_device_hello = False
             await websocket.send(hello)
             self.logger(f"Xiaozhi realtime server hello sent: device_id={session.device_id} bytes={len(hello)}")
-            await self._send_device_state(session, "idle")
+            await self._send_device_state(session, "listening")
             async for frame in websocket:
                 if isinstance(frame, bytes):
                     session.last_seen = time.time()
