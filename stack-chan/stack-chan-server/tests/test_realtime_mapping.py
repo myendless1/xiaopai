@@ -274,6 +274,7 @@ class RealtimeMappingTest(unittest.TestCase):
 
         spoken, sent = asyncio.run(run_case())
         self.assertEqual(spoken, [])
+        self.assertTrue(any('"type":"device_state"' in payload and '"state":"waiting"' in payload for payload in sent))
         self.assertTrue(any('"type":"llm"' in payload for payload in sent))
 
     def test_realtime_wake_from_sleep_sends_find_owner_directly(self):

@@ -12,6 +12,15 @@ menu "Xiaopai settings"
         string "Xiaozhi OTA URL"
         default "https://api.tenclass.net/xiaozhi/ota/"
 
+    config STACKCHAN_FIRMWARE_OTA_ENABLED
+        bool "Enable Xiaopai firmware OTA"
+        default y
+
+    config STACKCHAN_FIRMWARE_OTA_TIMEOUT_MS
+        int "Firmware OTA HTTP timeout milliseconds"
+        default 60000
+        range 5000 300000
+
     config STACKCHAN_RECORD_UPLOAD_URL
         string "Record upload URL"
         default "http://192.168.21.15:8091/upload"

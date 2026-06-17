@@ -90,7 +90,7 @@ class AliyunStreamingTtsClient:
         token_getter,
         region: str = "shanghai",
         ws_url: str = "",
-        voice: str = "xiaoyun",
+        voice: str = "zhimiao_emo",
         sample_rate: int = 16000,
         volume: int = 80,
         speech_rate: int = 0,

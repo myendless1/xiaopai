@@ -31,6 +31,23 @@ Convenience scripts:
 ./flash.sh
 ```
 
+## Build And Publish OTA Firmware
+
+The server advertises the newest app firmware from `stack-chan-server/static/firmware/`.
+Build and publish a new OTA image with a numeric dotted version:
+
+```bash
+./build_and_publish_ota.sh 0.1.1
+```
+
+The device checks the server after WiFi/server selection. If `/realtime/config`
+advertises a newer `firmware.version`, it downloads the app image, writes it to
+the inactive OTA slot, sets that slot as bootable, and restarts.
+
+Important: devices already flashed with the old single `factory` partition table
+must be flashed once over USB with this OTA-capable partition table before OTA
+updates can work.
+
 ## Firmware Configuration
 
 Set these URLs to your computer's LAN IP when the local server is running:

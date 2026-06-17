@@ -107,6 +107,40 @@ class CommandPayloadTest(unittest.TestCase):
 
         self.assertEqual(payload[0]["text"], "2026-06-16 周二 10:00 - 11:00 汇报上周工作进展")
 
+    def test_state_query_defaults_to_waiting(self):
+        payload = server.command_payload_from_query("state", {})
+
+        self.assertEqual(payload, {"state": "waiting"})
+
+
+class OpenClawWaitingStateTest(unittest.TestCase):
+    def test_send_openclaw_event_enters_waiting_before_async_call(self):
+        class FakeExecutor:
+            def __init__(self):
+                self.submitted = []
+
+            def submit(self, fn):
+                self.submitted.append(fn)
+
+        class FakeServer:
+            openclaw_base_url = "http://openclaw"
+            openclaw_token = "token"
+            openclaw_executor = FakeExecutor()
+
+        handler = object.__new__(server.Handler)
+        handler.server = FakeServer()
+        handler._log_info = lambda _msg: None
+        handler._log_debug = lambda _msg: None
+        handler._log_error = lambda _msg: None
+        handler._enter_openclaw_waiting = lambda device_id, event_type: [f"waiting:{device_id}:{event_type}"]
+        handler._call_openclaw = lambda device_id, event_type, details: None
+
+        result = handler._send_openclaw_event("dev1", "speech_recognition", {"text": "你好"})
+
+        self.assertTrue(result["openclaw_sent"])
+        self.assertEqual(result["queued_commands"], ["waiting:dev1:speech_recognition"])
+        self.assertEqual(len(handler.server.openclaw_executor.submitted), 1)
+
 
 class DeviceEventForwardingTest(unittest.TestCase):
     def make_handler(self, openclaw_enabled=True):

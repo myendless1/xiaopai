@@ -17,6 +17,8 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
 #include "esp_system.h"
 #include "esp_transport.h"
 #include "esp_transport_ssl.h"
@@ -44,14 +46,19 @@
 #include <vector>
 
 void run_xiaozhi_ota_probe();
+bool check_and_apply_firmware_ota_once();
 void run_stream_tts_demo();
 void run_wifi_connect_app();
 void run_camera_upload_app();
 void run_tracking_user_demo();
 static bool wifi_is_connected();
+static bool http_get_string(const std::string& url, std::string* response, int timeout_ms);
+static int json_int_value(const cJSON* root, const char* key, int default_value);
+static bool json_bool_value(const cJSON* root, const char* key, bool default_value);
 static void set_light_strip_listening();
 static void set_light_strip_speaking();
 static void set_light_strip_sleeping();
+static void set_waiting_outputs();
 static void set_light_strip_listening_bar(uint8_t level);
 static void update_listening_light_level(const int16_t* samples, size_t sample_count);
 static void update_speaking_light_level(const int16_t* samples, size_t sample_count);
@@ -73,6 +80,7 @@ static bool run_find_owner_command(int rounds, const char* reply, float gain_x, 
 #include "main_platform.inc"
 #include "main_realtime_transport.inc"
 #include "main_wifi_provisioning.inc"
+#include "main_firmware_ota.inc"
 #include "main_realtime_speech.inc"
 #include "main_camera_motion.inc"
 #include "main_tts_commands.inc"
@@ -88,6 +96,7 @@ extern "C" void app_main(void)
     local_voice_state_init({
         set_light_strip_sleeping,
         set_light_strip_listening,
+        set_waiting_outputs,
         set_light_strip_speaking,
         mark_wake_find_owner_pending,
     });

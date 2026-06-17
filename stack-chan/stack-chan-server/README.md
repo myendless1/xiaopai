@@ -68,11 +68,27 @@ Returns the Xiaozhi realtime config and, when an ESP-IDF app firmware is availab
 {
   "websocket": {"url": "ws://192.168.1.20:8092/xiaozhi/ws", "token": "", "version": 1},
   "server_time": {"timestamp": 1781692800000, "timezone_offset": 480},
-  "firmware": {"version": "2.2.7", "url": "http://192.168.1.20:8091/firmware/xiaopai.bin"}
+  "firmware": {
+    "version": "0.1.1",
+    "url": "http://192.168.1.20:8091/firmware/xiaopai-0.1.1.bin",
+    "size": 1730208,
+    "sha256": "..."
+  }
 }
 ```
 
-Firmware OTA publishing is disabled until a firmware file or directory is configured. Enable it with:
+`GET /firmware/latest.json`
+
+Returns the currently advertised firmware manifest from the fixed publish directory.
+
+Firmware OTA publishing uses `static/firmware/` by default. Build and publish from the firmware project with:
+
+```bash
+cd ..
+./build_and_publish_ota.sh 0.1.1
+```
+
+Override the publish/scan location when needed:
 
 ```bash
 STACKCHAN_OTA_FIRMWARE_FILE=/path/to/app.bin ./start.sh
@@ -80,17 +96,11 @@ STACKCHAN_OTA_FIRMWARE_DIR=/path/to/build ./start.sh
 STACKCHAN_OTA_PUBLIC_BASE_URL=http://192.168.1.20:8091 ./start.sh
 ```
 
-When a directory is configured, the server scans it for the newest valid ESP-IDF app `.bin` whose embedded version is compatible with `xiaozhi-esp32` numeric dotted version comparison, such as `2.2.7`.
-
-Point `xiaozhi-esp32` firmware at this endpoint by setting `CONFIG_OTA_URL` to:
-
-```text
-http://<server-lan-ip>:8091/xiaozhi/ota
-```
+When a directory is configured, the server scans it for the newest valid ESP-IDF app `.bin` whose embedded version is compatible with numeric dotted version comparison, such as `0.1.1`.
 
 The app version embedded in the `.bin` must be newer than the running firmware version, otherwise the device will correctly skip the update. For one-off testing only, `STACKCHAN_OTA_FORCE=true` asks the device to install the advertised firmware even when the version is not newer.
 
-OTA requires an OTA-capable partition table with two app slots, such as the `xiaozhi-esp32` v2 8M/16M layouts. A single `factory` app layout, such as the v2 4M table, cannot use the current OTA flow.
+OTA requires the OTA-capable partition table in this firmware. Devices still running the old single `factory` app layout must be flashed once over USB before OTA updates can work.
 
 `GET /devices`
 
@@ -342,7 +352,7 @@ Environment variables:
 | `STACKCHAN_SERVER_VENV` | `.venv` | Virtual environment path |
 | `STACKCHAN_ALIYUN_REGION` | `shanghai` | Aliyun NLS region: `shanghai`, `beijing`, or `shenzhen` |
 | `STACKCHAN_ALIYUN_TTS_URL` | empty | Override TTS URL |
-| `STACKCHAN_ALIYUN_VOICE` | `xiaoyun` | Aliyun TTS voice |
+| `STACKCHAN_ALIYUN_VOICE` | `zhimiao_emo` | Aliyun TTS voice |
 | `STACKCHAN_ALIYUN_SAMPLE_RATE` | `16000` | ASR raw PCM and TTS sample rate |
 | `STACKCHAN_ALIYUN_VOLUME` | `80` | TTS volume |
 | `STACKCHAN_ALIYUN_SPEECH_RATE` | `0` | TTS speech rate |

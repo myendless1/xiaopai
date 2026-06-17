@@ -41,6 +41,8 @@ TTS_URLS = {
     "beijing": "https://nls-gateway-cn-beijing.aliyuncs.com/stream/v1/tts",
     "shenzhen": "https://nls-gateway-cn-shenzhen.aliyuncs.com/stream/v1/tts",
 }
+DEFAULT_TTS_VOICE = "zhimiao_emo"
+DEFAULT_OTA_FIRMWARE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "firmware")
 
 TOKEN_META_ENDPOINT = "https://nls-meta.cn-shanghai.aliyuncs.com/"
 TOKEN_REGION_ID = "cn-shanghai"
@@ -134,6 +136,8 @@ COMMAND_DEFAULT_PRIORITIES = {
     "stop": 100,
     "volume": 90,
     "sound": 90,
+    "state": 88,
+    "device_state": 88,
     "find_owner": 85,
     "locate_owner": 85,
     "capture_image": 70,
@@ -151,6 +155,8 @@ COMMAND_DEFAULT_PRIORITIES = {
     "play_audio": 10,
 }
 COMMAND_DEFAULT_TTL_SECONDS = {
+    "state": 8.0,
+    "device_state": 8.0,
     "face": 8.0,
     "expression": 8.0,
     "action": 8.0,
@@ -161,8 +167,8 @@ COMMAND_DEFAULT_TTL_SECONDS = {
     "speak": 30.0,
     "sequence": 45.0,
 }
-COMMAND_COALESCE_BY_TYPE = {"face", "expression", "action", "node_head", "nod_head", "motion", "move", "speak"}
-COMMAND_DISCARDABLE_TYPES = {"face", "expression", "action", "node_head", "nod_head", "motion", "move", "speak", "sequence"}
+COMMAND_COALESCE_BY_TYPE = {"state", "device_state", "face", "expression", "action", "node_head", "nod_head", "motion", "move", "speak"}
+COMMAND_DISCARDABLE_TYPES = {"state", "device_state", "face", "expression", "action", "node_head", "nod_head", "motion", "move", "speak", "sequence"}
 
 WAKE_REPLY_EVENTS = (
     ("wake_reply", "我在。"),
@@ -773,7 +779,7 @@ def parse_int_range(value, *, default: int, name: str, min_value: int, max_value
 
 
 def tts_request_options_from_params(server, params: dict) -> TtsRequestOptions:
-    voice = str(params.get("voice") or getattr(server, "voice", "xiaoyun") or "xiaoyun").strip()
+    voice = str(params.get("voice") or getattr(server, "voice", DEFAULT_TTS_VOICE) or DEFAULT_TTS_VOICE).strip()
     if not voice:
         raise ValueError("voice must not be empty")
     audio_format = str(params.get("format") or params.get("audio_format") or "pcm").strip().lower().lstrip(".")
@@ -834,6 +840,10 @@ def is_xiaozhi_ota_version(version: str) -> bool:
     return bool(re.fullmatch(r"\d+(?:\.\d+)*", str(version or "").strip()))
 
 
+def ota_version_key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in str(version or "0").split(".") if part != "")
+
+
 def parse_esp_app_firmware_info(path: str) -> OtaFirmwareInfo | None:
     try:
         stat = os.stat(path)
@@ -890,7 +900,7 @@ def find_latest_ota_firmware(firmware_file: str, firmware_dir: str) -> OtaFirmwa
                 candidates.append(info)
     if not candidates:
         return None
-    return max(candidates, key=lambda item: (item.mtime, item.path))
+    return max(candidates, key=lambda item: (ota_version_key(item.version), item.mtime, item.path))
 
 
 def ota_firmware_public_url(server, request_headers, firmware: OtaFirmwareInfo) -> str:
@@ -902,6 +912,17 @@ def ota_firmware_public_url(server, request_headers, firmware: OtaFirmwareInfo) 
         base_url = f"http://{host}"
     filename = urllib.parse.quote(os.path.basename(firmware.path))
     return f"{base_url}/firmware/{filename}"
+
+
+def ota_firmware_manifest(server, request_headers, firmware: OtaFirmwareInfo) -> dict:
+    return {
+        "version": firmware.version,
+        "url": ota_firmware_public_url(server, request_headers, firmware),
+        "size": firmware.size,
+        "sha256": firmware.sha256,
+        "project_name": firmware.project_name,
+        "updated_at": _dt.datetime.fromtimestamp(firmware.mtime).isoformat(timespec="seconds"),
+    }
 
 
 def command_default_priority(command_type: str) -> int:
@@ -1161,7 +1182,7 @@ class Handler(BaseHTTPRequestHandler):
                     "service": "xiaopai-aliyun-voice",
                     "asr": "/upload",
                     "tts": "/stream-speak?text=...",
-                    "tts_debug": "/tts/debug?text=...&voice=xiaoyun&format=wav",
+                    "tts_debug": f"/tts/debug?text=...&voice={DEFAULT_TTS_VOICE}&format=wav",
                     "tts_voices": "/tts/voices",
                     "image": "/upload-image",
                     "tts_format": "pcm_s16le",
@@ -1212,6 +1233,9 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_xiaozhi_ota(query)
             return
         if path.startswith("/firmware/"):
+            if path in ("/firmware/latest.json", "/firmware/latest"):
+                self._handle_firmware_latest()
+                return
             self._handle_firmware_download(path.rsplit("/", 1)[-1])
             return
         if path == "/expressions":
@@ -1370,10 +1394,7 @@ class Handler(BaseHTTPRequestHandler):
         body = ota_config(ws_url, token)
         firmware = find_latest_ota_firmware(self.server.ota_firmware_file, self.server.ota_firmware_dir)
         if firmware is not None:
-            firmware_body = {
-                "version": firmware.version,
-                "url": ota_firmware_public_url(self.server, self.headers, firmware),
-            }
+            firmware_body = ota_firmware_manifest(self.server, self.headers, firmware)
             if self.server.ota_force:
                 firmware_body["force"] = 1
             body["firmware"] = firmware_body
@@ -1381,6 +1402,16 @@ class Handler(BaseHTTPRequestHandler):
                 f"OTA firmware advertised: version={firmware.version} "
                 f"file={os.path.basename(firmware.path)} size={firmware.size}"
             )
+        self._send_json(body)
+
+    def _handle_firmware_latest(self) -> None:
+        firmware = find_latest_ota_firmware(self.server.ota_firmware_file, self.server.ota_firmware_dir)
+        if firmware is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "OTA firmware is not configured")
+            return
+        body = ota_firmware_manifest(self.server, self.headers, firmware)
+        if self.server.ota_force:
+            body["force"] = 1
         self._send_json(body)
 
     def _handle_firmware_download(self, raw_name: str) -> None:
@@ -1678,7 +1709,9 @@ class Handler(BaseHTTPRequestHandler):
             command_wire_type = "face"
         else:
             command_wire_type = "motion" if command_type == "move" else command_type
-        if command_wire_type == "face" and isinstance(payload, dict):
+        if command_wire_type in ("state", "device_state") and isinstance(payload, dict):
+            payload["state"] = normalize_device_state_name(payload.get("state") or payload.get("name") or "waiting")
+        elif command_wire_type == "face" and isinstance(payload, dict):
             payload["expression"] = normalize_expression_name(payload.get("expression") or payload.get("face") or "calm")
         elif command_wire_type == "speak" and isinstance(payload, dict):
             payload.setdefault("pause_listener", True)
@@ -1896,9 +1929,38 @@ class Handler(BaseHTTPRequestHandler):
     def _openclaw_enabled(self) -> bool:
         return bool(self.server.openclaw_base_url and self.server.openclaw_token)
 
+    def _send_device_state_command(self, device_id: str, state: str, reason: str = "") -> list[str]:
+        device_id = safe_device_id(device_id)
+        state = str(state or "").strip()
+        if not state:
+            return []
+        manager = getattr(self.server, "realtime_manager", None)
+        if manager and manager.has_device(device_id) and manager.set_device_state(device_id, state):
+            self._log_info(f"Realtime device state sent: {state}")
+            self._log_debug(f"Realtime device state detail: device={device_id} state={state} reason={reason!r}")
+            return []
+
+        command = make_command(
+            "state",
+            {"state": state, "reason": reason},
+            priority=88,
+            interrupt=True,
+            ttl_seconds=8,
+            discardable=True,
+            coalesce_key="device_state",
+        )
+        if self._enqueue_command(device_id, command):
+            return [command["cmd_id"]]
+        return []
+
+    def _enter_openclaw_waiting(self, device_id: str, event_type: str) -> list[str]:
+        return self._send_device_state_command(device_id, "waiting", reason=f"openclaw:{event_type}")
+
     def _send_openclaw_event(self, device_id: str, event_type: str, details: dict) -> dict:
         if not self._openclaw_enabled():
             return {"openclaw_enabled": False, "openclaw_sent": False, "queued_commands": []}
+
+        queued_commands = self._enter_openclaw_waiting(device_id, event_type)
 
         def run_event() -> None:
             try:
@@ -1913,7 +1975,7 @@ class Handler(BaseHTTPRequestHandler):
             "openclaw_enabled": True,
             "openclaw_sent": True,
             "openclaw_async": True,
-            "queued_commands": [],
+            "queued_commands": queued_commands,
         }
 
     def _call_openclaw(self, device_id: str, event_type: str, details: dict) -> None:
@@ -1967,7 +2029,7 @@ class Handler(BaseHTTPRequestHandler):
                 "voices": list(ALIYUN_TTS_DEBUG_VOICES),
                 "note": "This is a curated debug list. The debug synthesis endpoint accepts any voice supported by Aliyun NLS.",
                 "source": ALIYUN_TTS_VOICE_DOC_URL,
-                "debug_endpoint": "/tts/debug?text=你好&voice=xiaoyun&format=wav",
+                "debug_endpoint": f"/tts/debug?text=你好&voice={DEFAULT_TTS_VOICE}&format=wav",
             }
         )
 
@@ -2776,6 +2838,25 @@ def normalize_expression_name(expression: str) -> str:
     return EXPRESSION_ALIASES.get(value, value)
 
 
+DEVICE_STATE_ALIASES = {
+    "wait": "waiting",
+    "think": "waiting",
+    "thinking": "waiting",
+    "awake": "listening",
+    "wake": "listening",
+    "listen": "listening",
+    "sleep": "idle",
+    "sleeping": "idle",
+}
+
+
+def normalize_device_state_name(state: str) -> str:
+    value = str(state or "").strip().lower()
+    if not value:
+        return "waiting"
+    return DEVICE_STATE_ALIASES.get(value, value)
+
+
 def first_connected_device_id(
     last_seen: dict[str, float],
     device_order: list[str],
@@ -2822,6 +2903,10 @@ def make_command(
 
 
 def command_payload_from_query(command_type: str, query: dict):
+    if command_type in ("state", "device_state"):
+        return {
+            "state": normalize_device_state_name(first_value(query, "state") or first_value(query, "name") or "waiting")
+        }
     if command_type in ("face", "expression", "action"):
         expression = first_value(query, "expression") or first_value(query, "face") or "calm"
         if command_type in ("expression", "action"):
@@ -3018,7 +3103,7 @@ def main():
     parser.add_argument("--port", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_PORT", "8091")))
     parser.add_argument("--region", choices=sorted(ASR_URLS), default=os.environ.get("STACKCHAN_ALIYUN_REGION", "shanghai"))
     parser.add_argument("--tts-url", default=os.environ.get("STACKCHAN_ALIYUN_TTS_URL", ""))
-    parser.add_argument("--voice", default=os.environ.get("STACKCHAN_ALIYUN_VOICE", "xiaoyun"))
+    parser.add_argument("--voice", default=os.environ.get("STACKCHAN_ALIYUN_VOICE", DEFAULT_TTS_VOICE))
     parser.add_argument("--sample-rate", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_SAMPLE_RATE", "16000")))
     parser.add_argument("--volume", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_VOLUME", "80")))
     parser.add_argument("--speech-rate", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_SPEECH_RATE", "0")))
@@ -3167,7 +3252,7 @@ def main():
     parser.add_argument("--xiaozhi-local-token", default=os.environ.get("STACKCHAN_XIAOZHI_LOCAL_TOKEN", ""))
     parser.add_argument(
         "--ota-firmware-dir",
-        default=os.environ.get("STACKCHAN_OTA_FIRMWARE_DIR", ""),
+        default=os.environ.get("STACKCHAN_OTA_FIRMWARE_DIR", DEFAULT_OTA_FIRMWARE_DIR),
         help="Directory to scan for the newest valid ESP-IDF app .bin advertised through /xiaozhi/ota.",
     )
     parser.add_argument(

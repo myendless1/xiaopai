@@ -130,7 +130,7 @@ class RealtimeConfig:
     token_getter: Callable[[], str] | None = None
     aliyun_asr_ws_url: str = ""
     aliyun_tts_ws_url: str = ""
-    voice: str = "xiaoyun"
+    voice: str = "zhimiao_emo"
     sample_rate: int = 16000
     volume: int = 80
     speech_rate: int = 0
@@ -417,12 +417,34 @@ class RealtimeManager:
             self.logger(f"Realtime command dispatch failed: {exc}")
             return False
 
+    def set_device_state(self, device_id: str, state: str) -> bool:
+        if self._loop is None:
+            return False
+        future = asyncio.run_coroutine_threadsafe(self._set_device_state(device_id, state), self._loop)
+        try:
+            return bool(future.result(timeout=1.5))
+        except Exception as exc:
+            self.logger(f"Realtime device state dispatch failed: {exc}")
+            return False
+
+    async def _set_device_state(self, device_id: str, state: str) -> bool:
+        session = self._select_session(device_id)
+        if session is None:
+            return False
+        await self._send_device_state(session, state)
+        return True
+
     async def _send_command(self, device_id: str, command: dict) -> bool:
         session = self._select_session(device_id)
         if session is None:
             return False
         if command.get("interrupt"):
             await self._abort_session_tts(session)
+        if command.get("type") in ("state", "device_state"):
+            payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
+            state = str(payload.get("state") or payload.get("name") or "waiting")
+            await self._send_device_state(session, state)
+            return True
         if command.get("type") == "speak":
             payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
             await self._speak(
@@ -663,6 +685,7 @@ class RealtimeManager:
         loop = asyncio.get_running_loop()
         try:
             self._mark(session, "openclaw_start")
+            await self._send_device_state(session, "waiting")
             reply = await loop.run_in_executor(None, self._openclaw.chat, session.device_id, text)
             self._mark(session, "openclaw_done")
         except Exception as exc:

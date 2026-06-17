@@ -122,6 +122,7 @@ if [ "$DEBUG" = "1" ] || [ "$DEBUG" = "true" ]; then
   echo "  TTS stream:   http://$HOST:$PORT/stream-speak?text=..."
   echo "  Image upload: http://$HOST:$PORT/upload-image"
   echo "  OTA check:    http://$HOST:$PORT/xiaozhi/ota"
+  echo "  OTA latest:   http://$HOST:$PORT/firmware/latest.json"
   echo "  health:       http://127.0.0.1:$PORT/health"
   echo
   echo "Firmware config examples:"
