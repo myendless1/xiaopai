@@ -56,6 +56,7 @@ static bool http_get_string(const std::string& url, std::string* response, int t
 static int json_int_value(const cJSON* root, const char* key, int default_value);
 static bool json_bool_value(const cJSON* root, const char* key, bool default_value);
 static void set_light_strip_listening();
+static void set_listening_outputs();
 static void set_light_strip_speaking();
 static void set_light_strip_sleeping();
 static void set_waiting_outputs();
@@ -95,7 +96,7 @@ extern "C" void app_main(void)
     audio_mutex = xSemaphoreCreateMutex();
     local_voice_state_init({
         set_light_strip_sleeping,
-        set_light_strip_listening,
+        set_listening_outputs,
         set_waiting_outputs,
         set_light_strip_speaking,
         mark_wake_find_owner_pending,

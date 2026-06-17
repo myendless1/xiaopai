@@ -499,6 +499,12 @@ static void set_light_strip_listening()
     set_light_strip_listening_bar(1);
 }
 
+static void set_listening_outputs()
+{
+    set_light_strip_listening();
+    show_expression(kDefaultExpression);
+}
+
 static void set_light_strip_speaking()
 {
     set_light_strip_color(kLightStripSpeakingR, kLightStripSpeakingG, kLightStripSpeakingB, 2);
@@ -545,8 +551,7 @@ static void set_waiting_outputs()
 {
     light_strip_listening_after_speech = false;
     listening_light_last_update_ms = 0;
-    set_light_strip_color(kLightStripWaitingR, kLightStripWaitingG, kLightStripWaitingB, 5);
-    show_expression("thinking");
+    set_light_strip_speaking_bar(2);
 }
 
 static void run_light_strip_boot_probe()

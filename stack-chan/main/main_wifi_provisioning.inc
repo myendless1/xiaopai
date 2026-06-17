@@ -247,7 +247,7 @@ static void schedule_stop_provisioning_portal()
     }
 }
 
-static bool select_server_base(const std::string& requested_base, bool persist)
+static bool select_server_base(const std::string& requested_base, bool persist, bool show_success_expression = true)
 {
     std::string base = normalize_server_base(requested_base);
     if (!base.empty()) {
@@ -259,7 +259,9 @@ static bool select_server_base(const std::string& requested_base, bool persist)
                 save_server_base(base);
             }
             ESP_LOGI(TAG, "Server selected: %s", active_server_base.c_str());
-            show_expression("calm");
+            if (show_success_expression) {
+                show_expression("calm");
+            }
             schedule_stop_provisioning_portal();
             return true;
         }
@@ -911,7 +913,6 @@ static bool try_saved_network_ready()
     std::string saved_ssid;
     std::string saved_password;
     if (!wifi_is_connected() && load_saved_wifi_credentials(saved_ssid, saved_password)) {
-        set_current_network_status("WiFi", "Connecting saved WiFi", saved_ssid.c_str(), "", true, false);
         if (!connect_wifi_credentials(saved_ssid, saved_password, false)) {
             ESP_LOGW(TAG, "Saved WiFi auto-connect failed: %s", saved_ssid.c_str());
             return false;
@@ -924,9 +925,7 @@ static bool try_saved_network_ready()
 
     std::string saved_server;
     if (load_saved_server_base(saved_server)) {
-        set_current_network_status("Server", "Checking saved server", saved_server.c_str(), "", true, false);
-        if (select_server_base(saved_server, false)) {
-            set_current_network_status("Ready", active_wifi_ssid.c_str(), active_server_base.c_str(), "", false, true);
+        if (select_server_base(saved_server, false, false)) {
             return true;
         }
         ESP_LOGW(TAG, "Saved server auto-select failed: %s", saved_server.c_str());
@@ -937,13 +936,13 @@ static bool try_saved_network_ready()
 
 static bool ensure_network_ready()
 {
-    if (try_saved_network_ready()) {
-        return true;
-    }
-
-    if (!start_provisioning_portal()) {
+    if (!provisioning_started && !start_provisioning_portal()) {
         set_current_network_status("Setup", "Could not start portal", "", "", false, false);
         return false;
+    }
+
+    if (try_saved_network_ready()) {
+        return true;
     }
 
     while (!wifi_is_connected() || !active_server_selected) {
