@@ -19,6 +19,10 @@ static bool execute_command_object(const cJSON* command)
         show_expression(expression.empty() ? kDefaultExpression : expression.c_str());
         return true;
     }
+    if (type == "check_ota" || type == "ota_check" || type == "firmware_ota") {
+        check_and_apply_firmware_ota_once();
+        return true;
+    }
     if (type == "state" || type == "device_state" || type == "waiting" || type == "thinking") {
         std::string state = json_string_value(payload, "state");
         if (state.empty()) {

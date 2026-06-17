@@ -906,8 +906,41 @@ static bool ensure_server_selected()
     return false;
 }
 
+static bool try_saved_network_ready()
+{
+    std::string saved_ssid;
+    std::string saved_password;
+    if (!wifi_is_connected() && load_saved_wifi_credentials(saved_ssid, saved_password)) {
+        set_current_network_status("WiFi", "Connecting saved WiFi", saved_ssid.c_str(), "", true, false);
+        if (!connect_wifi_credentials(saved_ssid, saved_password, false)) {
+            ESP_LOGW(TAG, "Saved WiFi auto-connect failed: %s", saved_ssid.c_str());
+            return false;
+        }
+    }
+
+    if (!wifi_is_connected()) {
+        return false;
+    }
+
+    std::string saved_server;
+    if (load_saved_server_base(saved_server)) {
+        set_current_network_status("Server", "Checking saved server", saved_server.c_str(), "", true, false);
+        if (select_server_base(saved_server, false)) {
+            set_current_network_status("Ready", active_wifi_ssid.c_str(), active_server_base.c_str(), "", false, true);
+            return true;
+        }
+        ESP_LOGW(TAG, "Saved server auto-select failed: %s", saved_server.c_str());
+    }
+
+    return active_server_selected && http_health_ok(active_server_base);
+}
+
 static bool ensure_network_ready()
 {
+    if (try_saved_network_ready()) {
+        return true;
+    }
+
     if (!start_provisioning_portal()) {
         set_current_network_status("Setup", "Could not start portal", "", "", false, false);
         return false;

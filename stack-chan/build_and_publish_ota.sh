@@ -54,7 +54,10 @@ manifest = {
 manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
 PY
 
+git -C "$PROJECT_DIR/.." add -- "$SERVER_FIRMWARE_DIR"
+
 printf 'Published OTA firmware:\n'
 printf '  version: %s\n' "$PUBLISH_VERSION"
 printf '  file:    %s\n' "$PUBLISH_PATH"
 printf '  latest:  %s\n' "$SERVER_FIRMWARE_DIR/latest.json"
+printf '  staged:  %s\n' "$SERVER_FIRMWARE_DIR"

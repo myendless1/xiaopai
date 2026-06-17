@@ -440,6 +440,11 @@ class RealtimeManager:
             return False
         if command.get("interrupt"):
             await self._abort_session_tts(session)
+        if command.get("type") in ("check_ota", "ota_check", "firmware_ota"):
+            await session.websocket.send(
+                json_dumps({"type": "command", "command": command, "session_id": session.session_id})
+            )
+            return True
         if command.get("type") in ("state", "device_state"):
             payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
             state = str(payload.get("state") or payload.get("name") or "waiting")

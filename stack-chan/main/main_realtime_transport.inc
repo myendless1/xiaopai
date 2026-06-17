@@ -311,7 +311,9 @@ static void wake_for_server_command(const char* command_type)
     if (strcmp(type, "sleep") == 0 || strcmp(type, "stop") == 0 ||
         strcmp(type, "wake") == 0 || strcmp(type, "listen") == 0 || strcmp(type, "listening") == 0 ||
         strcmp(type, "state") == 0 || strcmp(type, "device_state") == 0 ||
-        strcmp(type, "waiting") == 0 || strcmp(type, "thinking") == 0) {
+        strcmp(type, "waiting") == 0 || strcmp(type, "thinking") == 0 ||
+        strcmp(type, "check_ota") == 0 || strcmp(type, "ota_check") == 0 ||
+        strcmp(type, "firmware_ota") == 0) {
         return;
     }
     LocalVoiceState current = local_voice_current_state();

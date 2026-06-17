@@ -50,6 +50,7 @@ TOKEN_API_VERSION = "2019-02-28"
 TOKEN_REFRESH_MARGIN_SECONDS = 300
 DEVICE_ONLINE_TTL_SECONDS = 90
 DIALOG_AWAKE_SECONDS = 180
+DEFAULT_OTA_CHECK_INTERVAL_SECONDS = 300
 LOG_TEXT_MAX_CHARS = 2000
 DIALOG_WAKE_WORDS = (
     "小派同学",
@@ -151,6 +152,9 @@ COMMAND_DEFAULT_PRIORITIES = {
     "motion": 45,
     "move": 45,
     "sequence": 30,
+    "check_ota": 25,
+    "ota_check": 25,
+    "firmware_ota": 25,
     "speak": 10,
     "play_audio": 10,
 }
@@ -166,9 +170,12 @@ COMMAND_DEFAULT_TTL_SECONDS = {
     "move": 5.0,
     "speak": 30.0,
     "sequence": 45.0,
+    "check_ota": 600.0,
+    "ota_check": 600.0,
+    "firmware_ota": 600.0,
 }
-COMMAND_COALESCE_BY_TYPE = {"state", "device_state", "face", "expression", "action", "node_head", "nod_head", "motion", "move", "speak"}
-COMMAND_DISCARDABLE_TYPES = {"state", "device_state", "face", "expression", "action", "node_head", "nod_head", "motion", "move", "speak", "sequence"}
+COMMAND_COALESCE_BY_TYPE = {"state", "device_state", "face", "expression", "action", "node_head", "nod_head", "motion", "move", "speak", "check_ota", "ota_check", "firmware_ota"}
+COMMAND_DISCARDABLE_TYPES = {"state", "device_state", "face", "expression", "action", "node_head", "nod_head", "motion", "move", "speak", "sequence", "check_ota", "ota_check", "firmware_ota"}
 
 WAKE_REPLY_EVENTS = (
     ("wake_reply", "我在。"),
@@ -1138,6 +1145,7 @@ class AliyunVoiceServer(ThreadingHTTPServer):
     ota_firmware_file: str
     ota_public_base_url: str
     ota_force: bool
+    ota_check_interval_seconds: int
     device_queues: dict[str, DeviceCommandQueue]
     last_ack: dict[str, dict]
     last_seen: dict[str, float]
@@ -2872,6 +2880,86 @@ def first_connected_device_id(
     return "default"
 
 
+def connected_device_ids(server) -> list[str]:
+    now = time.time()
+    device_ids: list[str] = []
+    seen_ids = set()
+
+    manager = getattr(server, "realtime_manager", None)
+    if manager:
+        for device in manager.devices_snapshot():
+            device_id = safe_device_id(device.get("device_id", ""))
+            if device_id and device_id not in seen_ids and not is_placeholder_device_id(device_id):
+                device_ids.append(device_id)
+                seen_ids.add(device_id)
+
+    with server.device_lock:
+        last_seen_snapshot = dict(server.last_seen)
+        ordered_ids = list(server.device_order)
+
+    for device_id in ordered_ids + list(last_seen_snapshot):
+        device_id = safe_device_id(device_id)
+        if not device_id or device_id in seen_ids or is_placeholder_device_id(device_id):
+            continue
+        seen = last_seen_snapshot.get(device_id)
+        if seen is not None and now - seen <= DEVICE_ONLINE_TTL_SECONDS:
+            device_ids.append(device_id)
+            seen_ids.add(device_id)
+
+    return device_ids
+
+
+def enqueue_server_command(server, device_id: str, command: dict) -> bool:
+    device_id = safe_device_id(device_id)
+    if is_placeholder_device_id(device_id):
+        return False
+
+    manager = getattr(server, "realtime_manager", None)
+    if manager and manager.has_device(device_id) and manager.enqueue_command(device_id, command):
+        log_print(f"Periodic command sent realtime: {command.get('type')} device={device_id}")
+        return True
+
+    with server.device_lock:
+        queue = server.device_queues.get(device_id)
+        if queue is None:
+            queue = DeviceCommandQueue(server.command_queue_max_size)
+            server.device_queues[device_id] = queue
+    stats = queue.put(command)
+    if stats.get("queued"):
+        log_print(f"Periodic command queued: {command.get('type')} device={device_id}")
+        return True
+    log_print(f"Periodic command dropped: {command.get('type')} device={device_id} stats={stats}")
+    return False
+
+
+def run_periodic_ota_check_loop(server) -> None:
+    interval = int(getattr(server, "ota_check_interval_seconds", DEFAULT_OTA_CHECK_INTERVAL_SECONDS) or 0)
+    if interval <= 0:
+        log_print("Periodic OTA check commands disabled")
+        return
+
+    log_print(f"Periodic OTA check commands enabled: every {interval}s")
+    while True:
+        time.sleep(interval)
+        firmware = find_latest_ota_firmware(server.ota_firmware_file, server.ota_firmware_dir)
+        if firmware is None:
+            continue
+        device_ids = connected_device_ids(server)
+        if not device_ids:
+            continue
+        for device_id in device_ids:
+            command = make_command(
+                "check_ota",
+                {},
+                priority=25,
+                interrupt=False,
+                ttl_seconds=max(interval * 2, 600),
+                discardable=True,
+                coalesce_key="check_ota",
+            )
+            enqueue_server_command(server, device_id, command)
+
+
 def make_command(
     command_type: str,
     payload,
@@ -2960,6 +3048,8 @@ def command_payload_from_query(command_type: str, query: dict):
             "gain_y": float(first_value(query, "gain_y") or "0.8"),
             "stop_pixels": float(first_value(query, "stop_pixels") or "32"),
         }
+    if command_type in ("check_ota", "ota_check", "firmware_ota"):
+        return {}
     if command_type == "stop":
         return {}
     if command_type == "sequence":
@@ -3271,6 +3361,12 @@ def main():
         default=parse_bool(os.environ.get("STACKCHAN_OTA_FORCE", "false")),
         help="Ask devices to install the advertised firmware even when its version is not newer.",
     )
+    parser.add_argument(
+        "--ota-check-interval-seconds",
+        type=int,
+        default=int(os.environ.get("STACKCHAN_OTA_CHECK_INTERVAL_SECONDS", str(DEFAULT_OTA_CHECK_INTERVAL_SECONDS))),
+        help="Interval for queuing check_ota commands to online devices. Set 0 to disable.",
+    )
     parser.add_argument("--aliyun-asr-ws-url", default=os.environ.get("STACKCHAN_ALIYUN_ASR_WS_URL", ""))
     parser.add_argument("--aliyun-tts-ws-url", default=os.environ.get("STACKCHAN_ALIYUN_TTS_WS_URL", ""))
     parser.add_argument("--audio-upstream-format", default=os.environ.get("STACKCHAN_AUDIO_UPSTREAM_FORMAT", "opus"))
@@ -3356,6 +3452,7 @@ def main():
     httpd.ota_firmware_file = args.ota_firmware_file
     httpd.ota_public_base_url = args.ota_public_base_url
     httpd.ota_force = args.ota_force
+    httpd.ota_check_interval_seconds = args.ota_check_interval_seconds
     httpd.device_lock = threading.Lock()
     httpd.device_queues = {}
     httpd.last_ack = {}
@@ -3401,6 +3498,8 @@ def main():
             httpd.realtime_manager = None
             log_print(f"Realtime server failed to start: {exc}", file=sys.stderr)
 
+    threading.Thread(target=run_periodic_ota_check_loop, args=(httpd,), name="ota-check", daemon=True).start()
+
     log_print("Xiaopai server ready")
     log_print(f"  face detector: {args.face_detector}")
     log_print(f"  capture save mode: {args.capture_save_mode}")
@@ -3415,6 +3514,10 @@ def main():
             if ota_firmware is not None
             else "disabled (no valid app .bin found)"
         )
+    )
+    log_print(
+        "  OTA check commands: "
+        + (f"every {args.ota_check_interval_seconds}s" if args.ota_check_interval_seconds > 0 else "disabled")
     )
     log_print(
         "  Realtime: "

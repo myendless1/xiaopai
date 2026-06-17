@@ -543,7 +543,9 @@ static void set_light_strip_sleeping()
 
 static void set_waiting_outputs()
 {
-    set_light_strip_sleeping();
+    light_strip_listening_after_speech = false;
+    listening_light_last_update_ms = 0;
+    set_light_strip_color(kLightStripWaitingR, kLightStripWaitingG, kLightStripWaitingB, 5);
     show_expression("thinking");
 }
 
