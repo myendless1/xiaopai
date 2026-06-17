@@ -434,6 +434,9 @@ static bool handle_ws_text_message(esp_transport_handle_t ws, const char* data, 
             local_voice_request_state(LocalVoiceState::Listening, "ws device_state");
         } else if (state == "wait" || state == "waiting" || state == "thinking") {
             local_voice_request_state(LocalVoiceState::Waiting, "ws device_state");
+            if (state == "thinking") {
+                show_expression("thinking");
+            }
         } else if (state == "speak" || state == "speaking") {
             local_voice_request_state(LocalVoiceState::Speaking, "ws device_state");
         }

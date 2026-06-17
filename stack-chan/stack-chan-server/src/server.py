@@ -1962,7 +1962,19 @@ class Handler(BaseHTTPRequestHandler):
         return []
 
     def _enter_openclaw_waiting(self, device_id: str, event_type: str) -> list[str]:
-        return self._send_device_state_command(device_id, "waiting", reason=f"openclaw:{event_type}")
+        queued_commands = self._send_device_state_command(device_id, "waiting", reason=f"openclaw:{event_type}")
+        command = make_command(
+            "face",
+            {"expression": "thinking", "reason": f"openclaw:{event_type}"},
+            priority=89,
+            interrupt=True,
+            ttl_seconds=8,
+            discardable=True,
+            coalesce_key="face",
+        )
+        if self._enqueue_command(device_id, command):
+            queued_commands.append(command["cmd_id"])
+        return queued_commands
 
     def _send_openclaw_event(self, device_id: str, event_type: str, details: dict) -> dict:
         if not self._openclaw_enabled():

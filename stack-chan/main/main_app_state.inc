@@ -299,7 +299,8 @@ static void mark_wake_find_owner_pending(const char* reason)
 
 static bool should_restore_listening_light_after_speech()
 {
-    return light_strip_listening_after_speech;
+    return light_strip_listening_after_speech && local_voice_current_state() == LocalVoiceState::Listening &&
+           !voice_listener_paused;
 }
 
 static void handle_pending_wake_find_owner()

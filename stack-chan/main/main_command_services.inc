@@ -10,8 +10,20 @@ static bool execute_command_object(const cJSON* command)
         payload = command;
     }
 
-    if (type == "face") {
+    if (type == "face" || type == "expression" || type == "action") {
         std::string expression = json_string_value(payload, "expression");
+        if (expression.empty()) {
+            expression = json_string_value(payload, "face");
+        }
+        if (expression.empty()) {
+            expression = json_string_value(payload, "name");
+        }
+        if (expression.empty()) {
+            expression = json_string_value(payload, "action");
+        }
+        if (expression == "thinking") {
+            local_voice_request_state(LocalVoiceState::Waiting, "thinking expression command");
+        }
         if (speech_output_is_busy()) {
             expression_set_speech_overridden(true);
             cancel_speaking_animation_now();
@@ -30,6 +42,9 @@ static bool execute_command_object(const cJSON* command)
         }
         if (state == "wait" || state == "waiting" || state == "thinking") {
             local_voice_request_state(LocalVoiceState::Waiting, "state command");
+            if (state == "thinking") {
+                show_expression("thinking");
+            }
             return true;
         }
         if (state == "wake" || state == "awake" || state == "listen" || state == "listening") {
