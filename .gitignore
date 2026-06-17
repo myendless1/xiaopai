@@ -26,3 +26,5 @@ esp-idf/
 # Tool caches/state
 .cache/
 .openclaw/
+
+*.inc

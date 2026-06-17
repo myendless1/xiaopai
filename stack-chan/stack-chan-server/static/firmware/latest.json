@@ -1,7 +1,7 @@
 {
-  "version": "0.1.1",
-  "filename": "xiaopai-0.1.1.bin",
-  "size": 1744048,
-  "sha256": "1e22fa416a6ca30b012219ef0719bc41b8b89258fde2e766a6df093e06f0ce0c",
+  "version": "0.1.2",
+  "filename": "xiaopai-0.1.2.bin",
+  "size": 1744080,
+  "sha256": "7c6440dd5351a5dd87b2d5fae088edfd3c82df7c78600229f16e111176474605",
   "project_name": "xiaopai-counter-demo"
 }
