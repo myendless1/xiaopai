@@ -2828,7 +2828,15 @@ def command_payload_from_query(command_type: str, query: dict):
             expression = first_value(query, "name") or first_value(query, "action") or expression
         return {"expression": normalize_expression_name(expression)}
     if command_type == "speak":
-        return {"text": first_value(query, "text") or "你好呀"}
+        payload = {"text": first_value(query, "text") or "你好呀"}
+        voice = first_value(query, "voice")
+        if voice:
+            payload["voice"] = voice
+        for key in ("sample_rate", "volume", "speech_rate", "pitch_rate"):
+            value = first_value(query, key)
+            if value != "":
+                payload[key] = int(value)
+        return payload
     if command_type in ("volume", "sound"):
         direction = first_value(query, "direction") or first_value(query, "action") or first_value(query, "type") or "up"
         mode = first_value(query, "mode") or ""
@@ -2882,7 +2890,15 @@ def command_payload_from_query(command_type: str, query: dict):
         expression = normalize_expression_name(first_value(query, "expression") or "calm")
         steps = [{"type": "face", "expression": expression}]
         if text:
-            steps.append({"type": "speak", "text": text, "pause_listener": True})
+            speak_step = {"type": "speak", "text": text, "pause_listener": True}
+            voice = first_value(query, "voice")
+            if voice:
+                speak_step["voice"] = voice
+            for key in ("sample_rate", "volume", "speech_rate", "pitch_rate"):
+                value = first_value(query, key)
+                if value != "":
+                    speak_step[key] = int(value)
+            steps.append(speak_step)
         return steps
     return {key: values[0] for key, values in query.items() if values}
 

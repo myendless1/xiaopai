@@ -65,6 +65,22 @@ class CommandPayloadTest(unittest.TestCase):
         self.assertEqual(payload[0], {"type": "face", "expression": "calm"})
         self.assertEqual(payload[1], {"type": "speak", "text": "在的。", "pause_listener": True})
 
+    def test_speak_query_preserves_tts_voice_options(self):
+        payload = server.command_payload_from_query(
+            "speak",
+            {
+                "text": ["你好，我是知妙。"],
+                "voice": ["zhimiao_emo"],
+                "speech_rate": ["-80"],
+                "pitch_rate": ["20"],
+            },
+        )
+
+        self.assertEqual(payload["text"], "你好，我是知妙。")
+        self.assertEqual(payload["voice"], "zhimiao_emo")
+        self.assertEqual(payload["speech_rate"], -80)
+        self.assertEqual(payload["pitch_rate"], 20)
+
     def test_speech_text_normalizes_inline_markdown_table(self):
         text = (
             "你今天（2026年6月16日 周二）有 **2 个日程**： "

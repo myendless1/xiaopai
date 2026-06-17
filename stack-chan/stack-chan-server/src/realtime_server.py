@@ -430,6 +430,11 @@ class RealtimeManager:
                 str(payload.get("text") or ""),
                 cache_name=str(payload.get("cache_name") or ""),
                 pause_listener=bool(payload.get("pause_listener", payload.get("pause_voice_listener", True))),
+                tts_options={
+                    key: payload[key]
+                    for key in ("voice", "sample_rate", "volume", "speech_rate", "pitch_rate")
+                    if key in payload and payload[key] not in (None, "")
+                },
             )
             return True
         return await self._send_mcp_command(session, command)
@@ -696,6 +701,7 @@ class RealtimeManager:
         *,
         cache_name: str = "",
         pause_listener: bool = True,
+        tts_options: dict | None = None,
     ) -> None:
         text = str(text or "").strip()
         if not text:
@@ -704,6 +710,10 @@ class RealtimeManager:
         self._mark(session, "device_tts_start")
         await session.websocket.send(json_dumps(build_llm(text, session_id=session.session_id)))
         speak_step = {"type": "speak", "text": text, "pause_listener": bool(pause_listener)}
+        if isinstance(tts_options, dict):
+            for key in ("voice", "sample_rate", "volume", "speech_rate", "pitch_rate"):
+                if key in tts_options and tts_options[key] not in (None, ""):
+                    speak_step[key] = tts_options[key]
         cache_name = str(cache_name or "").strip()
         if cache_name:
             speak_step["cache_name"] = cache_name

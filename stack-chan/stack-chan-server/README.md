@@ -210,6 +210,15 @@ curl -G 'http://127.0.0.1:8091/stream-speak' \
   -o /tmp/xiaopai-zhimiao.pcm
 ```
 
+To make Xiaopai speak with that voice, send a command to the robot command queue:
+
+```bash
+curl -G 'http://127.0.0.1:8091/command/speak' \
+  --data-urlencode 'text=你好，我是知妙。' \
+  --data-urlencode 'voice=zhimiao_emo' \
+  --data-urlencode 'interrupt=true'
+```
+
 `GET /tts/voices`
 
 Returns a curated Aliyun TTS voice list for quick testing. This is not meant to mirror the full upstream catalog; `/tts/debug` accepts any valid Aliyun `voice` value.
