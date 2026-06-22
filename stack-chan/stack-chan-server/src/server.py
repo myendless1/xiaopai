@@ -195,7 +195,12 @@ SLEEP_REPLY_REST_EVENTS = (
     ("sleep_reply_obey", "遵命"),
 )
 SLEEP_REPLY_EVENTS = tuple({name: text for name, text in SLEEP_REPLY_BYE_EVENTS + SLEEP_REPLY_REST_EVENTS}.items())
-PREWARM_EVENT_AUDIO_NAMES = tuple(name for name, _text in WAKE_REPLY_EVENTS + SLEEP_REPLY_EVENTS)
+SEDENTARY_REMINDER_EVENTS = (
+    ("sedentary_reminder_stretch", "你已连续工作好长时间啦，起身拉伸一下吧。"),
+    ("sedentary_reminder_move", "小派观察到你一直在忙，站起来活动两分钟吧。"),
+    ("sedentary_reminder_walk", "眼睛和肩颈都需要休息一下，起身走一走吧。"),
+)
+PREWARM_EVENT_AUDIO_NAMES = tuple(name for name, _text in WAKE_REPLY_EVENTS + SLEEP_REPLY_EVENTS + SEDENTARY_REMINDER_EVENTS)
 EVENT_AUDIO_CACHE_META_VERSION = 2
 ESP_APP_DESC_MAGIC_WORD = 0xABCD5432
 ESP_IMAGE_HEADER_SIZE = 24
@@ -214,6 +219,8 @@ HEAD_TOUCH_EVENT_TEXT.update(
         "swipe_backward": "你好，我是小派同学",
     }
 )
+EVENT_AUDIO_TEXT = dict(HEAD_TOUCH_EVENT_TEXT)
+EVENT_AUDIO_TEXT.update({name: text for name, text in SEDENTARY_REMINDER_EVENTS})
 
 ALIYUN_TTS_VOICE_DOC_URL = "https://help.aliyun.com/zh/isi/developer-reference/overview-of-speech-synthesis"
 ALIYUN_TTS_DEBUG_VOICES = (
@@ -2132,12 +2139,12 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_event_audio(self, filename: str):
         audio_ext = "wav" if filename.endswith(".wav") else "pcm"
         name = filename.rsplit(".", 1)[0] if "." in filename else filename
-        if name not in HEAD_TOUCH_EVENT_TEXT:
+        if name not in EVENT_AUDIO_TEXT:
             self._send_json(
                 {
                     "type": "error",
-                    "message": f"unknown head touch event: {name}",
-                    "events": list(HEAD_TOUCH_EVENT_TEXT),
+                    "message": f"unknown event audio: {name}",
+                    "events": list(EVENT_AUDIO_TEXT),
                 },
                 HTTPStatus.NOT_FOUND,
             )
@@ -2792,14 +2799,14 @@ def write_event_audio_cache_meta(meta_path: str, meta: dict) -> None:
 
 
 def ensure_event_audio_cache(server: AliyunVoiceServer, name: str, *, logger=log_print) -> tuple[str, str]:
-    if name not in HEAD_TOUCH_EVENT_TEXT:
+    if name not in EVENT_AUDIO_TEXT:
         raise ValueError(f"unknown event audio: {name}")
     cache_dir = os.path.join(server.static_dir, "event-audio")
     os.makedirs(cache_dir, exist_ok=True)
     pcm_path = os.path.join(cache_dir, f"{name}.pcm")
     wav_path = os.path.join(cache_dir, f"{name}.wav")
     meta_path = os.path.join(cache_dir, f"{name}.txt")
-    text = HEAD_TOUCH_EVENT_TEXT[name]
+    text = EVENT_AUDIO_TEXT[name]
     expected_meta = event_audio_cache_meta(server, text)
     cached_meta = read_event_audio_cache_meta(meta_path)
     if cached_meta != expected_meta:
@@ -2833,7 +2840,7 @@ def ensure_event_audio_cache(server: AliyunVoiceServer, name: str, *, logger=log
 
 
 def prewarm_event_audio_cache(server: AliyunVoiceServer, names: tuple[str, ...] | None = None) -> None:
-    selected_names = names or tuple(HEAD_TOUCH_EVENT_TEXT)
+    selected_names = names or tuple(EVENT_AUDIO_TEXT)
     for name in selected_names:
         try:
             ensure_event_audio_cache(server, name)
@@ -3051,9 +3058,12 @@ def command_payload_from_query(command_type: str, query: dict):
             "duration_ms": int(first_value(query, "duration_ms") or "500"),
         }
     if command_type in ("find_owner", "locate_owner"):
+        speak_raw = first_value(query, "speak")
+        speak = parse_bool(speak_raw) if speak_raw else True
         return {
             "rounds": int(first_value(query, "rounds") or "1"),
-            "reply": first_value(query, "reply") or "我在",
+            "reply": first_value(query, "reply") or ("我在" if speak else ""),
+            "speak": speak,
             "preserve_speech": parse_bool(first_value(query, "preserve_speech") or "false"),
             "wait_for_speech": parse_bool(first_value(query, "wait_for_speech") or "false"),
             "gain_x": float(first_value(query, "gain_x") or "1.0"),

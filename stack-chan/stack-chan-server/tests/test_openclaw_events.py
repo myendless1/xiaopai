@@ -112,6 +112,17 @@ class CommandPayloadTest(unittest.TestCase):
 
         self.assertEqual(payload, {"state": "waiting"})
 
+    def test_find_owner_query_can_disable_reply(self):
+        payload = server.command_payload_from_query("find_owner", {"speak": ["false"]})
+
+        self.assertEqual(payload["reply"], "")
+        self.assertFalse(payload["speak"])
+
+    def test_sedentary_audio_is_cached_event_not_head_touch_event(self):
+        self.assertIn("sedentary_reminder_stretch", server.EVENT_AUDIO_TEXT)
+        self.assertIn("sedentary_reminder_stretch", server.PREWARM_EVENT_AUDIO_NAMES)
+        self.assertNotIn("sedentary_reminder_stretch", server.HEAD_TOUCH_EVENT_TEXT)
+
 
 class OpenClawWaitingStateTest(unittest.TestCase):
     def test_send_openclaw_event_enters_waiting_before_async_call(self):

@@ -260,6 +260,8 @@ static bool select_server_base(const std::string& requested_base, bool persist, 
             }
             ESP_LOGI(TAG, "Server selected: %s", active_server_base.c_str());
             if (show_success_expression) {
+                current_app = AppId::VoiceDemo;
+                voice_status_screen_suppressed = true;
                 show_expression("calm");
             }
             schedule_stop_provisioning_portal();

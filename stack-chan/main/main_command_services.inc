@@ -104,7 +104,10 @@ static bool execute_command_object(const cJSON* command)
         float stop_pixels = static_cast<float>(json_number_value(payload, "stop_pixels", kFindOwnerStopPixels));
         const cJSON* reply_item = cJSON_GetObjectItemCaseSensitive(payload, "reply");
         std::string reply = cJSON_IsString(reply_item) ? reply_item->valuestring : "";
-        if (!cJSON_IsString(reply_item)) {
+        bool speak = json_bool_value(payload, "speak", true);
+        if (!speak) {
+            reply.clear();
+        } else if (!cJSON_IsString(reply_item)) {
             reply = "我在";
         }
         bool preserve_speech = json_bool_value(payload, "preserve_speech", false);
@@ -294,6 +297,8 @@ static void start_background_services()
 
         check_and_apply_firmware_ota_once();
 
+        current_app = AppId::VoiceDemo;
+        voice_status_screen_suppressed = true;
         show_expression(kDefaultExpression);
         enable_servo_power();
         if (init_camera_once()) {
@@ -302,10 +307,9 @@ static void start_background_services()
         } else {
             ESP_LOGW(TAG, "Camera pre-initialization failed; will retry on demand");
         }
-        current_app = AppId::VoiceDemo;
-        voice_status_screen_suppressed = true;
         start_head_touch_services();
         start_speak_command_service();
+        start_sedentary_find_owner_service();
 
         if (xiaozhi_task_handle == nullptr) {
             app1_stop_requested = false;

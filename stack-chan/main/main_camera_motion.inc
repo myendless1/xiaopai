@@ -163,6 +163,23 @@ struct FaceTarget {
     float area = 0.0f;
 };
 
+struct FindOwnerResult {
+    bool ready = false;
+    bool saw_face = false;
+    bool aligned = false;
+};
+
+struct SedentaryReminderLine {
+    const char* text;
+    const char* cache_name;
+};
+
+static constexpr SedentaryReminderLine kSedentaryReminderLines[] = {
+    {"你已连续工作好长时间啦，起身拉伸一下吧。", "sedentary_reminder_stretch"},
+    {"小派观察到你一直在忙，站起来活动两分钟吧。", "sedentary_reminder_move"},
+    {"眼睛和肩颈都需要休息一下，起身走一走吧。", "sedentary_reminder_walk"},
+};
+
 struct CapturedFrame {
     std::vector<uint8_t> data;
     uint32_t width = 0;
@@ -996,17 +1013,21 @@ static bool refine_head_toward_face(const FaceTarget& target, uint16_t duration_
     return move_head_to_tracking_angles(next_yaw, next_pitch, duration_ms);
 }
 
-static bool run_find_owner_command(int rounds, const char* reply, float gain_x = kFindOwnerYawGain,
-                                   float gain_y = kFindOwnerPitchGain, float stop_pixels = kFindOwnerStopPixels,
-                                   bool preserve_speech_playback = false, bool wait_for_speech = false)
+static FindOwnerResult run_find_owner_detection(int rounds, float gain_x = kFindOwnerYawGain,
+                                                float gain_y = kFindOwnerPitchGain,
+                                                float stop_pixels = kFindOwnerStopPixels,
+                                                bool preserve_speech_playback = false,
+                                                bool wait_for_speech = false)
 {
+    FindOwnerResult result;
     ensure_client_id();
     if (!ensure_wifi_connected()) {
-        return false;
+        return result;
     }
     if (!ensure_server_selected()) {
-        return false;
+        return result;
     }
+    result.ready = true;
 
     if (wait_for_speech) {
         const int max_wait_ms = 3000;
@@ -1031,8 +1052,6 @@ static bool run_find_owner_command(int rounds, const char* reply, float gain_x =
     gain_x = std::max(0.0f, gain_x);
     gain_y = std::max(0.0f, gain_y);
     stop_pixels = std::max(0.0f, stop_pixels);
-    bool saw_face = false;
-    bool aligned = false;
     for (int round = 1; round <= capped_rounds; ++round) {
         FaceTarget target;
         char line1[48];
@@ -1042,12 +1061,12 @@ static bool run_find_owner_command(int rounds, const char* reply, float gain_x =
             continue;
         }
 
-        saw_face = true;
+        result.saw_face = true;
         float dx = target.center_x - kTrackingCx;
         float dy = target.center_y - kTrackingCy;
         float pixel_error = std::sqrt(dx * dx + dy * dy);
         if (pixel_error <= stop_pixels) {
-            aligned = true;
+            result.aligned = true;
             ESP_LOGI(TAG, "Find owner aligned: err=%.1f", pixel_error);
             break;
         }
@@ -1064,11 +1083,73 @@ static bool run_find_owner_command(int rounds, const char* reply, float gain_x =
         vTaskDelay(pdMS_TO_TICKS(650));
     }
 
-    ESP_LOGI(TAG, "Find owner finished: saw_face=%d aligned=%d", saw_face, aligned);
+    ESP_LOGI(TAG, "Find owner finished: saw_face=%d aligned=%d", result.saw_face, result.aligned);
+    return result;
+}
+
+static bool run_find_owner_command(int rounds, const char* reply, float gain_x = kFindOwnerYawGain,
+                                   float gain_y = kFindOwnerPitchGain, float stop_pixels = kFindOwnerStopPixels,
+                                   bool preserve_speech_playback = false, bool wait_for_speech = false)
+{
+    FindOwnerResult result = run_find_owner_detection(rounds, gain_x, gain_y, stop_pixels, preserve_speech_playback,
+                                                      wait_for_speech);
+    if (!result.ready) {
+        return false;
+    }
     if (reply != nullptr && reply[0] != '\0') {
         return execute_speak_command_internal(reply, false);
     }
-    return saw_face;
+    return result.saw_face;
+}
+
+static void play_sedentary_reminder(int reminder_index)
+{
+    const int count = static_cast<int>(sizeof(kSedentaryReminderLines) / sizeof(kSedentaryReminderLines[0]));
+    const SedentaryReminderLine& line = kSedentaryReminderLines[reminder_index % count];
+    if (!enqueue_speak_command("", line.text, line.cache_name, true)) {
+        execute_speak_command_internal(line.text, true, line.cache_name);
+    }
+}
+
+static void run_sedentary_find_owner_loop()
+{
+    uint32_t next_find_ms = M5.millis() + kSedentaryFindOwnerIntervalMs;
+    int consecutive_owner_hits = 0;
+    int reminder_index = 0;
+
+    while (true) {
+        while (static_cast<int32_t>(M5.millis() - next_find_ms) < 0) {
+            uint32_t remaining = next_find_ms - M5.millis();
+            vTaskDelay(pdMS_TO_TICKS(std::min<uint32_t>(remaining, 1000)));
+        }
+        next_find_ms += kSedentaryFindOwnerIntervalMs;
+
+        tracking_stop_requested = false;
+        FindOwnerResult result = run_find_owner_detection(kFindOwnerMaxRounds, kFindOwnerYawGain, kFindOwnerPitchGain,
+                                                          kFindOwnerStopPixels, true, false);
+        if (!result.saw_face) {
+            consecutive_owner_hits = 0;
+            ESP_LOGI(TAG, "Sedentary owner check reset: no owner found");
+            continue;
+        }
+
+        consecutive_owner_hits++;
+        ESP_LOGI(TAG, "Sedentary owner check hit: %d/%d", consecutive_owner_hits, kSedentaryOwnerHitsRequired);
+        if (consecutive_owner_hits >= kSedentaryOwnerHitsRequired) {
+            play_sedentary_reminder(reminder_index++);
+            consecutive_owner_hits = 0;
+        }
+    }
+}
+
+static void start_sedentary_find_owner_service()
+{
+    if (sedentary_task_handle != nullptr) {
+        return;
+    }
+    xTaskCreatePinnedToCore([](void*) {
+        run_sedentary_find_owner_loop();
+    }, "sedentary_owner", kTrackingTaskStackBytes, nullptr, 2, &sedentary_task_handle, 0);
 }
 
 void run_camera_upload_app()
