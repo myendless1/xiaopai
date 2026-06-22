@@ -69,9 +69,22 @@ static void run_head_touch_loop()
 
     while (true) {
         m5::Touch_Class::touch_detail_t touch;
+        bool volume_dropdown_consumed = false;
+        bool redraw_after_dropdown = false;
         {
             M5Lock lock;
             touch = M5.Touch.getDetail();
+            volume_dropdown_consumed = handle_volume_dropdown_touch_locked(touch, &redraw_after_dropdown);
+        }
+
+        if (redraw_after_dropdown) {
+            redraw_after_volume_dropdown();
+        }
+
+        if (volume_dropdown_consumed) {
+            was_touched = touch.isPressed();
+            vTaskDelay(pdMS_TO_TICKS(kScreenTouchPollMs));
+            continue;
         }
 
         const bool is_touched = touch.isPressed() || touch.wasPressed() || touch.wasClicked();

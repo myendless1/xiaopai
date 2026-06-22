@@ -122,6 +122,11 @@ static constexpr size_t kSpeakCommandVoiceBytes = 64;
 static constexpr int kSpeakerVolumePercentMin = 10;
 static constexpr int kSpeakerVolumePercentMax = 100;
 static constexpr int kSpeakerVolumeDefaultStep = 10;
+static constexpr int kVolumeDropdownOpenTouchHeight = 32;
+static constexpr int kVolumeDropdownPanelX = 14;
+static constexpr int kVolumeDropdownPanelY = 8;
+static constexpr int kVolumeDropdownPanelH = 66;
+static constexpr int kVolumeDropdownControlPad = 10;
 
 static void configure_speaker_for_tts()
 {
@@ -178,6 +183,7 @@ volatile uint32_t wake_find_owner_last_run_ms = 0;
 bool light_strip_ready = false;
 bool light_strip_missing = false;
 bool light_strip_listening_after_speech = false;
+bool volume_dropdown_open = false;
 uint32_t light_strip_last_probe_ms = 0;
 int light_strip_state = 0;
 bool camera_initialized = false;
@@ -437,6 +443,154 @@ void draw_launcher()
     display.setTextColor(TFT_DARKGREY, TFT_BLACK);
     display.setFont(&fonts::Font2);
     display.drawString("Tap an app, or BtnA select / BtnB enter", display.width() / 2, display.height() - 8);
+}
+
+void draw_wifi_status();
+void draw_app1_status();
+void draw_tts_status();
+void draw_camera_status();
+void draw_tracking_status();
+
+static bool point_in_rect(int px, int py, int x, int y, int w, int h)
+{
+    return px >= x && px < x + w && py >= y && py < y + h;
+}
+
+static int clamp_speaker_volume_percent(int percent)
+{
+    return std::max(kSpeakerVolumePercentMin, std::min(kSpeakerVolumePercentMax, percent));
+}
+
+static void set_speaker_volume_percent(int percent)
+{
+    speaker_volume_percent = clamp_speaker_volume_percent(percent);
+    apply_speaker_volume();
+    ESP_LOGI(TAG, "Speaker volume adjusted from dropdown: percent=%d", speaker_volume_percent);
+}
+
+static void draw_volume_dropdown()
+{
+    mark_expression_screen_dirty();
+    auto& display = M5.Display;
+    const int panel_w = display.width() - kVolumeDropdownPanelX * 2;
+    const int control_x = kVolumeDropdownPanelX + kVolumeDropdownControlPad;
+    const int control_y = kVolumeDropdownPanelY + 14;
+    const int control_w = panel_w - kVolumeDropdownControlPad * 2;
+    const int control_h = 38;
+    const int button_w = 72;
+    const int value_x = control_x + button_w;
+    const int value_w = control_w - button_w * 2;
+
+    display.fillRoundRect(kVolumeDropdownPanelX, kVolumeDropdownPanelY, panel_w, kVolumeDropdownPanelH, 8, TFT_BLACK);
+    display.drawRoundRect(kVolumeDropdownPanelX, kVolumeDropdownPanelY, panel_w, kVolumeDropdownPanelH, 8, TFT_DARKGREY);
+
+    display.fillRoundRect(control_x, control_y, button_w, control_h, 6, TFT_DARKGREY);
+    display.fillRoundRect(value_x, control_y, value_w, control_h, 4, TFT_BLACK);
+    display.drawRect(value_x, control_y, value_w, control_h, TFT_DARKGREY);
+    display.fillRoundRect(value_x + value_w, control_y, button_w, control_h, 6, TFT_DARKGREY);
+
+    display.setTextDatum(middle_center);
+    display.setFont(&fonts::Font4);
+    display.setTextSize(1);
+    display.setTextColor(TFT_WHITE, TFT_DARKGREY);
+    display.drawString("-", control_x + button_w / 2, control_y + control_h / 2);
+    display.drawString("+", value_x + value_w + button_w / 2, control_y + control_h / 2);
+
+    char volume_text[16];
+    snprintf(volume_text, sizeof(volume_text), "%d%%", speaker_volume_percent);
+    display.setTextColor(TFT_CYAN, TFT_BLACK);
+    display.drawString(volume_text, value_x + value_w / 2, control_y + control_h / 2);
+}
+
+static void redraw_after_volume_dropdown()
+{
+    if (!kShowAppStatusScreens) {
+        mark_expression_screen_dirty();
+        show_expression(kDefaultExpression);
+        return;
+    }
+
+    switch (current_app) {
+    case AppId::Launcher:
+        draw_launcher();
+        break;
+    case AppId::WifiConnect:
+        draw_wifi_status();
+        break;
+    case AppId::VoiceDemo:
+        draw_app1_status();
+        break;
+    case AppId::StreamTtsDemo:
+        draw_tts_status();
+        break;
+    case AppId::CameraUpload:
+        draw_camera_status();
+        break;
+    case AppId::TrackingUser:
+        draw_tracking_status();
+        break;
+    }
+}
+
+static bool handle_volume_dropdown_touch_locked(const m5::Touch_Class::touch_detail_t& touch, bool* needs_redraw)
+{
+    if (needs_redraw != nullptr) {
+        *needs_redraw = false;
+    }
+
+    if (!volume_dropdown_open) {
+        const bool top_press = (touch.isPressed() || touch.wasPressed()) && touch.y < kVolumeDropdownOpenTouchHeight;
+        const bool top_tap = touch.wasClicked() && touch.y < kVolumeDropdownOpenTouchHeight;
+        const bool pull_down = touch.wasFlicked() && touch.y < 96 && touch.deltaY() > 18;
+        if (top_press) {
+            return true;
+        }
+        if (!top_tap && !pull_down) {
+            return false;
+        }
+
+        volume_dropdown_open = true;
+        draw_volume_dropdown();
+        return true;
+    }
+
+    if (touch.isPressed() || touch.wasPressed()) {
+        return true;
+    }
+
+    if (!touch.wasClicked()) {
+        return false;
+    }
+
+    const int panel_w = M5.Display.width() - kVolumeDropdownPanelX * 2;
+    const int control_x = kVolumeDropdownPanelX + kVolumeDropdownControlPad;
+    const int control_y = kVolumeDropdownPanelY + 14;
+    const int control_w = panel_w - kVolumeDropdownControlPad * 2;
+    const int control_h = 38;
+    const int button_w = 72;
+
+    if (point_in_rect(touch.x, touch.y, control_x, control_y, button_w, control_h)) {
+        set_speaker_volume_percent(speaker_volume_percent - kSpeakerVolumeDefaultStep);
+        draw_volume_dropdown();
+        return true;
+    }
+
+    if (point_in_rect(touch.x, touch.y, control_x + control_w - button_w, control_y, button_w, control_h)) {
+        set_speaker_volume_percent(speaker_volume_percent + kSpeakerVolumeDefaultStep);
+        draw_volume_dropdown();
+        return true;
+    }
+
+    if (point_in_rect(touch.x, touch.y, control_x, control_y, control_w, control_h) ||
+        point_in_rect(touch.x, touch.y, kVolumeDropdownPanelX, kVolumeDropdownPanelY, panel_w, kVolumeDropdownPanelH)) {
+        return true;
+    }
+
+    volume_dropdown_open = false;
+    if (needs_redraw != nullptr) {
+        *needs_redraw = true;
+    }
+    return true;
 }
 
 void draw_wifi_status()

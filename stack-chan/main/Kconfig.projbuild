@@ -76,6 +76,6 @@ menu "Xiaopai settings"
 
     config STACKCHAN_SILENCE_STOP_MS
         int "Silence stop milliseconds"
-        default 1600
+        default 2500
 
 endmenu
