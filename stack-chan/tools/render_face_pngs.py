@@ -276,97 +276,67 @@ def face(kind):
         draw_common(c)
         draw_soft_upper_lid(c, 92)
         draw_soft_upper_lid(c, 228)
-        draw_soft_smile(c, y=190, width=42)
     elif kind == "smile_blink":
         draw_common(c)
         draw_soft_upper_lid(c, 92)
         draw_closed_eye(c, 228, smile=True, width=14)
-        draw_soft_smile(c, y=187, width=54)
     elif kind == "happy_squint":
         draw_common(c)
         draw_closed_eye(c, 92, smile=True)
         draw_closed_eye(c, 228, smile=True)
-        draw_mouth(c, [(136, 176), (140, 203), (150, 214), (160, 216), (170, 214), (180, 203), (184, 176)], [(140, 174), (144, 199), (152, 210), (160, 212), (168, 210), (176, 199), (180, 174)])
     elif kind == "happy_squint_soft":
         draw_common(c)
         draw_half_eye(c, 92)
         draw_half_eye(c, 228)
-        draw_mouth(c, [(139, 178), (142, 202), (151, 211), (160, 211), (169, 211), (178, 202), (181, 178)], [(142, 176), (145, 198), (152, 207), (160, 207), (168, 207), (175, 198), (178, 176)])
     elif kind == "blink_half":
         draw_common(c)
         draw_half_eye(c, 92)
         draw_half_eye(c, 228)
-        c.stroke_polyline([(145, 187), (175, 187)], (10, 61, 135), 12)
-        c.stroke_polyline([(145, 187), (175, 187)], (102, 173, 255), 8)
     elif kind == "blink_closed":
         draw_common(c)
         draw_closed_eye(c, 92, smile=False, width=12)
         draw_closed_eye(c, 228, smile=False, width=12)
-        c.stroke_polyline([(145, 187), (175, 187)], (10, 61, 135), 12)
-        c.stroke_polyline([(145, 187), (175, 187)], (102, 173, 255), 8)
     elif kind == "shy":
         draw_common(c)
         draw_half_eye(c, 92)
         draw_half_eye(c, 228)
         for a, b in [((32, 197), (46, 177)), ((54, 199), (70, 177)), ((250, 199), (266, 177)), ((274, 197), (288, 177))]:
             c.stroke_polyline([a, b], (255, 126, 168), 10)
-        draw_mouth(c, [(146, 183), (150, 195), (160, 199), (170, 195), (174, 183)], [(149, 181), (153, 191), (160, 195), (167, 191), (171, 181)])
     elif kind == "thinking":
         draw_common(c, eyebrows=False)
         draw_eyebrow(c, ((64, 64), (77, 50), (100, 48), (113, 66)))
         draw_eyebrow(c, ((207, 66), (220, 49), (244, 50), (257, 63)))
-        c.stroke_cubic((144, 188), (153, 181), (168, 184), (176, 193), (10, 61, 135), 10)
-        c.stroke_cubic((144, 188), (153, 181), (168, 184), (176, 193), (102, 173, 255), 6)
         draw_question_mark(c)
     elif kind == "wink_half":
         draw_common(c)
         draw_half_eye(c, 228)
-        c.stroke_polyline([(145, 187), (175, 187)], (10, 61, 135), 12)
-        c.stroke_polyline([(145, 187), (175, 187)], (102, 173, 255), 8)
     elif kind == "wink_closed":
         draw_common(c)
         draw_closed_eye(c, 228, smile=True, width=14)
-        c.stroke_cubic((144, 187), (152, 194), (168, 194), (176, 187), (10, 61, 135), 10)
-        c.stroke_cubic((144, 187), (152, 194), (168, 194), (176, 187), (102, 173, 255), 6)
     elif kind == "heart_small":
         draw_common(c)
         draw_closed_eye(c, 228, smile=True, width=14)
-        draw_kiss_mouth(c)
         draw_heart(c, 207, 181, 1.05)
     elif kind == "heart":
         draw_common(c)
         draw_closed_eye(c, 228, smile=True, width=14)
-        draw_kiss_mouth(c)
         draw_heart(c, 226, 180, 1.55)
     elif kind == "nod_soft":
         draw_common(c)
         draw_half_eye(c, 92)
         draw_half_eye(c, 228)
-        c.stroke_cubic((144, 187), (152, 194), (168, 194), (176, 187), (10, 61, 135), 10)
-        c.stroke_cubic((144, 187), (152, 194), (168, 194), (176, 187), (102, 173, 255), 6)
     elif kind == "nod_down":
         draw_common(c)
         draw_closed_eye(c, 92, smile=False, width=12)
         draw_closed_eye(c, 228, smile=False, width=12)
-        c.stroke_cubic((144, 190), (152, 198), (168, 198), (176, 190), (10, 61, 135), 10)
-        c.stroke_cubic((144, 190), (152, 198), (168, 198), (176, 190), (102, 173, 255), 6)
     else:
         draw_common(c)
-        if kind == "calm":
-            c.stroke_polyline([(145, 187), (175, 187)], (10, 61, 135), 12)
-            c.stroke_polyline([(145, 187), (175, 187)], (102, 173, 255), 8)
-        elif kind == "speak1":
-            draw_mouth(c, [(139, 178), (141, 194), (150, 201), (160, 201), (170, 201), (179, 194), (181, 178)], [(142, 176), (144, 190), (151, 197), (160, 197), (169, 197), (176, 190), (178, 176)])
-        elif kind == "speak2":
-            draw_mouth(c, [(135, 176), (137, 200), (148, 211), (160, 211), (172, 211), (183, 200), (185, 176)], [(138, 174), (140, 196), (149, 207), (160, 207), (171, 207), (180, 196), (182, 174)])
     return c
 
 
 for name in (
     "calm",
     "sleep_dark",
-    "speak1",
-    "speak2",
     "shy",
     "thinking",
     "relaxed",

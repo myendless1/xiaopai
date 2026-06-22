@@ -230,9 +230,9 @@ void run_stream_tts_demo()
     }
     apply_speaker_volume();
     app2_stop_requested = false;
-    start_speaking_animation();
+    start_mouth_animation();
     stream_tts_pcm();
-    stop_speaking_animation();
+    stop_mouth_animation();
 }
 
 static bool http_get_string(const std::string& url, std::string* response, int timeout_ms)
@@ -377,6 +377,7 @@ static void update_speaking_light_level(const int16_t* samples, size_t sample_co
     }
     speaking_light_level = speaking_light_level_from_pcm(samples, sample_count);
     speaking_light_level_ms = M5.millis();
+    update_mouth_from_speaking_level(speaking_light_level);
 }
 
 static void start_speaking_light_animation()
@@ -427,7 +428,7 @@ static void request_speak_preempt(const char* reason)
 {
     app2_stop_requested = true;
     M5.Speaker.stop();
-    cancel_speaking_animation_now();
+    cancel_mouth_animation_now();
     speaking_light_running = false;
     if (realtime_tts_playback_active) {
         finish_realtime_tts_playback();
@@ -465,13 +466,13 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
     M5.Speaker.stop();
     speech_playback_active = true;
     expression_set_speech_overridden(false);
-    start_speaking_animation();
+    start_mouth_animation();
     const char* selected_cache_name = cache_name != nullptr && cache_name[0] != '\0' ? cache_name : "";
     bool ok = selected_cache_name[0] != '\0' ? stream_cached_reply_pcm(selected_cache_name, text)
                                              : stream_tts_pcm_for_text(text, voice, sample_rate, volume, speech_rate,
                                                                        pitch_rate);
     M5.Speaker.end();
-    stop_speaking_animation();
+    stop_mouth_animation();
     speech_playback_active = false;
     if (audio_mutex != nullptr) {
         xSemaphoreGive(audio_mutex);

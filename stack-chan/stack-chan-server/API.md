@@ -48,8 +48,8 @@ curl -G 'http://127.0.0.1:8091/command/speak' \
 Queue a face expression or face animation.
 
 ```http
-GET /command/face?expression=<name>&device_id=<optional>
-GET /expression/<name>?device_id=<optional>
+GET /command/face?expression=<name>&mouth=<optional>&device_id=<optional>
+GET /expression/<name>?mouth=<optional>&device_id=<optional>
 GET /action/<name>?device_id=<optional>
 ```
 
@@ -57,15 +57,21 @@ Expressions:
 
 ```text
 calm, sleep_dark, screen_off, shy, thinking, relaxed, smile_blink,
-speak1, speak2, blink_half, blink_closed, wink_half, wink_closed,
+blink_half, blink_closed, wink_half, wink_closed,
 heart_small, heart, nod_soft, nod_down, happy_squint, happy_squint_soft
+```
+
+Mouths:
+
+```text
+closed, small, big, wry, small_heart, big_heart
 ```
 
 Actions / animations:
 
 ```text
 blink, wink, heart_action, hearting, nod, nodding,
-speak, speaking, happy_dynamic, happy_squint_dynamic,
+happy_dynamic, happy_squint_dynamic,
 node_head, nod_head
 ```
 

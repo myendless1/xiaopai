@@ -101,8 +101,6 @@ AVAILABLE_EXPRESSIONS = (
     "thinking",
     "relaxed",
     "smile_blink",
-    "speak1",
-    "speak2",
     "blink_half",
     "blink_closed",
     "wink_half",
@@ -115,6 +113,15 @@ AVAILABLE_EXPRESSIONS = (
     "happy_squint_soft",
 )
 
+AVAILABLE_MOUTHS = (
+    "closed",
+    "small",
+    "big",
+    "wry",
+    "small_heart",
+    "big_heart",
+)
+
 AVAILABLE_ACTIONS = (
     "blink",
     "wink",
@@ -122,8 +129,6 @@ AVAILABLE_ACTIONS = (
     "hearting",
     "nod",
     "nodding",
-    "speak",
-    "speaking",
     "happy_dynamic",
     "happy_squint_dynamic",
     "node_head",
@@ -144,6 +149,7 @@ COMMAND_DEFAULT_PRIORITIES = {
     "capture_image": 70,
     "track_once": 70,
     "camera": 70,
+    "mouth": 66,
     "face": 65,
     "expression": 65,
     "action": 65,
@@ -174,8 +180,8 @@ COMMAND_DEFAULT_TTL_SECONDS = {
     "ota_check": 600.0,
     "firmware_ota": 600.0,
 }
-COMMAND_COALESCE_BY_TYPE = {"state", "device_state", "face", "expression", "action", "node_head", "nod_head", "motion", "move", "speak", "check_ota", "ota_check", "firmware_ota"}
-COMMAND_DISCARDABLE_TYPES = {"state", "device_state", "face", "expression", "action", "node_head", "nod_head", "motion", "move", "speak", "sequence", "check_ota", "ota_check", "firmware_ota"}
+COMMAND_COALESCE_BY_TYPE = {"state", "device_state", "face", "expression", "action", "mouth", "node_head", "nod_head", "motion", "move", "speak", "check_ota", "ota_check", "firmware_ota"}
+COMMAND_DISCARDABLE_TYPES = {"state", "device_state", "face", "expression", "action", "mouth", "node_head", "nod_head", "motion", "move", "speak", "sequence", "check_ota", "ota_check", "firmware_ota"}
 
 WAKE_REPLY_EVENTS = (
     ("wake_reply", "我在。"),
@@ -308,6 +314,43 @@ EXPRESSION_ALIASES = {
     "nod_head": "nod_head",
 }
 
+MOUTH_ALIASES = {
+    "closed": "closed",
+    "close": "closed",
+    "closed_mouth": "closed",
+    "闭嘴": "closed",
+    "合嘴": "closed",
+    "small": "small",
+    "small_open": "small",
+    "small_mouth": "small",
+    "speak1": "small",
+    "小嘴": "small",
+    "big": "big",
+    "big_open": "big",
+    "big_mouth": "big",
+    "large": "big",
+    "open": "big",
+    "speak2": "big",
+    "大嘴": "big",
+    "wry": "wry",
+    "skew": "wry",
+    "crooked": "wry",
+    "crooked_mouth": "wry",
+    "thinking_mouth": "wry",
+    "歪嘴": "wry",
+    "small_heart": "small_heart",
+    "heart_small": "small_heart",
+    "small-heart": "small_heart",
+    "kiss": "small_heart",
+    "小心": "small_heart",
+    "小爱心": "small_heart",
+    "big_heart": "big_heart",
+    "heart_big": "big_heart",
+    "big-heart": "big_heart",
+    "大心": "big_heart",
+    "大爱心": "big_heart",
+}
+
 MOTION_DIRECTION_ALIASES = {
     "左": "left",
     "左边": "left",
@@ -388,7 +431,6 @@ VOICE_FACE_ALIASES = (
     ("happy_squint", ("开心表情", "开心", "高兴表情", "高兴", "快乐表情", "快乐", "happy squint", "happy_squint", "happy")),
     ("smile_blink", ("眨眼微笑", "微笑眨眼", "smile blink", "smile_blink")),
     ("relaxed", ("舒缓轻松", "舒缓", "放松表情", "放松", "relaxed", "relax")),
-    ("speak", ("说话动作", "说话表情", "说话脸", "讲话动作", "讲话表情", "讲话脸", "speak", "speaking")),
     ("calm", ("平静表情", "平静", "冷静表情", "冷静", "calm")),
     ("shy", ("害羞表情", "害羞", "羞涩表情", "羞涩", "shy")),
 )
@@ -1205,6 +1247,7 @@ class Handler(BaseHTTPRequestHandler):
                     "channels": 1,
                     "voice": self.server.voice,
                     "expressions": list(AVAILABLE_EXPRESSIONS),
+                    "mouths": list(AVAILABLE_MOUTHS),
                     "actions": list(AVAILABLE_ACTIONS),
                     "head_touch_events": HEAD_TOUCH_EVENT_TEXT,
                     "face_detector": self.server.face_detector.status()
@@ -1258,10 +1301,12 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "type": "expressions",
                     "expressions": list(AVAILABLE_EXPRESSIONS),
+                    "mouths": list(AVAILABLE_MOUTHS),
                     "actions": list(AVAILABLE_ACTIONS),
                     "aliases": EXPRESSION_ALIASES,
+                    "mouth_aliases": MOUTH_ALIASES,
                     "examples": {
-                        "expression": "/expression/shy?device_id=...",
+                        "expression": "/expression/shy?mouth=wry&device_id=...",
                         "action": "/action/blink?device_id=...",
                     },
                 }
@@ -1726,8 +1771,13 @@ class Handler(BaseHTTPRequestHandler):
             command_wire_type = "motion" if command_type == "move" else command_type
         if command_wire_type in ("state", "device_state") and isinstance(payload, dict):
             payload["state"] = normalize_device_state_name(payload.get("state") or payload.get("name") or "waiting")
+        elif command_wire_type == "mouth" and isinstance(payload, dict):
+            payload["mouth"] = normalize_mouth_name(payload.get("mouth") or payload.get("name") or payload.get("shape"))
         elif command_wire_type == "face" and isinstance(payload, dict):
             payload["expression"] = normalize_expression_name(payload.get("expression") or payload.get("face") or "calm")
+            if payload.get("mouth") or payload.get("mouth_shape"):
+                payload["mouth"] = normalize_mouth_name(payload.get("mouth") or payload.get("mouth_shape"))
+                payload.pop("mouth_shape", None)
         elif command_wire_type == "speak" and isinstance(payload, dict):
             payload.setdefault("pause_listener", True)
         elif command_wire_type == "sequence" and isinstance(payload, list):
@@ -1739,6 +1789,9 @@ class Handler(BaseHTTPRequestHandler):
                         step["type"] = expression
                     else:
                         step["expression"] = expression
+                        if step.get("mouth") or step.get("mouth_shape"):
+                            step["mouth"] = normalize_mouth_name(step.get("mouth") or step.get("mouth_shape"))
+                            step.pop("mouth_shape", None)
                 elif isinstance(step, dict) and step.get("type") == "action":
                     action = normalize_expression_name(step.get("action") or step.get("expression") or "calm")
                     if action in PHYSICAL_ACTIONS:
@@ -1747,6 +1800,11 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         step["type"] = "face"
                         step["expression"] = action
+                        if step.get("mouth") or step.get("mouth_shape"):
+                            step["mouth"] = normalize_mouth_name(step.get("mouth") or step.get("mouth_shape"))
+                            step.pop("mouth_shape", None)
+                elif isinstance(step, dict) and step.get("type") == "mouth":
+                    step["mouth"] = normalize_mouth_name(step.get("mouth") or step.get("name") or step.get("shape"))
                 elif isinstance(step, dict) and step.get("type") == "speak":
                     step.setdefault("pause_listener", True)
         normalize_command_speech_payload(command_wire_type, payload)
@@ -1780,6 +1838,7 @@ class Handler(BaseHTTPRequestHandler):
                     "type": "error",
                     "message": f"unknown expression or action: {expression}",
                     "expressions": list(AVAILABLE_EXPRESSIONS),
+                    "mouths": list(AVAILABLE_MOUTHS),
                     "actions": list(AVAILABLE_ACTIONS),
                 },
                 HTTPStatus.BAD_REQUEST,
@@ -1793,7 +1852,11 @@ class Handler(BaseHTTPRequestHandler):
         if expression in PHYSICAL_ACTIONS:
             command = make_command(expression, {}, priority=priority, interrupt=interrupt)
         else:
-            command = make_command("face", {"expression": expression}, priority=priority, interrupt=interrupt)
+            payload = {"expression": expression}
+            mouth = normalize_mouth_name(first_value(query, "mouth") or first_value(query, "mouth_shape"))
+            if mouth:
+                payload["mouth"] = mouth
+            command = make_command("face", payload, priority=priority, interrupt=interrupt)
         queued = self._enqueue_command(device_id, command)
         self._send_json(
             {
@@ -2865,6 +2928,13 @@ def normalize_expression_name(expression: str) -> str:
     return EXPRESSION_ALIASES.get(value, value)
 
 
+def normalize_mouth_name(mouth: str) -> str:
+    value = str(mouth or "").strip()
+    if not value:
+        return ""
+    return MOUTH_ALIASES.get(value, value)
+
+
 DEVICE_STATE_ALIASES = {
     "wait": "waiting",
     "think": "waiting",
@@ -3014,11 +3084,21 @@ def command_payload_from_query(command_type: str, query: dict):
         return {
             "state": normalize_device_state_name(first_value(query, "state") or first_value(query, "name") or "waiting")
         }
+    if command_type == "mouth":
+        return {
+            "mouth": normalize_mouth_name(
+                first_value(query, "mouth") or first_value(query, "name") or first_value(query, "shape")
+            )
+        }
     if command_type in ("face", "expression", "action"):
         expression = first_value(query, "expression") or first_value(query, "face") or "calm"
         if command_type in ("expression", "action"):
             expression = first_value(query, "name") or first_value(query, "action") or expression
-        return {"expression": normalize_expression_name(expression)}
+        payload = {"expression": normalize_expression_name(expression)}
+        mouth = normalize_mouth_name(first_value(query, "mouth") or first_value(query, "mouth_shape"))
+        if mouth:
+            payload["mouth"] = mouth
+        return payload
     if command_type == "speak":
         payload = {"text": first_value(query, "text") or "你好呀"}
         voice = first_value(query, "voice")
@@ -3085,7 +3165,11 @@ def command_payload_from_query(command_type: str, query: dict):
                 pass
         text = first_value(query, "text")
         expression = normalize_expression_name(first_value(query, "expression") or "calm")
-        steps = [{"type": "face", "expression": expression}]
+        face_step = {"type": "face", "expression": expression}
+        mouth = normalize_mouth_name(first_value(query, "mouth") or first_value(query, "mouth_shape"))
+        if mouth:
+            face_step["mouth"] = mouth
+        steps = [face_step]
         if text:
             speak_step = {"type": "speak", "text": text, "pause_listener": True}
             voice = first_value(query, "voice")

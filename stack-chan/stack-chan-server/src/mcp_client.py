@@ -22,8 +22,6 @@ ACTION_NAMES = {
     "hearting",
     "nod",
     "nodding",
-    "speak",
-    "speaking",
     "happy_dynamic",
     "happy_squint_dynamic",
     "node_head",

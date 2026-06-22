@@ -11,10 +11,6 @@ extern const uint8_t calm_face_png_start[] asm("_binary_calm_face_png_start");
 extern const uint8_t calm_face_png_end[] asm("_binary_calm_face_png_end");
 extern const uint8_t sleep_dark_face_png_start[] asm("_binary_sleep_dark_face_png_start");
 extern const uint8_t sleep_dark_face_png_end[] asm("_binary_sleep_dark_face_png_end");
-extern const uint8_t speak1_face_png_start[] asm("_binary_speak1_face_png_start");
-extern const uint8_t speak1_face_png_end[] asm("_binary_speak1_face_png_end");
-extern const uint8_t speak2_face_png_start[] asm("_binary_speak2_face_png_start");
-extern const uint8_t speak2_face_png_end[] asm("_binary_speak2_face_png_end");
 extern const uint8_t shy_face_png_start[] asm("_binary_shy_face_png_start");
 extern const uint8_t shy_face_png_end[] asm("_binary_shy_face_png_end");
 extern const uint8_t thinking_face_png_start[] asm("_binary_thinking_face_png_start");
@@ -63,11 +59,18 @@ struct ExpressionAnimation {
     int frame_ms;
 };
 
+enum class MouthShape : uint8_t {
+    Closed,
+    SmallOpen,
+    BigOpen,
+    Wry,
+    SmallHeart,
+    BigHeart,
+};
+
 static const ExpressionAsset kExpressionAssets[] = {
     {"calm", calm_face_png_start, calm_face_png_end, 320, 240},
     {"sleep_dark", sleep_dark_face_png_start, sleep_dark_face_png_end, 320, 240},
-    {"speak1", speak1_face_png_start, speak1_face_png_end, 320, 240},
-    {"speak2", speak2_face_png_start, speak2_face_png_end, 320, 240},
     {"shy", shy_face_png_start, shy_face_png_end, 320, 240},
     {"thinking", thinking_face_png_start, thinking_face_png_end, 320, 240},
     {"relaxed", relaxed_face_png_start, relaxed_face_png_end, 320, 240},
@@ -117,10 +120,6 @@ static constexpr const char* kNodFrames[] = {
     "nod_soft",
     "calm",
 };
-static constexpr const char* kSpeakFrames[] = {
-    "speak1",
-    "speak2",
-};
 static constexpr const char* kHappyDynamicFrames[] = {
     "happy_squint_soft",
     "happy_squint",
@@ -134,8 +133,6 @@ static constexpr ExpressionAnimation kExpressionAnimations[] = {
     {"hearting", kHeartFrames, sizeof(kHeartFrames) / sizeof(kHeartFrames[0]), 170},
     {"nod", kNodFrames, sizeof(kNodFrames) / sizeof(kNodFrames[0]), 180},
     {"nodding", kNodFrames, sizeof(kNodFrames) / sizeof(kNodFrames[0]), 180},
-    {"speak", kSpeakFrames, sizeof(kSpeakFrames) / sizeof(kSpeakFrames[0]), 160},
-    {"speaking", kSpeakFrames, sizeof(kSpeakFrames) / sizeof(kSpeakFrames[0]), 160},
     {"happy_dynamic", kHappyDynamicFrames, sizeof(kHappyDynamicFrames) / sizeof(kHappyDynamicFrames[0]), 180},
     {"happy_squint_dynamic", kHappyDynamicFrames, sizeof(kHappyDynamicFrames) / sizeof(kHappyDynamicFrames[0]), 180},
 };
@@ -144,14 +141,16 @@ SemaphoreHandle_t display_mutex = nullptr;
 ExpressionControllerHooks hooks = {};
 TaskHandle_t expression_animation_task_handle = nullptr;
 TaskHandle_t temporary_expression_task_handle = nullptr;
-TaskHandle_t speak_animation_task_handle = nullptr;
+TaskHandle_t mouth_animation_task_handle = nullptr;
 volatile bool expression_animation_running = false;
 volatile uint32_t temporary_expression_until_ms = 0;
-volatile bool speak_animation_running = false;
+volatile bool mouth_animation_running = false;
 volatile bool speech_expression_overridden = false;
+volatile uint32_t mouth_audio_level_ms = 0;
 bool expression_screen_visible = false;
 const ExpressionAsset* current_expression_asset = nullptr;
 const ExpressionAnimation* current_expression_animation = nullptr;
+MouthShape mouth_shape = MouthShape::Closed;
 volatile bool sleep_dark_visible = false;
 volatile uint32_t last_lit_expression_ms = 0;
 
@@ -206,6 +205,11 @@ static bool is_sleep_dark_expression(const char* expression)
            strcmp(name, "sleep") == 0 || strcmp(name, "stopped") == 0;
 }
 
+static bool is_sleep_dark_asset(const ExpressionAsset* asset)
+{
+    return asset != nullptr && strcmp(asset->name, "sleep_dark") == 0;
+}
+
 static const ExpressionAnimation* find_expression_animation(const char* expression)
 {
     const char* name = expression != nullptr && expression[0] != '\0' ? expression : "";
@@ -215,6 +219,145 @@ static const ExpressionAnimation* find_expression_animation(const char* expressi
         }
     }
     return nullptr;
+}
+
+static bool name_equals_any(const char* name, const char* const* aliases, size_t alias_count)
+{
+    if (name == nullptr || name[0] == '\0') {
+        return false;
+    }
+    for (size_t i = 0; i < alias_count; ++i) {
+        if (strcmp(name, aliases[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool mouth_shape_from_name(const char* mouth, MouthShape* shape)
+{
+    static constexpr const char* kClosedAliases[] = {
+        "closed", "close", "closed_mouth", "shut", "none",
+    };
+    static constexpr const char* kSmallOpenAliases[] = {
+        "small", "small_open", "small_mouth", "little", "speak1",
+    };
+    static constexpr const char* kBigOpenAliases[] = {
+        "big", "big_open", "big_mouth", "open", "large", "speak2",
+    };
+    static constexpr const char* kWryAliases[] = {
+        "wry", "skew", "crooked", "crooked_mouth", "thinking_mouth",
+    };
+    static constexpr const char* kSmallHeartAliases[] = {
+        "small_heart", "heart_small", "small-heart", "kiss",
+    };
+    static constexpr const char* kBigHeartAliases[] = {
+        "big_heart", "heart_big", "big-heart",
+    };
+
+    if (shape == nullptr || mouth == nullptr || mouth[0] == '\0') {
+        return false;
+    }
+    if (name_equals_any(mouth, kClosedAliases, sizeof(kClosedAliases) / sizeof(kClosedAliases[0]))) {
+        *shape = MouthShape::Closed;
+        return true;
+    }
+    if (name_equals_any(mouth, kSmallOpenAliases, sizeof(kSmallOpenAliases) / sizeof(kSmallOpenAliases[0]))) {
+        *shape = MouthShape::SmallOpen;
+        return true;
+    }
+    if (name_equals_any(mouth, kBigOpenAliases, sizeof(kBigOpenAliases) / sizeof(kBigOpenAliases[0]))) {
+        *shape = MouthShape::BigOpen;
+        return true;
+    }
+    if (name_equals_any(mouth, kWryAliases, sizeof(kWryAliases) / sizeof(kWryAliases[0]))) {
+        *shape = MouthShape::Wry;
+        return true;
+    }
+    if (name_equals_any(mouth, kSmallHeartAliases, sizeof(kSmallHeartAliases) / sizeof(kSmallHeartAliases[0]))) {
+        *shape = MouthShape::SmallHeart;
+        return true;
+    }
+    if (name_equals_any(mouth, kBigHeartAliases, sizeof(kBigHeartAliases) / sizeof(kBigHeartAliases[0]))) {
+        *shape = MouthShape::BigHeart;
+        return true;
+    }
+    return false;
+}
+
+static void draw_open_mouth_locked(int rx, int ry)
+{
+    auto& display = M5.Display;
+    display.fillEllipse(160, 190, rx, ry, display.color565(10, 61, 135));
+    display.fillEllipse(160, 190, std::max(1, rx - 7), std::max(1, ry - 7),
+                        display.color565(55, 145, 255));
+    display.fillEllipse(153, 183, 5, 4, display.color565(160, 211, 255));
+}
+
+static void draw_wry_mouth_locked()
+{
+    auto& display = M5.Display;
+    for (int i = 0; i < 10; ++i) {
+        display.drawLine(142, 191 + i, 178, 182 + i, display.color565(10, 61, 135));
+    }
+    for (int i = 0; i < 6; ++i) {
+        display.drawLine(145, 191 + i, 175, 184 + i, display.color565(102, 173, 255));
+    }
+}
+
+static void draw_heart_mouth_locked(int cx, int cy, int r)
+{
+    auto& display = M5.Display;
+    display.fillCircle(cx - r, cy - r / 2, r, display.color565(132, 28, 52));
+    display.fillCircle(cx + r, cy - r / 2, r, display.color565(132, 28, 52));
+    display.fillTriangle(cx - r * 2, cy, cx + r * 2, cy, cx, cy + r * 2,
+                         display.color565(132, 28, 52));
+    const int inner = std::max(2, r - 3);
+    display.fillCircle(cx - inner, cy - inner / 2, inner, display.color565(238, 66, 102));
+    display.fillCircle(cx + inner, cy - inner / 2, inner, display.color565(238, 66, 102));
+    display.fillTriangle(cx - inner * 2, cy, cx + inner * 2, cy, cx, cy + inner * 2,
+                         display.color565(238, 66, 102));
+    display.fillCircle(cx - inner, cy - inner, std::max(1, inner / 3), display.color565(255, 147, 170));
+}
+
+static void render_mouth_locked(MouthShape shape)
+{
+    if (!expression_screen_visible || current_expression_asset == nullptr ||
+        is_sleep_dark_asset(current_expression_asset)) {
+        return;
+    }
+
+    auto& display = M5.Display;
+    display.fillRect(120, 160, 80, 66, TFT_BLACK);
+    if (shape == MouthShape::SmallOpen) {
+        draw_open_mouth_locked(20, 15);
+    } else if (shape == MouthShape::BigOpen) {
+        draw_open_mouth_locked(27, 22);
+    } else if (shape == MouthShape::Wry) {
+        draw_wry_mouth_locked();
+    } else if (shape == MouthShape::SmallHeart) {
+        draw_heart_mouth_locked(160, 184, 8);
+    } else if (shape == MouthShape::BigHeart) {
+        draw_heart_mouth_locked(160, 181, 12);
+    } else {
+        display.fillRoundRect(144, 184, 32, 10, 5, display.color565(10, 61, 135));
+        display.fillRoundRect(147, 185, 26, 6, 3, display.color565(102, 173, 255));
+    }
+}
+
+static void redraw_mouth()
+{
+    DisplayLock lock;
+    render_mouth_locked(mouth_shape);
+}
+
+static void set_mouth_shape_internal(MouthShape shape)
+{
+    if (mouth_shape == shape) {
+        return;
+    }
+    mouth_shape = shape;
+    redraw_mouth();
 }
 
 static void render_expression_frame(const char* expression)
@@ -236,6 +379,7 @@ static void render_expression_frame(const char* expression)
                     sleep_dark_visible = sleep_dark_requested;
                     if (!sleep_dark_requested) {
                         last_lit_expression_ms = M5.millis();
+                        render_mouth_locked(mouth_shape);
                     }
                     return;
                 }
@@ -245,10 +389,12 @@ static void render_expression_frame(const char* expression)
                     sleep_dark_visible = sleep_dark_requested;
                     if (!sleep_dark_requested) {
                         last_lit_expression_ms = M5.millis();
+                        render_mouth_locked(mouth_shape);
                     }
                     return;
                 }
             } else {
+                render_mouth_locked(mouth_shape);
                 return;
             }
         }
@@ -301,6 +447,18 @@ static void notify_temporary_expression_task()
 
 static void show_expression_internal(const char* expression, bool notify_temporary_task)
 {
+    MouthShape shape;
+    if (mouth_shape_from_name(expression, &shape)) {
+        stop_expression_animation();
+        set_mouth_shape_internal(shape);
+        render_expression_frame(current_expression_asset != nullptr ? current_expression_asset->name
+                                                                    : kDefaultExpression);
+        if (notify_temporary_task) {
+            notify_temporary_expression_task();
+        }
+        return;
+    }
+
     const ExpressionAnimation* animation = find_expression_animation(expression);
     if (animation != nullptr) {
         start_expression_animation(animation);
@@ -353,7 +511,7 @@ bool expression_screen_is_visible()
 
 bool speaking_animation_is_running()
 {
-    return speak_animation_running;
+    return mouth_animation_running;
 }
 
 void expression_set_speech_overridden(bool overridden)
@@ -366,9 +524,26 @@ void show_expression(const char* expression)
     show_expression_internal(expression, true);
 }
 
+void show_expression_with_mouth(const char* expression, const char* mouth)
+{
+    MouthShape shape;
+    if (mouth_shape_from_name(mouth, &shape)) {
+        set_mouth_shape_internal(shape);
+    }
+    show_expression_internal(expression, true);
+}
+
+void set_mouth_shape(const char* mouth)
+{
+    MouthShape shape;
+    if (mouth_shape_from_name(mouth, &shape)) {
+        set_mouth_shape_internal(shape);
+    }
+}
+
 void show_idle_sleep_dark_if_due(uint32_t idle_ms)
 {
-    if (sleep_dark_visible || current_expression_animation != nullptr || speak_animation_running) {
+    if (sleep_dark_visible || current_expression_animation != nullptr || mouth_animation_running) {
         return;
     }
     uint32_t last = last_lit_expression_ms;
@@ -399,8 +574,7 @@ void show_temporary_expression(const char* expression, uint32_t duration_ms)
         const auto* expected_asset = static_cast<const ExpressionAsset*>(arg);
         while (true) {
             if (current_expression_asset != expected_asset ||
-                current_expression_animation != nullptr ||
-                speak_animation_running) {
+                current_expression_animation != nullptr) {
                 break;
             }
 
@@ -414,8 +588,7 @@ void show_temporary_expression(const char* expression, uint32_t duration_ms)
 
             if (until == temporary_expression_until_ms &&
                 current_expression_asset == expected_asset &&
-                current_expression_animation == nullptr &&
-                !speak_animation_running) {
+                current_expression_animation == nullptr) {
                 show_expression_internal(kDefaultExpression, false);
             }
 
@@ -428,46 +601,66 @@ void show_temporary_expression(const char* expression, uint32_t duration_ms)
        &temporary_expression_task_handle, 0);
 }
 
-void start_speaking_animation()
+void start_mouth_animation()
 {
     if (hooks.start_speaking_light_animation != nullptr) {
         hooks.start_speaking_light_animation();
     }
-    speak_animation_running = true;
-    if (speak_animation_task_handle != nullptr) {
+    mouth_animation_running = true;
+    mouth_audio_level_ms = 0;
+    set_mouth_shape_internal(MouthShape::Closed);
+    if (mouth_animation_task_handle != nullptr) {
         return;
     }
     xTaskCreatePinnedToCore([](void*) {
-        bool open = false;
-        while (speak_animation_running) {
-            show_expression(open ? "speak2" : "speak1");
-            open = !open;
-            vTaskDelay(pdMS_TO_TICKS(160));
+        bool big = false;
+        while (mouth_animation_running) {
+            uint32_t last_level_ms = mouth_audio_level_ms;
+            if (last_level_ms == 0 ||
+                static_cast<uint32_t>(M5.millis() - last_level_ms) > 220) {
+                set_mouth_shape_internal(big ? MouthShape::BigOpen : MouthShape::SmallOpen);
+                big = !big;
+            }
+            vTaskDelay(pdMS_TO_TICKS(120));
         }
-        speak_animation_task_handle = nullptr;
+        mouth_animation_task_handle = nullptr;
         vTaskDelete(nullptr);
-    }, "speak_anim", 4 * 1024, nullptr, 2, &speak_animation_task_handle, 0);
+    }, "mouth_anim", 4 * 1024, nullptr, 2, &mouth_animation_task_handle, 0);
 }
 
-void stop_speaking_animation()
+void stop_mouth_animation()
 {
-    speak_animation_running = false;
-    for (int i = 0; i < 30 && speak_animation_task_handle != nullptr; ++i) {
+    mouth_animation_running = false;
+    for (int i = 0; i < 30 && mouth_animation_task_handle != nullptr; ++i) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
+    mouth_audio_level_ms = 0;
+    set_mouth_shape_internal(MouthShape::Closed);
     if (hooks.stop_speaking_light_animation != nullptr) {
         hooks.stop_speaking_light_animation();
     }
-    if (speech_expression_overridden) {
-        speech_expression_overridden = false;
-        restore_light_after_speaking();
-        return;
-    }
-    show_expression(kDefaultExpression);
+    speech_expression_overridden = false;
     restore_light_after_speaking();
 }
 
-void cancel_speaking_animation_now()
+void update_mouth_from_speaking_level(uint8_t level)
 {
-    speak_animation_running = false;
+    if (!mouth_animation_running) {
+        return;
+    }
+    mouth_audio_level_ms = M5.millis();
+    if (level == 0) {
+        set_mouth_shape_internal(MouthShape::Closed);
+    } else if (level == 1) {
+        set_mouth_shape_internal(MouthShape::SmallOpen);
+    } else {
+        set_mouth_shape_internal(MouthShape::BigOpen);
+    }
+}
+
+void cancel_mouth_animation_now()
+{
+    mouth_animation_running = false;
+    mouth_audio_level_ms = 0;
+    set_mouth_shape_internal(MouthShape::Closed);
 }

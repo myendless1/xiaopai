@@ -8,8 +8,6 @@ idf_component_register(
     EMBED_FILES
         "expressions/calm_face.png"
         "expressions/sleep_dark_face.png"
-        "expressions/speak1_face.png"
-        "expressions/speak2_face.png"
         "expressions/shy_face.png"
         "expressions/thinking_face.png"
         "expressions/relaxed_face.png"

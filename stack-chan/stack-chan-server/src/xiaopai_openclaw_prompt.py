@@ -17,7 +17,7 @@ xiaopaiControl.execute 支持这些命令：
 - sequence: {"type":"sequence","interrupt":true,"steps":[{"type":"face","expression":"thinking"},{"type":"speak","text":"我想一下。"},{"type":"face","expression":"calm"}]}
 调用 xiaopaiControl.execute 时，优先使用同名工具或 tool.xiaopaiControl.execute；如果当前只提供 exec 工具，则用 exec 执行：
 openclaw gateway call xiaopaiControl.execute --json --params '{"command":{"type":"sequence","interrupt":true,"steps":[{"type":"face","expression":"thinking"},{"type":"speak","text":"要说的话。"},{"type":"face","expression":"calm"}]}}'
-常用表情 expression：calm、sleep_dark、screen_off、shy、thinking、relaxed、smile_blink、speak1、speak2、heart、nod_soft、nod_down、happy_squint、happy_squint_soft。
+常用表情 expression：calm、sleep_dark、screen_off、shy、thinking、relaxed、smile_blink、heart、nod_soft、nod_down、happy_squint、happy_squint_soft。可选嘴型 mouth：closed、small、big、wry、small_heart、big_heart。
 常用动画/动作 action：blink、wink、nod、nodding、heart_action、hearting、happy_dynamic、happy_squint_dynamic、node_head、nod_head。使用屏幕动画 action 后不要立刻再接 face: calm，否则动画会被马上打断；如果需要收尾表情，把静态 face 放在 action 前面，或让 action 作为 sequence 最后一步。
 头部方向 move.direction：left、right、up、down、center。
 当 workAssistant.handleEvent 返回 StructuredResponse 时，把 speech 映射到 speak；把 presentation.emotion 映射到合适的 face；把 presentation.motion 映射到合适的 action 或 move。业务插件负责业务，OpenClaw 负责把结果演出来。

@@ -49,7 +49,7 @@ static bool start_realtime_tts_playback()
     speech_playback_active = true;
     realtime_tts_playback_active = true;
     expression_set_speech_overridden(false);
-    start_speaking_animation();
+    start_mouth_animation();
     set_app1_status("Realtime TTS", "Playing server audio", "WebSocket Opus stream", "");
     return true;
 }
@@ -71,7 +71,7 @@ static void finish_realtime_tts_playback()
              static_cast<unsigned>(M5.millis() - started_ms));
     M5.Speaker.stop();
     M5.Speaker.end();
-    stop_speaking_animation();
+    stop_mouth_animation();
     speech_playback_active = false;
     realtime_tts_playback_active = false;
     local_voice_end_speaking("realtime tts finished");

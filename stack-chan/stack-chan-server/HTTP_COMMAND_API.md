@@ -112,6 +112,19 @@ listening
 stopped
 ```
 
+Face commands can also include a separate `mouth` value:
+
+```text
+closed
+small
+big
+wry
+small_heart
+big_heart
+```
+
+For compatibility, `speak1` maps to `mouth=small` and `speak2` maps to `mouth=big`.
+
 Voice shortcuts use `开心` for `happy_squint` and `眯眼笑` for `happy_squint_soft`.
 
 The firmware also supports animated expression actions through the same face command:
@@ -123,8 +136,6 @@ heart_action
 hearting
 nod
 nodding
-speak
-speaking
 happy_dynamic
 happy_squint_dynamic
 node_head

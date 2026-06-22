@@ -10,6 +10,18 @@ static bool execute_command_object(const cJSON* command)
         payload = command;
     }
 
+    if (type == "mouth") {
+        std::string mouth = json_string_value(payload, "mouth");
+        if (mouth.empty()) {
+            mouth = json_string_value(payload, "name");
+        }
+        if (mouth.empty()) {
+            mouth = json_string_value(payload, "shape");
+        }
+        set_mouth_shape(mouth.c_str());
+        return true;
+    }
+
     if (type == "face" || type == "expression" || type == "action") {
         std::string expression = json_string_value(payload, "expression");
         if (expression.empty()) {
@@ -24,11 +36,11 @@ static bool execute_command_object(const cJSON* command)
         if (expression == "thinking") {
             local_voice_request_state(LocalVoiceState::Waiting, "thinking expression command");
         }
-        if (speech_output_is_busy()) {
-            expression_set_speech_overridden(true);
-            cancel_speaking_animation_now();
+        std::string mouth = json_string_value(payload, "mouth");
+        if (mouth.empty()) {
+            mouth = json_string_value(payload, "mouth_shape");
         }
-        show_expression(expression.empty() ? kDefaultExpression : expression.c_str());
+        show_expression_with_mouth(expression.empty() ? kDefaultExpression : expression.c_str(), mouth.c_str());
         return true;
     }
     if (type == "check_ota" || type == "ota_check" || type == "firmware_ota") {
