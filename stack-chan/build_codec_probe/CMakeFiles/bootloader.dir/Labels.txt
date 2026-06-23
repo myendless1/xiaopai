@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+/home/myendless/xiaopai/stack-chan/build_codec_probe/CMakeFiles/bootloader
+/home/myendless/xiaopai/stack-chan/build_codec_probe/CMakeFiles/bootloader.rule
+/home/myendless/xiaopai/stack-chan/build_codec_probe/CMakeFiles/bootloader-complete.rule
+/home/myendless/xiaopai/stack-chan/build_codec_probe/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+/home/myendless/xiaopai/stack-chan/build_codec_probe/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+/home/myendless/xiaopai/stack-chan/build_codec_probe/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+/home/myendless/xiaopai/stack-chan/build_codec_probe/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+/home/myendless/xiaopai/stack-chan/build_codec_probe/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+/home/myendless/xiaopai/stack-chan/build_codec_probe/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+/home/myendless/xiaopai/stack-chan/build_codec_probe/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule

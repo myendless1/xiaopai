@@ -5,41 +5,9 @@ static bool start_realtime_tts_playback()
     }
 
     local_voice_begin_speaking("realtime tts");
-    while (M5.Mic.isRecording()) {
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-    if (M5.Mic.isEnabled()) {
-        M5.Mic.end();
-    }
-
-    if (audio_mutex != nullptr) {
-        xSemaphoreTake(audio_mutex, portMAX_DELAY);
-        realtime_tts_audio_mutex_taken = true;
-    }
-    if (!codec_audio_output_begin(kTtsStreamSampleRate, speaker_volume_percent)) {
-        ESP_LOGE(TAG, "esp_codec_dev_open failed for realtime TTS");
-        if (realtime_tts_audio_mutex_taken && audio_mutex != nullptr) {
-            xSemaphoreGive(audio_mutex);
-            realtime_tts_audio_mutex_taken = false;
-        }
+    if (!audio_service_start()) {
+        ESP_LOGE(TAG, "audio_service_start failed for realtime TTS");
         local_voice_end_speaking("realtime tts begin failed");
-        return false;
-    }
-
-    esp_opus_dec_cfg_t opus_cfg = {};
-    opus_cfg.sample_rate = ESP_AUDIO_SAMPLE_RATE_16K;
-    opus_cfg.channel = ESP_AUDIO_MONO;
-    opus_cfg.frame_duration = ESP_OPUS_DEC_FRAME_DURATION_60_MS;
-    opus_cfg.self_delimited = false;
-    esp_audio_err_t ret = esp_opus_dec_open(&opus_cfg, sizeof(opus_cfg), &realtime_opus_decoder);
-    if (ret != ESP_AUDIO_ERR_OK || realtime_opus_decoder == nullptr) {
-        ESP_LOGE(TAG, "esp_opus_dec_open failed: %d", ret);
-        codec_audio_output_end();
-        if (realtime_tts_audio_mutex_taken && audio_mutex != nullptr) {
-            xSemaphoreGive(audio_mutex);
-            realtime_tts_audio_mutex_taken = false;
-        }
-        local_voice_end_speaking("realtime opus decoder failed");
         return false;
     }
 
@@ -60,24 +28,15 @@ static void finish_realtime_tts_playback()
     }
     uint32_t started_ms = M5.millis();
     if (!app2_stop_requested) {
-        codec_audio_output_drain();
+        audio_service_wait_playback_idle(pdMS_TO_TICKS(1000));
         mark_speech_output_finished();
     }
     ESP_LOGI(TAG, "Realtime TTS playback %s after %u ms", app2_stop_requested ? "stopped" : "done",
              static_cast<unsigned>(M5.millis() - started_ms));
     stop_mouth_animation();
-    codec_audio_output_end();
     speech_playback_active = false;
     realtime_tts_playback_active = false;
     local_voice_end_speaking("realtime tts finished");
-    if (realtime_opus_decoder != nullptr) {
-        esp_opus_dec_close(realtime_opus_decoder);
-        realtime_opus_decoder = nullptr;
-    }
-    if (realtime_tts_audio_mutex_taken && audio_mutex != nullptr) {
-        xSemaphoreGive(audio_mutex);
-        realtime_tts_audio_mutex_taken = false;
-    }
 }
 
 static bool play_realtime_opus_frame(const uint8_t* data, size_t len)
@@ -89,50 +48,8 @@ static bool play_realtime_opus_frame(const uint8_t* data, size_t len)
         return false;
     }
 
-    static std::vector<std::vector<int16_t>> pcm_buffers(3, std::vector<int16_t>(kOpusFrameSamples));
-    static int pcm_buffer_index = 0;
-    std::vector<uint8_t> decode_bytes(kOpusFrameSamples * sizeof(int16_t));
-
-    esp_audio_dec_in_raw_t raw = {};
-    raw.buffer = const_cast<uint8_t*>(data);
-    raw.len = static_cast<uint32_t>(len);
-    raw.consumed = 0;
-    esp_audio_dec_out_frame_t out_frame = {};
-    out_frame.buffer = decode_bytes.data();
-    out_frame.len = decode_bytes.size();
-    out_frame.needed_size = 0;
-    out_frame.decoded_size = 0;
-    esp_audio_dec_info_t info = {};
-
-    esp_audio_err_t ret = esp_opus_dec_decode(realtime_opus_decoder, &raw, &out_frame, &info);
-    if (ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH && out_frame.needed_size > out_frame.len) {
-        decode_bytes.resize(out_frame.needed_size);
-        out_frame.buffer = decode_bytes.data();
-        out_frame.len = decode_bytes.size();
-        out_frame.needed_size = 0;
-        out_frame.decoded_size = 0;
-        raw.buffer = const_cast<uint8_t*>(data);
-        raw.len = static_cast<uint32_t>(len);
-        raw.consumed = 0;
-        ret = esp_opus_dec_decode(realtime_opus_decoder, &raw, &out_frame, &info);
-    }
-    if (ret != ESP_AUDIO_ERR_OK || out_frame.decoded_size == 0) {
-        ESP_LOGE(TAG, "Realtime Opus decode failed: ret=%d decoded=%u consumed=%u len=%u", ret,
-                 static_cast<unsigned>(out_frame.decoded_size), static_cast<unsigned>(raw.consumed),
-                 static_cast<unsigned>(len));
-        return false;
-    }
-
-    size_t sample_count = out_frame.decoded_size / sizeof(int16_t);
-    auto& pcm = pcm_buffers[pcm_buffer_index];
-    if (pcm.size() < sample_count) {
-        pcm.resize(sample_count);
-    }
-    memcpy(pcm.data(), out_frame.buffer, sample_count * sizeof(int16_t));
-    pcm_buffer_index = (pcm_buffer_index + 1) % pcm_buffers.size();
-    update_speaking_light_level(pcm.data(), sample_count);
-    if (!codec_audio_output_write(pcm.data(), sample_count)) {
-        ESP_LOGE(TAG, "Realtime TTS esp_codec_dev_write failed");
+    if (!audio_service_play_opus_frame_16k(data, len)) {
+        ESP_LOGE(TAG, "Realtime Opus playback failed");
         return false;
     }
     return true;

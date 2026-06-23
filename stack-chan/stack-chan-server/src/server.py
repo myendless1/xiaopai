@@ -514,6 +514,27 @@ def pcm_to_wav(pcm: bytes, sample_rate: int) -> bytes:
     )
 
 
+def save_audio_capture(
+    audio: bytes,
+    *,
+    capture_dir: str,
+    device_id: str,
+    prefix: str,
+    audio_format: str,
+    sample_rate: int,
+) -> str:
+    if not audio or not capture_dir:
+        return ""
+    os.makedirs(capture_dir, exist_ok=True)
+    safe_device = re.sub(r"[^A-Za-z0-9_.-]+", "_", safe_device_id(device_id))[:40] or "unknown"
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    path = os.path.join(capture_dir, f"{prefix}-{safe_device}-{stamp}.wav")
+    data = audio if audio_format == "wav" else pcm_to_wav(audio, sample_rate)
+    with open(path, "wb") as fp:
+        fp.write(data)
+    return path
+
+
 def parse_chinese_integer(text: str) -> int | None:
     text = text.strip()
     if not text:
@@ -1155,6 +1176,8 @@ class AliyunVoiceServer(ThreadingHTTPServer):
     tts_retries: int
     tts_tail_silence_ms: int
     capture_save_mode: str
+    save_audio_uploads: bool
+    audio_capture_dir: str
     command_queue_max_size: int
     capture_dir: str
     static_dir: str
@@ -1514,6 +1537,20 @@ class Handler(BaseHTTPRequestHandler):
         audio_format = "wav" if detect_wav_sample_rate(body) else "pcm"
         self._log_info(f"ASR upload received: {audio_format}, {len(body)} bytes")
         self._log_debug(f"ASR upload detail: device={device_id} bytes={len(body)} format={audio_format} sample_rate={sample_rate}")
+        if getattr(self.server, "save_audio_uploads", True):
+            try:
+                audio_path = save_audio_capture(
+                    body,
+                    capture_dir=self.server.audio_capture_dir,
+                    device_id=device_id,
+                    prefix="upload",
+                    audio_format=audio_format,
+                    sample_rate=sample_rate,
+                )
+                if audio_path:
+                    self._log_info(f"ASR upload audio saved: device={device_id} path={audio_path}")
+            except Exception as exc:
+                self._log_error(f"ASR upload audio save failed: {exc}")
         try:
             result = self._aliyun_asr(body, audio_format, sample_rate)
         except Exception as exc:
@@ -1909,15 +1946,15 @@ class Handler(BaseHTTPRequestHandler):
     def _resolve_command_device_id(self, requested_device_id: str) -> str:
         device_id = safe_device_id(requested_device_id)
         if is_placeholder_device_id(device_id):
+            with self.server.device_lock:
+                first_connected = first_connected_device_id(self.server.last_seen, self.server.device_order)
+            if first_connected:
+                return first_connected
             manager = getattr(self.server, "realtime_manager", None)
             if manager:
                 realtime_device = manager.first_device_id()
                 if not is_placeholder_device_id(realtime_device):
                     return realtime_device
-            with self.server.device_lock:
-                first_connected = first_connected_device_id(self.server.last_seen, self.server.device_order)
-            if first_connected:
-                return first_connected
         return device_id
 
     def _queue_for(self, device_id: str) -> DeviceCommandQueue:
@@ -1930,6 +1967,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _enqueue_command(self, device_id: str, command: dict) -> bool:
         device_id = safe_device_id(device_id)
+        if http_device_online(self.server, device_id):
+            return self._enqueue_http_command(device_id, command)
+
         manager = getattr(self.server, "realtime_manager", None)
         if manager and manager.has_device(device_id):
             sent = manager.enqueue_command(device_id, command)
@@ -1951,6 +1991,11 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 return True
             self._log_info(f"Realtime command fallback to queue: {command['type']}{detail}")
+
+        return self._enqueue_http_command(device_id, command)
+
+    def _enqueue_http_command(self, device_id: str, command: dict) -> bool:
+        device_id = safe_device_id(device_id)
         queue = self._queue_for(device_id)
         stats = queue.put(command)
         detail = ""
@@ -2012,12 +2057,6 @@ class Handler(BaseHTTPRequestHandler):
         state = str(state or "").strip()
         if not state:
             return []
-        manager = getattr(self.server, "realtime_manager", None)
-        if manager and manager.has_device(device_id) and manager.set_device_state(device_id, state):
-            self._log_info(f"Realtime device state sent: {state}")
-            self._log_debug(f"Realtime device state detail: device={device_id} state={state} reason={reason!r}")
-            return []
-
         command = make_command(
             "state",
             {"state": state, "reason": reason},
@@ -2027,6 +2066,13 @@ class Handler(BaseHTTPRequestHandler):
             discardable=True,
             coalesce_key="device_state",
         )
+        if not http_device_online(self.server, device_id):
+            manager = getattr(self.server, "realtime_manager", None)
+            if manager and manager.has_device(device_id) and manager.set_device_state(device_id, state):
+                self._log_info(f"Realtime device state sent: {state}")
+                self._log_debug(f"Realtime device state detail: device={device_id} state={state} reason={reason!r}")
+                return []
+
         if self._enqueue_command(device_id, command):
             return [command["cmd_id"]]
         return []
@@ -2305,6 +2351,35 @@ class Handler(BaseHTTPRequestHandler):
                     png_path = f"{base}.png"
                     with open(png_path, "wb") as fp:
                         fp.write(rgb565_to_png(body, width, height))
+                face_visual_path, face_result = detect_and_visualize_faces(png_path, f"{base}.faces.png")
+        elif image_format == "yuv422" and width > 0 and height > 0:
+            expected = width * height * 2
+            if len(body) != expected or width % 2 != 0:
+                self._send_json(
+                    {
+                        "type": "error",
+                        "message": f"yuv422 size mismatch: got {len(body)}, expected {expected}, width={width}",
+                        "raw_path": raw_path,
+                    },
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            if save_debug:
+                png_path = f"{base}.png"
+                with open(png_path, "wb") as fp:
+                    fp.write(yuv422_to_png(body, width, height))
+            if self.server.face_detector is not None:
+                face_visual_path, face_result = self.server.face_detector.detect_yuv422(
+                    body,
+                    width,
+                    height,
+                    f"{base}.faces.jpg" if save_visual else "",
+                )
+            elif self.server.face_detector_backend == "legacy":
+                if not png_path:
+                    png_path = f"{base}.png"
+                    with open(png_path, "wb") as fp:
+                        fp.write(yuv422_to_png(body, width, height))
                 face_visual_path, face_result = detect_and_visualize_faces(png_path, f"{base}.faces.png")
         elif content_type.startswith("image/jpeg"):
             if self.server.face_detector is not None:
@@ -2953,6 +3028,16 @@ def first_connected_device_id(
     return "default"
 
 
+def http_device_online(server, device_id: str, now: float | None = None) -> bool:
+    device_id = safe_device_id(device_id)
+    if is_placeholder_device_id(device_id):
+        return False
+    now = time.time() if now is None else now
+    with server.device_lock:
+        seen = server.last_seen.get(device_id)
+    return seen is not None and now - seen <= DEVICE_ONLINE_TTL_SECONDS
+
+
 def connected_device_ids(server) -> list[str]:
     now = time.time()
     device_ids: list[str] = []
@@ -2987,16 +3072,17 @@ def enqueue_server_command(server, device_id: str, command: dict) -> bool:
     if is_placeholder_device_id(device_id):
         return False
 
-    manager = getattr(server, "realtime_manager", None)
-    if manager and manager.has_device(device_id) and manager.enqueue_command(device_id, command):
-        log_print(f"Periodic command sent realtime: {command.get('type')} device={device_id}")
-        return True
-
     with server.device_lock:
         queue = server.device_queues.get(device_id)
         if queue is None:
             queue = DeviceCommandQueue(server.command_queue_max_size)
             server.device_queues[device_id] = queue
+    if not http_device_online(server, device_id):
+        manager = getattr(server, "realtime_manager", None)
+        if manager and manager.has_device(device_id) and manager.enqueue_command(device_id, command):
+            log_print(f"Periodic command sent realtime: {command.get('type')} device={device_id}")
+            return True
+
     stats = queue.put(command)
     if stats.get("queued"):
         log_print(f"Periodic command queued: {command.get('type')} device={device_id}")
@@ -3225,12 +3311,56 @@ def rgb565_to_rgb_rows(rgb565: bytes, width: int, height: int) -> list[bytes]:
     return rows
 
 
+def yuv_to_rgb_pixel(y: int, u: int, v: int) -> tuple[int, int, int]:
+    c = y - 16
+    d = u - 128
+    e = v - 128
+    r = (298 * c + 409 * e + 128) >> 8
+    g = (298 * c - 100 * d - 208 * e + 128) >> 8
+    b = (298 * c + 516 * d + 128) >> 8
+    return max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b))
+
+
+def yuv422_to_rgb_rows(yuv422: bytes, width: int, height: int) -> list[bytes]:
+    rows = []
+    for y in range(height):
+        row_start = y * width * 2
+        row = bytearray(width * 3)
+        out = 0
+        for x in range(0, width, 2):
+            offset = row_start + x * 2
+            y0 = yuv422[offset]
+            u = yuv422[offset + 1]
+            y1 = yuv422[offset + 2]
+            v = yuv422[offset + 3]
+            r, g, b = yuv_to_rgb_pixel(y0, u, v)
+            row[out] = r
+            row[out + 1] = g
+            row[out + 2] = b
+            r, g, b = yuv_to_rgb_pixel(y1, u, v)
+            row[out + 3] = r
+            row[out + 4] = g
+            row[out + 5] = b
+            out += 6
+        rows.append(bytes(row))
+    return rows
+
+
 def png_chunk(chunk_type: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", zlib.crc32(chunk_type + data) & 0xFFFFFFFF)
 
 
 def rgb565_to_png(rgb565: bytes, width: int, height: int) -> bytes:
     raw = b"".join(b"\x00" + row for row in rgb565_to_rgb_rows(rgb565, width, height))
+    out = bytearray(b"\x89PNG\r\n\x1a\n")
+    out += png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+    out += png_chunk(b"IDAT", zlib.compress(raw, level=6))
+    out += png_chunk(b"IEND", b"")
+    return bytes(out)
+
+
+def yuv422_to_png(yuv422: bytes, width: int, height: int) -> bytes:
+    raw = b"".join(b"\x00" + row for row in yuv422_to_rgb_rows(yuv422, width, height))
     out = bytearray(b"\x89PNG\r\n\x1a\n")
     out += png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
     out += png_chunk(b"IDAT", zlib.compress(raw, level=6))
@@ -3315,6 +3445,12 @@ def main():
         choices=("none", "raw", "debug"),
         default=os.environ.get("STACKCHAN_CAPTURE_SAVE_MODE", "none"),
         help="Image upload persistence: none, raw, or debug (raw + converted images + face visualizations).",
+    )
+    parser.add_argument(
+        "--save-audio-uploads",
+        action=argparse.BooleanOptionalAction,
+        default=parse_bool(os.environ.get("STACKCHAN_SAVE_AUDIO_UPLOADS", "true")),
+        help="Save uploaded ASR audio under <capture-dir>/audio for debugging.",
     )
     parser.add_argument("--static-dir", default=os.environ.get("STACKCHAN_STATIC_DIR", "static"))
     parser.add_argument(
@@ -3512,8 +3648,10 @@ def main():
     httpd.tts_tail_silence_ms = args.tts_tail_silence_ms
     httpd.command_queue_max_size = args.command_queue_max_size
     httpd.capture_save_mode = args.capture_save_mode
+    httpd.save_audio_uploads = args.save_audio_uploads
     httpd.debug_log = args.debug
     httpd.capture_dir = args.capture_dir
+    httpd.audio_capture_dir = os.path.join(args.capture_dir, "audio")
     httpd.static_dir = args.static_dir
     httpd.face_detector_backend = args.face_detector
     httpd.face_detector = None
@@ -3593,6 +3731,8 @@ def main():
             find_owner_gain_x=args.find_owner_gain_x,
             find_owner_gain_y=args.find_owner_gain_y,
             find_owner_stop_pixels=args.find_owner_stop_pixels,
+            audio_capture_dir=httpd.audio_capture_dir,
+            save_audio_uploads=httpd.save_audio_uploads,
             debug=args.debug,
         )
         httpd.realtime_manager = RealtimeManager(realtime_config, logger=log_print)
@@ -3607,6 +3747,10 @@ def main():
     log_print("Xiaopai server ready")
     log_print(f"  face detector: {args.face_detector}")
     log_print(f"  capture save mode: {args.capture_save_mode}")
+    log_print(
+        "  audio capture: "
+        + (httpd.audio_capture_dir if httpd.save_audio_uploads else "disabled")
+    )
     log_print(f"  visual tracking: {'enabled' if args.visual_tracking_enabled else 'disabled'}")
     log_print(f"  command queue: max_size={args.command_queue_max_size}")
     log_print(f"  OpenClaw: {'enabled' if httpd.openclaw_base_url and httpd.openclaw_token else 'disabled'}")

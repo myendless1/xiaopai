@@ -79,6 +79,20 @@ class YunetFaceService:
         frame = self._rgb565_be_to_bgr(rgb565, width, height)
         return self.detect_bgr(frame, visual_path)
 
+    def detect_yuv422(self, yuv422: bytes, width: int, height: int, visual_path: str = "") -> tuple[str, dict]:
+        if not self._ensure_detector():
+            return "", {"available": False, "backend": "yunet", "error": self._load_error, "faces": []}
+        expected = width * height * 2
+        if len(yuv422) != expected or width % 2 != 0:
+            return "", {
+                "available": False,
+                "backend": "yunet",
+                "error": f"yuv422 size mismatch: got {len(yuv422)}, expected {expected}, width={width}",
+                "faces": [],
+            }
+        frame = self._yuv422_yuyv_to_bgr(yuv422, width, height)
+        return self.detect_bgr(frame, visual_path)
+
     def detect_jpeg(self, jpeg: bytes, visual_path: str = "") -> tuple[str, dict]:
         if not self._ensure_detector():
             return "", {"available": False, "backend": "yunet", "error": self._load_error, "faces": []}
@@ -123,6 +137,26 @@ class YunetFaceService:
         r = ((value >> 11) & 0x1F).astype(self._np.uint16) * 255 // 31
         g = ((value >> 5) & 0x3F).astype(self._np.uint16) * 255 // 63
         b = (value & 0x1F).astype(self._np.uint16) * 255 // 31
+        return self._np.dstack((b, g, r)).astype(self._np.uint8)
+
+    def _yuv422_yuyv_to_bgr(self, yuv422: bytes, width: int, height: int):
+        pairs = self._np.frombuffer(yuv422, dtype=self._np.uint8).reshape((height, width // 2, 4))
+        y = self._np.empty((height, width), dtype=self._np.int16)
+        u = self._np.empty((height, width), dtype=self._np.int16)
+        v = self._np.empty((height, width), dtype=self._np.int16)
+        y[:, 0::2] = pairs[:, :, 0]
+        y[:, 1::2] = pairs[:, :, 2]
+        u[:, 0::2] = pairs[:, :, 1]
+        u[:, 1::2] = pairs[:, :, 1]
+        v[:, 0::2] = pairs[:, :, 3]
+        v[:, 1::2] = pairs[:, :, 3]
+
+        c = y - 16
+        d = u - 128
+        e = v - 128
+        r = self._np.clip((298 * c + 409 * e + 128) >> 8, 0, 255)
+        g = self._np.clip((298 * c - 100 * d - 208 * e + 128) >> 8, 0, 255)
+        b = self._np.clip((298 * c + 516 * d + 128) >> 8, 0, 255)
         return self._np.dstack((b, g, r)).astype(self._np.uint8)
 
     @staticmethod

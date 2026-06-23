@@ -70,6 +70,28 @@ static std::string make_stream_tts_url()
     return make_stream_tts_url_for_text(CONFIG_STACKCHAN_TTS_TEXT);
 }
 
+static bool ensure_core_s3_internal_i2c_ready()
+{
+    i2c_master_bus_handle_t bus_handle = nullptr;
+    esp_err_t err = i2c_master_get_bus_handle(kCoreS3InternalI2cPort, &bus_handle);
+    if (err == ESP_OK && bus_handle != nullptr) {
+        return true;
+    }
+
+    ESP_LOGW(TAG, "CoreS3 internal I2C bus missing before camera init: %s; rebuilding",
+             esp_err_to_name(err));
+    if (!M5.In_I2C.begin(kCoreS3InternalI2cPort, 12, 11)) {
+        ESP_LOGE(TAG, "M5.In_I2C.begin failed before camera init");
+        return false;
+    }
+    err = i2c_master_get_bus_handle(kCoreS3InternalI2cPort, &bus_handle);
+    if (err != ESP_OK || bus_handle == nullptr) {
+        ESP_LOGE(TAG, "CoreS3 internal I2C bus unavailable after rebuild: %s", esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
 static bool init_camera_once()
 {
     if (camera_initialized) {
@@ -80,8 +102,8 @@ static bool init_camera_once()
     config.pin_pwdn = -1;
     config.pin_reset = -1;
     config.pin_xclk = -1;
-    config.pin_sccb_sda = 12;
-    config.pin_sccb_scl = 11;
+    config.pin_sccb_sda = -1;
+    config.pin_sccb_scl = -1;
     config.pin_d7 = 47;
     config.pin_d6 = 48;
     config.pin_d5 = 16;
@@ -93,25 +115,32 @@ static bool init_camera_once()
     config.pin_vsync = 46;
     config.pin_href = 38;
     config.pin_pclk = 45;
-    config.xclk_freq_hz = 20000000;
+    config.xclk_freq_hz = 10000000;
     config.ledc_timer = LEDC_TIMER_0;
     config.ledc_channel = LEDC_CHANNEL_0;
     config.pixel_format = PIXFORMAT_RGB565;
     config.frame_size = FRAMESIZE_QVGA;
-    config.jpeg_quality = 0;
-    config.fb_count = 2;
+    config.jpeg_quality = 12;
+    config.fb_count = 1;
     config.fb_location = CAMERA_FB_IN_PSRAM;
-    config.grab_mode = CAMERA_GRAB_LATEST;
-    config.sccb_i2c_port = -1;
+    config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+    config.sccb_i2c_port = kCoreS3InternalI2cPort;
 
     set_tracking_status("Camera", "Initializing GC0308", "QVGA RGB565", "");
-    M5.In_I2C.release();
     camera_owns_internal_i2c = true;
+    if (!ensure_core_s3_internal_i2c_ready()) {
+        camera_owns_internal_i2c = false;
+        set_tracking_status("Cam Fail", "Internal I2C init failed", "Check CoreS3 bus", "", false, false);
+        return false;
+    }
+    esp_err_t psram_dma_err = esp_camera_set_psram_mode(true);
+    if (psram_dma_err != ESP_OK && psram_dma_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "esp_camera_set_psram_mode(true) returned %s", esp_err_to_name(psram_dma_err));
+    }
     esp_err_t err = esp_camera_init(&config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_camera_init failed: %s", esp_err_to_name(err));
         esp_camera_deinit();
-        M5.In_I2C.begin();
         camera_owns_internal_i2c = false;
         set_tracking_status("Cam Fail", esp_err_to_name(err), "Check CoreS3 camera", "", false, false);
         return false;
@@ -121,7 +150,12 @@ static bool init_camera_once()
     if (sensor != nullptr) {
         sensor->set_framesize(sensor, FRAMESIZE_QVGA);
         sensor->set_pixformat(sensor, PIXFORMAT_RGB565);
+        sensor->set_whitebal(sensor, 1);
+        sensor->set_gain_ctrl(sensor, 1);
+        sensor->set_exposure_ctrl(sensor, 1);
+        sensor->set_ae_level(sensor, 2);
     }
+    vTaskDelay(pdMS_TO_TICKS(500));
 
     camera_initialized = true;
     return true;
@@ -133,7 +167,6 @@ static void release_camera_driver()
         esp_camera_deinit();
         camera_initialized = false;
     }
-    M5.In_I2C.begin();
     camera_owns_internal_i2c = false;
     local_voice_apply_outputs(local_voice_current_state());
 }
@@ -145,7 +178,7 @@ static camera_fb_t* get_fresh_camera_frame(const char* context)
         if (stale == nullptr) {
             ESP_LOGW(TAG, "Camera stale-frame flush failed context=%s index=%d", context != nullptr ? context : "",
                      i + 1);
-            break;
+            return nullptr;
         }
         ESP_LOGI(TAG, "Camera stale-frame flushed context=%s index=%d len=%u", context != nullptr ? context : "",
                  i + 1, static_cast<unsigned>(stale->len));
@@ -187,6 +220,148 @@ struct CapturedFrame {
     pixformat_t format = PIXFORMAT_RGB565;
 };
 
+static bool camera_frame_has_expected_size(const camera_fb_t* frame)
+{
+    if (frame == nullptr || frame->width == 0 || frame->height == 0 || frame->len == 0) {
+        return false;
+    }
+    if (frame->format == PIXFORMAT_RGB565 || frame->format == PIXFORMAT_YUV422) {
+        size_t expected = static_cast<size_t>(frame->width) * static_cast<size_t>(frame->height) * 2;
+        return frame->len == expected;
+    }
+    return true;
+}
+
+static bool camera_yuv422_frame_looks_corrupt(const camera_fb_t* frame)
+{
+    if (frame == nullptr || frame->format != PIXFORMAT_YUV422 || frame->width < 2 || frame->height == 0) {
+        return false;
+    }
+
+    int green_rows = 0;
+    int max_consecutive_green_rows = 0;
+    int consecutive_green_rows = 0;
+    const size_t row_bytes = static_cast<size_t>(frame->width) * 2;
+    for (uint32_t y = 0; y < frame->height; ++y) {
+        const uint8_t* row = frame->buf + static_cast<size_t>(y) * row_bytes;
+        uint32_t y_sum = 0;
+        uint32_t u_sum = 0;
+        uint32_t v_sum = 0;
+        uint32_t pairs = 0;
+        for (uint32_t x = 0; x + 1 < frame->width; x += 2) {
+            size_t offset = static_cast<size_t>(x) * 2;
+            y_sum += row[offset];
+            u_sum += row[offset + 1];
+            y_sum += row[offset + 2];
+            v_sum += row[offset + 3];
+            ++pairs;
+        }
+        if (pairs == 0) {
+            continue;
+        }
+        uint32_t y_avg = y_sum / (pairs * 2);
+        uint32_t u_avg = u_sum / pairs;
+        uint32_t v_avg = v_sum / pairs;
+        bool green_like = y_avg > 90 && y_avg < 170 && u_avg < 70 && v_avg < 70;
+        if (green_like) {
+            ++green_rows;
+            ++consecutive_green_rows;
+            max_consecutive_green_rows = std::max(max_consecutive_green_rows, consecutive_green_rows);
+        } else {
+            consecutive_green_rows = 0;
+        }
+    }
+
+    return green_rows > static_cast<int>(frame->height / 4) ||
+           max_consecutive_green_rows > static_cast<int>(frame->height / 10);
+}
+
+static bool camera_rgb565_frame_looks_corrupt(const camera_fb_t* frame)
+{
+    if (frame == nullptr || frame->format != PIXFORMAT_RGB565 || frame->width == 0 || frame->height == 0) {
+        return false;
+    }
+
+    int green_rows = 0;
+    int max_consecutive_green_rows = 0;
+    int consecutive_green_rows = 0;
+    const size_t row_bytes = static_cast<size_t>(frame->width) * 2;
+    for (uint32_t y = 0; y < frame->height; ++y) {
+        const uint8_t* row = frame->buf + static_cast<size_t>(y) * row_bytes;
+        uint32_t r_sum = 0;
+        uint32_t g_sum = 0;
+        uint32_t b_sum = 0;
+        for (uint32_t x = 0; x < frame->width; ++x) {
+            size_t offset = static_cast<size_t>(x) * 2;
+            uint16_t value = (static_cast<uint16_t>(row[offset]) << 8) | row[offset + 1];
+            r_sum += ((value >> 11) & 0x1f) * 255 / 31;
+            g_sum += ((value >> 5) & 0x3f) * 255 / 63;
+            b_sum += (value & 0x1f) * 255 / 31;
+        }
+        uint32_t r_avg = r_sum / frame->width;
+        uint32_t g_avg = g_sum / frame->width;
+        uint32_t b_avg = b_sum / frame->width;
+        bool green_like = g_avg > 180 && r_avg < 45 && b_avg < 45;
+        if (green_like) {
+            ++green_rows;
+            ++consecutive_green_rows;
+            max_consecutive_green_rows = std::max(max_consecutive_green_rows, consecutive_green_rows);
+        } else {
+            consecutive_green_rows = 0;
+        }
+    }
+
+    return green_rows > static_cast<int>(frame->height / 4) ||
+           max_consecutive_green_rows > static_cast<int>(frame->height / 10);
+}
+
+static bool camera_frame_looks_corrupt(const camera_fb_t* frame)
+{
+    return camera_yuv422_frame_looks_corrupt(frame) || camera_rgb565_frame_looks_corrupt(frame);
+}
+
+static const char* camera_frame_format_token(pixformat_t format)
+{
+    switch (format) {
+    case PIXFORMAT_RGB565:
+        return "rgb565";
+    case PIXFORMAT_YUV422:
+        return "yuv422";
+    case PIXFORMAT_JPEG:
+        return "jpeg";
+    default:
+        return "bin";
+    }
+}
+
+static const char* camera_frame_content_type(pixformat_t format)
+{
+    switch (format) {
+    case PIXFORMAT_RGB565:
+        return "image/rgb565";
+    case PIXFORMAT_YUV422:
+        return "image/yuv422";
+    case PIXFORMAT_JPEG:
+        return "image/jpeg";
+    default:
+        return "application/octet-stream";
+    }
+}
+
+static const char* camera_frame_status_text(pixformat_t format)
+{
+    switch (format) {
+    case PIXFORMAT_RGB565:
+        return "Sending RGB565 frame";
+    case PIXFORMAT_YUV422:
+        return "Sending YUV422 frame";
+    case PIXFORMAT_JPEG:
+        return "Sending JPEG frame";
+    default:
+        return "Sending camera frame";
+    }
+}
+
 static bool capture_frame_copy(const char* context, CapturedFrame* captured)
 {
     if (captured == nullptr) {
@@ -195,24 +370,49 @@ static bool capture_frame_copy(const char* context, CapturedFrame* captured)
     captured->data.clear();
 
     VoiceListenerPauseGuard voice_pause("camera capture");
-    if (!init_camera_once()) {
-        return false;
-    }
+    for (int attempt = 1; attempt <= kCameraCaptureAttempts; ++attempt) {
+        if (!init_camera_once()) {
+            return false;
+        }
 
-    camera_fb_t* frame = get_fresh_camera_frame(context);
-    if (frame == nullptr) {
-        ESP_LOGE(TAG, "esp_camera_fb_get failed");
+        camera_fb_t* frame = get_fresh_camera_frame(context);
+        if (frame == nullptr) {
+            ESP_LOGE(TAG, "esp_camera_fb_get failed context=%s attempt=%d/%d",
+                     context != nullptr ? context : "", attempt, kCameraCaptureAttempts);
+            release_camera_driver();
+            vTaskDelay(pdMS_TO_TICKS(220));
+            continue;
+        }
+        if (!camera_frame_has_expected_size(frame)) {
+            ESP_LOGW(TAG, "Camera bad frame size context=%s attempt=%d/%d len=%u size=%ux%u format=%d",
+                     context != nullptr ? context : "", attempt, kCameraCaptureAttempts,
+                     static_cast<unsigned>(frame->len), static_cast<unsigned>(frame->width),
+                     static_cast<unsigned>(frame->height), static_cast<int>(frame->format));
+            esp_camera_fb_return(frame);
+            release_camera_driver();
+            vTaskDelay(pdMS_TO_TICKS(260));
+            continue;
+        }
+        if (camera_frame_looks_corrupt(frame)) {
+            ESP_LOGW(TAG, "Camera frame looks corrupt context=%s attempt=%d/%d len=%u size=%ux%u format=%d",
+                     context != nullptr ? context : "", attempt, kCameraCaptureAttempts,
+                     static_cast<unsigned>(frame->len), static_cast<unsigned>(frame->width),
+                     static_cast<unsigned>(frame->height), static_cast<int>(frame->format));
+            esp_camera_fb_return(frame);
+            release_camera_driver();
+            vTaskDelay(pdMS_TO_TICKS(260));
+            continue;
+        }
+
+        captured->width = frame->width;
+        captured->height = frame->height;
+        captured->format = frame->format;
+        captured->data.assign(frame->buf, frame->buf + frame->len);
+        esp_camera_fb_return(frame);
         release_camera_driver();
-        return false;
+        return true;
     }
-
-    captured->width = frame->width;
-    captured->height = frame->height;
-    captured->format = frame->format;
-    captured->data.assign(frame->buf, frame->buf + frame->len);
-    esp_camera_fb_return(frame);
-    release_camera_driver();
-    return true;
+    return false;
 }
 
 struct ScanPose {
@@ -677,6 +877,14 @@ static bool move_center_for_test()
     return ok_pan && ok_tilt;
 }
 
+static bool move_to_camera_home_pose(const char* stage, const char* line2 = "Taking photo next")
+{
+    set_tracking_status(stage, "Centering camera", line2, "");
+    bool ok = move_head_to_tracking_angles(0.0f, kTrackingHomePitchDeg, 650);
+    vTaskDelay(pdMS_TO_TICKS(850));
+    return ok;
+}
+
 static bool parse_face_target(const std::string& response, FaceTarget* target)
 {
     if (target == nullptr) {
@@ -737,7 +945,7 @@ static bool upload_tracking_frame(const uint8_t* frame_data, size_t frame_len, u
     ESP_LOGI(TAG, "Uploading camera frame to %s, len=%u size=%ux%u format=%d", upload_url.c_str(),
              static_cast<unsigned>(frame_len), static_cast<unsigned>(frame_width), static_cast<unsigned>(frame_height),
              static_cast<int>(frame_format));
-    set_tracking_status("Uploading", upload_url.c_str(), "Sending RGB565 frame", "");
+    set_tracking_status("Uploading", upload_url.c_str(), camera_frame_status_text(frame_format), "");
 
     esp_http_client_config_t config = {};
     config.url = upload_url.c_str();
@@ -756,8 +964,8 @@ static bool upload_tracking_frame(const uint8_t* frame_data, size_t frame_len, u
     char height[16];
     snprintf(width, sizeof(width), "%u", static_cast<unsigned>(frame_width));
     snprintf(height, sizeof(height), "%u", static_cast<unsigned>(frame_height));
-    esp_http_client_set_header(client, "Content-Type", "image/rgb565");
-    esp_http_client_set_header(client, "X-Image-Format", "rgb565");
+    esp_http_client_set_header(client, "Content-Type", camera_frame_content_type(frame_format));
+    esp_http_client_set_header(client, "X-Image-Format", camera_frame_format_token(frame_format));
     esp_http_client_set_header(client, "X-Image-Width", width);
     esp_http_client_set_header(client, "X-Image-Height", height);
     esp_http_client_set_header(client, "X-Device-Id", mac_address().c_str());
@@ -840,7 +1048,7 @@ static bool upload_camera_frame_only(const uint8_t* frame_data, size_t frame_len
     ESP_LOGI(TAG, "Uploading one camera frame to %s, len=%u size=%ux%u format=%d", upload_url.c_str(),
              static_cast<unsigned>(frame_len), static_cast<unsigned>(frame_width),
              static_cast<unsigned>(frame_height), static_cast<int>(frame_format));
-    set_camera_status("Uploading", upload_url.c_str(), "Sending RGB565 frame", "");
+    set_camera_status("Uploading", upload_url.c_str(), camera_frame_status_text(frame_format), "");
 
     esp_http_client_config_t config = {};
     config.url = upload_url.c_str();
@@ -859,8 +1067,8 @@ static bool upload_camera_frame_only(const uint8_t* frame_data, size_t frame_len
     char height[16];
     snprintf(width, sizeof(width), "%u", static_cast<unsigned>(frame_width));
     snprintf(height, sizeof(height), "%u", static_cast<unsigned>(frame_height));
-    esp_http_client_set_header(client, "Content-Type", "image/rgb565");
-    esp_http_client_set_header(client, "X-Image-Format", "rgb565");
+    esp_http_client_set_header(client, "Content-Type", camera_frame_content_type(frame_format));
+    esp_http_client_set_header(client, "X-Image-Format", camera_frame_format_token(frame_format));
     esp_http_client_set_header(client, "X-Image-Width", width);
     esp_http_client_set_header(client, "X-Image-Height", height);
     esp_http_client_set_header(client, "X-Device-Id", mac_address().c_str());
@@ -992,6 +1200,41 @@ static bool capture_face_at_current_pose(const char* stage, const char* line1, c
     return upload_tracking_frame(frame.data.data(), frame.data.size(), frame.width, frame.height, frame.format, target);
 }
 
+static bool scan_for_face_near_home(FaceTarget* target)
+{
+    if (target == nullptr) {
+        return false;
+    }
+
+    const ScanPose scan_poses[] = {
+        {"Left", -kTrackingScanYawDeg, kTrackingHomePitchDeg},
+        {"Right", kTrackingScanYawDeg, kTrackingHomePitchDeg},
+        {"Low", 0.0f, kTrackingScanLowPitchDeg},
+        {"High", 0.0f, kTrackingScanHighPitchDeg},
+    };
+    constexpr int scan_count = sizeof(scan_poses) / sizeof(scan_poses[0]);
+
+    for (int i = 0; i < scan_count && !tracking_stop_requested; ++i) {
+        const ScanPose& pose = scan_poses[i];
+        char line1[48];
+        char line2[64];
+        snprintf(line1, sizeof(line1), "scan %d/%d", i + 1, scan_count);
+        snprintf(line2, sizeof(line2), "%s %.0f/%.0f", pose.label, pose.yaw, pose.pitch);
+        set_tracking_status("Find Owner", line1, line2, "");
+        if (!move_head_to_tracking_angles(pose.yaw, pose.pitch, 650)) {
+            set_tracking_status("Servo Fail", "Find-owner scan failed", "Check ID/wiring", "", false, false);
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(850));
+        if (capture_face_at_current_pose("Find Owner", pose.label, "Detecting face", target)) {
+            return true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(180));
+    }
+
+    return false;
+}
+
 static bool refine_head_toward_face(const FaceTarget& target, uint16_t duration_ms, float gain_x, float gain_y)
 {
     float dx = target.center_x - kTrackingCx;
@@ -1041,16 +1284,31 @@ static FindOwnerResult run_find_owner_detection(int rounds, float gain_x = kFind
         request_speak_preempt("find owner");
         codec_audio_output_end();
     }
+    VoiceListenerPauseGuard voice_pause("find owner");
 
     int capped_rounds = std::max(1, std::min(rounds, kFindOwnerMaxRounds));
     gain_x = std::max(0.0f, gain_x);
     gain_y = std::max(0.0f, gain_y);
     stop_pixels = std::max(0.0f, stop_pixels);
+    bool reset_to_home_before_capture = true;
     for (int round = 1; round <= capped_rounds; ++round) {
+        if (reset_to_home_before_capture) {
+            if (!move_to_camera_home_pose("Find Owner", "Detecting face next")) {
+                set_tracking_status("Servo Fail", "Camera home failed", "Check ID/wiring", "", false, false);
+                return result;
+            }
+            reset_to_home_before_capture = false;
+        }
+
         FaceTarget target;
         char line1[48];
         snprintf(line1, sizeof(line1), "round %d/%d", round, capped_rounds);
-        if (!capture_face_at_current_pose("Find Owner", line1, "Detecting face", &target)) {
+        bool detected = capture_face_at_current_pose("Find Owner", line1, "Detecting face", &target);
+        if (!detected && round == 1) {
+            detected = scan_for_face_near_home(&target);
+        }
+        if (!detected) {
+            reset_to_home_before_capture = true;
             vTaskDelay(pdMS_TO_TICKS(220));
             continue;
         }
@@ -1074,6 +1332,7 @@ static FindOwnerResult run_find_owner_detection(int rounds, float gain_x = kFind
             set_tracking_status("Servo Fail", "Find-owner move failed", "Check ID/wiring", "", false, false);
             break;
         }
+        reset_to_home_before_capture = false;
         vTaskDelay(pdMS_TO_TICKS(650));
     }
 
@@ -1159,6 +1418,10 @@ void run_camera_upload_app()
     codec_audio_output_end();
 
     set_camera_status("Camera", "Initializing camera", "Taking one photo");
+    if (!move_to_camera_home_pose("Camera", "Taking photo next")) {
+        set_camera_status("Servo Fail", "Camera home failed", "Check ID/wiring", "", false, false);
+        return;
+    }
     set_camera_status("Capturing", "Taking photo", "Uploading follows");
     CapturedFrame frame;
     if (!capture_frame_copy("capture_image", &frame)) {
@@ -1189,8 +1452,8 @@ void run_tracking_user_demo()
         {"Home", 0.0f, kTrackingHomePitchDeg},
         {"Yaw A", kTrackingScanYawDeg, kTrackingHomePitchDeg},
         {"Yaw B", -kTrackingScanYawDeg, kTrackingHomePitchDeg},
-        {"Pitch Up", 0.0f, kTrackingHomePitchDeg + kTrackingScanPitchDeltaDeg},
-        {"Pitch Down", 0.0f, kTrackingHomePitchDeg - kTrackingScanPitchDeltaDeg},
+        {"Low", 0.0f, kTrackingScanLowPitchDeg},
+        {"High", 0.0f, kTrackingScanHighPitchDeg},
     };
 
     ScanCandidate best;

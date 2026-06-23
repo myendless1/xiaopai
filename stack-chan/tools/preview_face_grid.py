@@ -16,6 +16,7 @@ BG = (0, 0, 0)
 LINE = (245, 248, 255)
 DIM = (118, 128, 148)
 BLUSH = (255, 155, 185)
+TOOTH_LINE = (216, 221, 230)
 GRID_BG = (18, 20, 24)
 LABEL = (215, 220, 230)
 GUIDE = (46, 56, 70)
@@ -30,6 +31,7 @@ RIGHT_CHEEK = (273, 141)
 
 OUT = Path(__file__).resolve().parent / "face_grid_preview.png"
 OUT_GUIDES = Path(__file__).resolve().parent / "face_grid_preview_guides.png"
+OUT_VARIANTS = Path(__file__).resolve().parent / "face_variant_preview.png"
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,12 @@ def draw_eye(draw: ImageDraw.ImageDraw, center: tuple[int, int], style: str) -> 
         round_arc(draw, (cx - 30, cy - 27, cx + 30, cy + 20), 205, 335, LINE, 7)
     elif style == "closed_relaxed":
         round_arc(draw, (cx - 31, cy - 20, cx + 31, cy + 13), 35, 145, LINE, 6)
+    elif style == "closed_line":
+        draw.rounded_rectangle(
+            ((cx - 15) * SCALE, (cy - 4) * SCALE, (cx + 15) * SCALE, (cy + 4) * SCALE),
+            radius=4 * SCALE,
+            fill=LINE,
+        )
     elif style == "wink_right":
         line(draw, [(cx + 20, cy - 18), (cx - 15, cy), (cx + 18, cy + 15)], LINE, 7)
     elif style == "small_open":
@@ -169,6 +177,31 @@ def happy_mouth(draw: ImageDraw.ImageDraw, center: tuple[int, int]) -> None:
     )
 
 
+def grin_mouth(draw: ImageDraw.ImageDraw, center: tuple[int, int]) -> None:
+    cx, cy = center
+    rx = 49
+    ry = 44
+    flat_y = cy - 8
+    bottom_y = cy + 36
+    for y in range(flat_y, bottom_y + 1):
+        t = (y - flat_y) / ry
+        half = round(rx * math.sqrt(max(0.0, 1.0 - t * t)))
+        draw.line(
+            ((cx - half) * SCALE, y * SCALE, (cx + half) * SCALE, y * SCALE),
+            fill=LINE,
+            width=SCALE,
+        )
+    draw.rounded_rectangle(
+        ((cx - rx) * SCALE, (flat_y - 4) * SCALE, (cx + rx) * SCALE, (flat_y + 16) * SCALE),
+        radius=10 * SCALE,
+        fill=LINE,
+    )
+    for x in (cx - 16, cx + 16):
+        dx = (x - cx) / rx
+        divider_bottom = flat_y + round(ry * math.sqrt(max(0.0, 1.0 - dx * dx))) - 3
+        line(draw, [(x, flat_y + 3), (x, divider_bottom)], TOOTH_LINE, 2)
+
+
 def draw_mouth(
     draw: ImageDraw.ImageDraw,
     center: tuple[int, int],
@@ -194,6 +227,8 @@ def draw_mouth(
         arc(draw, (cx - 34, cy - 25, cx + 34, cy + 20), 35, 145, LINE, 6)
     elif style == "happy_open":
         happy_mouth(draw, center)
+    elif style == "grin":
+        grin_mouth(draw, center)
 
 
 def draw_cheek(draw: ImageDraw.ImageDraw, center: tuple[int, int], side: str, style: str) -> None:
@@ -238,14 +273,38 @@ def render_pose(pose: Pose, guides: bool = True) -> Image.Image:
 def expression_poses() -> list[Pose]:
     return [
         Pose(label="calm", left_eye="open", right_eye="open", mouth="closed", mouth_width=38, mouth_height=7),
+        Pose(label="calm_blink", left_eye="closed_line", right_eye="closed_line", mouth="closed", mouth_width=38, mouth_height=7),
         Pose(label="speak1", left_eye="open", right_eye="open", mouth="speak1"),
         Pose(label="speak2", left_eye="open", right_eye="open", mouth="speak2"),
         Pose(label="thinking", left_eye="open", right_eye="open", left_brow="thinking", right_brow="none", mouth="frown", mouth_y=-3),
+        Pose(label="thinking_blink", left_eye="closed_line", right_eye="closed_line", left_brow="thinking", right_brow="none", mouth="frown", mouth_y=-3),
         Pose(label="shy", left_eye="open", right_eye="open", mouth="smile", mouth_y=-4, cheek="shy"),
+        Pose(label="shy_blink", left_eye="closed_line", right_eye="closed_line", mouth="smile", mouth_y=-4, cheek="shy"),
         Pose(label="smile", left_eye="open", right_eye="open", mouth="smile_wide", mouth_y=-5, cheek="shy"),
+        Pose(label="smile_blink", left_eye="closed_line", right_eye="closed_line", mouth="smile_wide", mouth_y=-5, cheek="shy"),
         Pose(label="happy", left_eye="closed_happy", right_eye="closed_happy", mouth="happy_open", mouth_y=-4, cheek="shy"),
         Pose(label="relaxed", left_eye="closed_relaxed", right_eye="closed_relaxed", mouth="smile", mouth_y=-6, cheek="shy"),
-        Pose(label="wink", left_eye="open", right_eye="wink_right", mouth="smile", mouth_y=-5, cheek="shy"),
+        Pose(label="wink_open", left_eye="open", right_eye="open", mouth="smile", mouth_y=-4, cheek="shy"),
+        Pose(label="wink_blink", left_eye="open", right_eye="wink_right", mouth="smile", mouth_y=-5, cheek="shy"),
+        Pose(label="grin", left_eye="open", right_eye="open", mouth="grin", mouth_y=5, cheek="shy"),
+        Pose(label="grin_blink", left_eye="closed_line", right_eye="closed_line", mouth="grin", mouth_y=5, cheek="shy"),
+    ]
+
+
+def requested_variant_poses() -> list[Pose]:
+    return [
+        Pose(label="calm", left_eye="open", right_eye="open", mouth="closed", mouth_width=38, mouth_height=7),
+        Pose(label="calm_blink", left_eye="closed_line", right_eye="closed_line", mouth="closed", mouth_width=38, mouth_height=7),
+        Pose(label="thinking", left_eye="open", right_eye="open", left_brow="thinking", right_brow="none", mouth="frown", mouth_y=-3),
+        Pose(label="thinking_blink", left_eye="closed_line", right_eye="closed_line", left_brow="thinking", right_brow="none", mouth="frown", mouth_y=-3),
+        Pose(label="shy", left_eye="open", right_eye="open", mouth="smile", mouth_y=-4, cheek="shy"),
+        Pose(label="shy_blink", left_eye="closed_line", right_eye="closed_line", mouth="smile", mouth_y=-4, cheek="shy"),
+        Pose(label="smile", left_eye="open", right_eye="open", mouth="smile_wide", mouth_y=-5, cheek="shy"),
+        Pose(label="smile_blink", left_eye="closed_line", right_eye="closed_line", mouth="smile_wide", mouth_y=-5, cheek="shy"),
+        Pose(label="wink open", left_eye="open", right_eye="open", mouth="smile", mouth_y=-4, cheek="shy"),
+        Pose(label="wink blink", left_eye="open", right_eye="wink_right", mouth="smile", mouth_y=-5, cheek="shy"),
+        Pose(label="grin", left_eye="open", right_eye="open", mouth="grin", mouth_y=5, cheek="shy"),
+        Pose(label="grin blink", left_eye="closed_line", right_eye="closed_line", mouth="grin", mouth_y=5, cheek="shy"),
     ]
 
 
@@ -290,9 +349,13 @@ def main() -> None:
     guide_items = [(pose.label, render_pose(pose, guides=True)) for pose in poses]
     compose_grid(guide_items, cols=4).save(OUT_GUIDES)
 
+    variant_items = [(pose.label, render_pose(pose, guides=False)) for pose in requested_variant_poses()]
+    compose_grid(variant_items, cols=2).save(OUT_VARIANTS)
+
     print(f"resolution: {W}x{H}")
     print(f"wrote: {OUT}")
     print(f"wrote: {OUT_GUIDES}")
+    print(f"wrote: {OUT_VARIANTS}")
 
 
 if __name__ == "__main__":

@@ -1,226 +1,7 @@
-static constexpr size_t kPcmPlaybackQueueDepth = 10;
-static constexpr size_t kPcmPlaybackPrebufferChunks = 6;
-static constexpr uint32_t kPcmPlaybackTaskStackBytes = 6 * 1024;
-
-struct PcmPlaybackChunk {
-    int16_t* samples = nullptr;
-    size_t sample_count = 0;
-};
-
-struct PcmPlaybackContext {
-    QueueHandle_t queue = nullptr;
-    TaskHandle_t task = nullptr;
-    volatile bool producer_done = false;
-    volatile bool stop = false;
-    volatile bool failed = false;
+struct PcmPlaybackStats {
     size_t queued_chunks = 0;
-    size_t played_chunks = 0;
-    size_t max_depth = 0;
-    size_t underruns = 0;
+    size_t played_samples = 0;
 };
-
-static void pcm_playback_task(void* arg)
-{
-    auto* ctx = static_cast<PcmPlaybackContext*>(arg);
-    while (!ctx->stop && !app2_stop_requested) {
-        PcmPlaybackChunk* chunk = nullptr;
-        TickType_t wait_ticks = ctx->producer_done ? pdMS_TO_TICKS(100) : pdMS_TO_TICKS(500);
-        if (xQueueReceive(ctx->queue, &chunk, wait_ticks) != pdTRUE) {
-            if (ctx->producer_done) {
-                break;
-            }
-            ++ctx->underruns;
-            ESP_LOGW(TAG, "PCM playback queue underrun: played=%u queued=%u",
-                     static_cast<unsigned>(ctx->played_chunks), static_cast<unsigned>(ctx->queued_chunks));
-            continue;
-        }
-        if (chunk == nullptr) {
-            break;
-        }
-
-        update_speaking_light_level(chunk->samples, chunk->sample_count);
-        if (!codec_audio_output_write(chunk->samples, chunk->sample_count)) {
-            ctx->failed = true;
-            heap_caps_free(chunk->samples);
-            delete chunk;
-            ESP_LOGE(TAG, "esp_codec_dev_write failed in playback task");
-            break;
-        }
-        ++ctx->played_chunks;
-        heap_caps_free(chunk->samples);
-        delete chunk;
-    }
-
-    ctx->task = nullptr;
-    vTaskDelete(nullptr);
-}
-
-static bool init_pcm_playback_context(PcmPlaybackContext* ctx)
-{
-    if (ctx == nullptr) {
-        return false;
-    }
-    ctx->queue = xQueueCreate(kPcmPlaybackQueueDepth, sizeof(PcmPlaybackChunk*));
-    if (ctx->queue == nullptr) {
-        ESP_LOGE(TAG, "Failed to create PCM playback queue");
-        set_tts_status("Play Fail", "PCM queue alloc failed", "", "", false, false);
-        return false;
-    }
-    return true;
-}
-
-static bool start_pcm_playback_task(PcmPlaybackContext* ctx)
-{
-    if (ctx == nullptr || ctx->queue == nullptr) {
-        return false;
-    }
-    if (ctx->task != nullptr) {
-        return true;
-    }
-    BaseType_t ok = xTaskCreatePinnedToCore(pcm_playback_task, "pcm_play", kPcmPlaybackTaskStackBytes, ctx, 5,
-                                            &ctx->task, 0);
-    if (ok != pdPASS) {
-        ctx->failed = true;
-        ESP_LOGE(TAG, "Failed to create PCM playback task");
-        set_tts_status("Play Fail", "PCM task alloc failed", "", "", false, false);
-        return false;
-    }
-    ESP_LOGI(TAG, "PCM playback task started after prebuffer: queued_chunks=%u",
-             static_cast<unsigned>(ctx->queued_chunks));
-    return true;
-}
-
-static bool queue_stream_pcm_chunk(PcmPlaybackContext* ctx, const int16_t* samples, size_t sample_count)
-{
-    if (ctx == nullptr || ctx->queue == nullptr || sample_count == 0 || app2_stop_requested) {
-        return true;
-    }
-
-    auto* chunk = new (std::nothrow) PcmPlaybackChunk();
-    if (chunk == nullptr) {
-        ctx->failed = true;
-        set_tts_status("Play Fail", "PCM chunk alloc failed", "", "", false, false);
-        return false;
-    }
-    size_t byte_count = sample_count * sizeof(int16_t);
-    chunk->samples = static_cast<int16_t*>(heap_caps_malloc(byte_count, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (chunk->samples == nullptr) {
-        chunk->samples = static_cast<int16_t*>(heap_caps_malloc(byte_count, MALLOC_CAP_8BIT));
-    }
-    if (chunk->samples == nullptr) {
-        delete chunk;
-        ctx->failed = true;
-        set_tts_status("Play Fail", "PCM sample alloc failed", "", "", false, false);
-        return false;
-    }
-    chunk->sample_count = sample_count;
-    memcpy(chunk->samples, samples, byte_count);
-
-    bool sent = false;
-    while (!ctx->stop && !app2_stop_requested) {
-        if (xQueueSend(ctx->queue, &chunk, pdMS_TO_TICKS(100)) == pdTRUE) {
-            sent = true;
-            break;
-        }
-    }
-    if (!sent) {
-        heap_caps_free(chunk->samples);
-        delete chunk;
-        return false;
-    }
-
-    ++ctx->queued_chunks;
-    size_t depth = uxQueueMessagesWaiting(ctx->queue);
-    if (depth > ctx->max_depth) {
-        ctx->max_depth = depth;
-    }
-    if (ctx->task == nullptr && ctx->queued_chunks >= kPcmPlaybackPrebufferChunks) {
-        return start_pcm_playback_task(ctx);
-    }
-    return true;
-}
-
-static void cleanup_pcm_playback_context(PcmPlaybackContext* ctx)
-{
-    if (ctx == nullptr || ctx->queue == nullptr) {
-        return;
-    }
-    PcmPlaybackChunk* chunk = nullptr;
-    while (xQueueReceive(ctx->queue, &chunk, 0) == pdTRUE) {
-        if (chunk != nullptr) {
-            heap_caps_free(chunk->samples);
-        }
-        delete chunk;
-    }
-    vQueueDelete(ctx->queue);
-    ctx->queue = nullptr;
-}
-
-static void wait_pcm_playback_task(PcmPlaybackContext* ctx)
-{
-    if (ctx == nullptr) {
-        return;
-    }
-    for (int i = 0; ctx->task != nullptr && i < 600; ++i) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-    if (ctx->task != nullptr) {
-        ESP_LOGW(TAG, "PCM playback task did not stop within timeout");
-        ctx->failed = true;
-    }
-}
-
-static bool finish_pcm_playback(PcmPlaybackContext* ctx)
-{
-    if (ctx == nullptr || ctx->queue == nullptr) {
-        return false;
-    }
-    ctx->producer_done = true;
-    if (ctx->task == nullptr && uxQueueMessagesWaiting(ctx->queue) > 0 && !app2_stop_requested) {
-        if (!start_pcm_playback_task(ctx)) {
-            cleanup_pcm_playback_context(ctx);
-            return false;
-        }
-    }
-    if (ctx->task != nullptr) {
-        PcmPlaybackChunk* done = nullptr;
-        while (xQueueSend(ctx->queue, &done, pdMS_TO_TICKS(100)) != pdTRUE) {
-            if (ctx->task == nullptr) {
-                break;
-            }
-        }
-        wait_pcm_playback_task(ctx);
-    }
-    bool ok = !ctx->failed && !app2_stop_requested;
-    cleanup_pcm_playback_context(ctx);
-    return ok;
-}
-
-static void abort_pcm_playback(PcmPlaybackContext* ctx)
-{
-    if (ctx == nullptr || ctx->queue == nullptr) {
-        return;
-    }
-    ctx->stop = true;
-    ctx->producer_done = true;
-    if (ctx->task != nullptr) {
-        PcmPlaybackChunk* done = nullptr;
-        xQueueSend(ctx->queue, &done, pdMS_TO_TICKS(10));
-        wait_pcm_playback_task(ctx);
-    }
-    cleanup_pcm_playback_context(ctx);
-}
-
-static void drain_speaker_playback()
-{
-    uint32_t started_ms = M5.millis();
-    if (!app2_stop_requested) {
-        codec_audio_output_drain();
-        mark_speech_output_finished();
-    }
-    ESP_LOGI(TAG, "Codec playback %s after %u ms", app2_stop_requested ? "stopped" : "done",
-             static_cast<unsigned>(M5.millis() - started_ms));
-}
 
 static bool stream_pcm_url(const std::string& url, const char* label, bool update_tts_status)
 {
@@ -273,12 +54,7 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
         set_tts_status("Playing", "Receiving pcm_s16le", "16kHz mono stream", "");
     }
 
-    PcmPlaybackContext playback;
-    if (!init_pcm_playback_context(&playback)) {
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        return false;
-    }
+    PcmPlaybackStats playback;
 
     std::vector<std::vector<int16_t>> buffers(3, std::vector<int16_t>(kTtsStreamBufferSamples));
     int buffer_index = 0;
@@ -301,7 +77,13 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
                 peak_sample = abs_sample;
             }
         }
-        bool ok = queue_stream_pcm_chunk(&playback, buffers[buffer_index].data(), sample_pos);
+        update_speaking_light_level(buffers[buffer_index].data(), sample_pos);
+        bool ok = audio_service_play_pcm_16k(buffers[buffer_index].data(), sample_pos,
+                                             AudioPlayOptions{.wait = true, .drop_oldest = false});
+        if (ok) {
+            ++playback.queued_chunks;
+            playback.played_samples += sample_pos;
+        }
         buffer_index = (buffer_index + 1) % buffers.size();
         sample_pos = 0;
         return ok;
@@ -314,7 +96,7 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
             if (update_tts_status) {
                 set_tts_status("Read Fail", "HTTP body read failed", "", "", false, false);
             }
-            abort_pcm_playback(&playback);
+            audio_service_abort_playback();
             esp_http_client_close(client);
             esp_http_client_cleanup(client);
             return false;
@@ -330,7 +112,7 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
             has_pending_byte = false;
             offset = 1;
             if (sample_pos == kTtsStreamBufferSamples && !flush_samples()) {
-                abort_pcm_playback(&playback);
+                audio_service_abort_playback();
                 esp_http_client_close(client);
                 esp_http_client_cleanup(client);
                 return false;
@@ -342,7 +124,7 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
                 static_cast<int16_t>(read_buffer[offset] | (read_buffer[offset + 1] << 8));
             offset += 2;
             if (sample_pos == kTtsStreamBufferSamples && !flush_samples()) {
-                abort_pcm_playback(&playback);
+                audio_service_abort_playback();
                 esp_http_client_close(client);
                 esp_http_client_cleanup(client);
                 return false;
@@ -356,7 +138,7 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
     }
 
     if (!app2_stop_requested && !flush_samples()) {
-        abort_pcm_playback(&playback);
+        audio_service_abort_playback();
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         return false;
@@ -365,9 +147,9 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
 
-    bool playback_ok = finish_pcm_playback(&playback);
+    bool playback_ok = !app2_stop_requested && audio_service_wait_playback_idle(pdMS_TO_TICKS(5000));
     if (playback_ok) {
-        drain_speaker_playback();
+        mark_speech_output_finished();
     }
 
     if (app2_stop_requested) {
@@ -388,10 +170,10 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
         snprintf(line, sizeof(line), "streamed %u bytes", static_cast<unsigned>(total_bytes));
         set_tts_status("Done", line, "Tap TTS to speak again", "", false, true);
     }
-    ESP_LOGI(TAG, "PCM stream done: bytes=%u queued=%u played=%u max_depth=%u underruns=%u peak=%d elapsed_ms=%u",
+    ESP_LOGI(TAG, "PCM stream done: bytes=%u queued=%u samples=%u peak=%d elapsed_ms=%u",
              static_cast<unsigned>(total_bytes), static_cast<unsigned>(playback.queued_chunks),
-             static_cast<unsigned>(playback.played_chunks), static_cast<unsigned>(playback.max_depth),
-             static_cast<unsigned>(playback.underruns), peak_sample, static_cast<unsigned>(M5.millis() - started_ms));
+             static_cast<unsigned>(playback.played_samples), peak_sample,
+             static_cast<unsigned>(M5.millis() - started_ms));
     return true;
 }
 
@@ -448,14 +230,9 @@ void run_stream_tts_demo()
         return;
     }
 
-    while (M5.Mic.isRecording()) {
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-    M5.Mic.end();
-
-    if (!codec_audio_output_begin(kTtsStreamSampleRate, speaker_volume_percent)) {
-        set_tts_status("Speaker Fail", "esp_codec_dev_open failed", "", "", false, false);
-        ESP_LOGE(TAG, "esp_codec_dev_open failed");
+    if (!audio_service_start()) {
+        set_tts_status("Audio Fail", "AudioService start failed", "", "", false, false);
+        ESP_LOGE(TAG, "audio_service_start failed");
         return;
     }
     apply_speaker_volume();
@@ -463,7 +240,7 @@ void run_stream_tts_demo()
     start_mouth_animation();
     stream_tts_pcm();
     stop_mouth_animation();
-    codec_audio_output_end();
+    audio_service_wait_playback_idle(pdMS_TO_TICKS(1000));
 }
 
 static bool http_get_string(const std::string& url, std::string* response, int timeout_ms)
@@ -661,6 +438,7 @@ static void request_speak_preempt(const char* reason)
     stop_speaking_light_animation();
     cancel_mouth_animation_now();
     if (realtime_tts_playback_active) {
+        audio_service_abort_playback();
         finish_realtime_tts_playback();
     } else {
         codec_audio_output_stop();
@@ -787,9 +565,15 @@ static void start_speak_command_service()
         return;
     }
     if (speak_command_task_handle == nullptr) {
-        xTaskCreatePinnedToCore([](void*) {
+        BaseType_t created = xTaskCreatePinnedToCore([](void*) {
             run_speak_command_loop();
-        }, "speak_cmd", kSpeakCommandTaskStackBytes, nullptr, 2, &speak_command_task_handle, 0);
+        }, "speak_cmd", kSpeakCommandTaskStackBytes, nullptr, 3, &speak_command_task_handle, 0);
+        if (created == pdPASS) {
+            ESP_LOGI(TAG, "Speak command task created");
+        } else {
+            speak_command_task_handle = nullptr;
+            ESP_LOGE(TAG, "Failed to create speak command task");
+        }
     }
 }
 

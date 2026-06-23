@@ -403,11 +403,23 @@ public:
 
     ~VoiceRecordingGuard()
     {
+        finish();
+    }
+
+    void finish()
+    {
+        if (!active_) {
+            return;
+        }
         voice_recording_active = false;
+        active_ = false;
     }
 
     VoiceRecordingGuard(const VoiceRecordingGuard&) = delete;
     VoiceRecordingGuard& operator=(const VoiceRecordingGuard&) = delete;
+
+private:
+    bool active_ = true;
 };
 
 static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder, int encoder_frame_samples,
@@ -493,6 +505,7 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     std::string stop = make_listen_message("stop");
     ESP_LOGI(TAG, "WS send listen stop: %s", stop.c_str());
     send_ws_text(ws, stop, "listen stop");
+    recording_guard.finish();
 
     set_light_strip_listening();
 
@@ -740,16 +753,9 @@ static void run_local_record_upload_loop()
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 
-    codec_audio_output_end();
-    auto mic_cfg = M5.Mic.config();
-    mic_cfg.sample_rate = kRecordSampleRate;
-    mic_cfg.magnification = CONFIG_STACKCHAN_MIC_MAGNIFICATION;
-    mic_cfg.noise_filter_level = 0;
-    mic_cfg.task_pinned_core = 1;
-    M5.Mic.config(mic_cfg);
-    if (!M5.Mic.isEnabled() && !M5.Mic.begin()) {
-        set_app1_status("Mic Fail", "M5.Mic.begin failed", "", "", false, false);
-        ESP_LOGE(TAG, "M5.Mic.begin failed");
+    if (!audio_service_start()) {
+        set_app1_status("Audio Fail", "AudioService start failed", "", "", false, false);
+        ESP_LOGE(TAG, "audio_service_start failed");
         return;
     }
 
@@ -763,23 +769,11 @@ static void run_local_record_upload_loop()
 
     while (!app1_stop_requested) {
         if (voice_listener_paused) {
-            if (M5.Mic.isEnabled()) {
-                while (M5.Mic.isRecording()) {
-                    vTaskDelay(pdMS_TO_TICKS(1));
-                }
-                M5.Mic.end();
-            }
             set_app1_status("Paused", "Executing command", "Listening resumes soon", "", true, false);
             while (voice_listener_paused && !app1_stop_requested) {
                 vTaskDelay(pdMS_TO_TICKS(50));
             }
             if (app1_stop_requested) {
-                break;
-            }
-            M5.Mic.config(mic_cfg);
-            if (!M5.Mic.isEnabled() && !M5.Mic.begin()) {
-                set_app1_status("Mic Fail", "M5.Mic.begin failed", "", "", false, false);
-                ESP_LOGE(TAG, "M5.Mic.begin failed after pause");
                 break;
             }
             pre_roll.clear();
@@ -833,10 +827,6 @@ static void run_local_record_upload_loop()
 
     set_app1_status("Stopped", "Voice stopped", "", "", false, false);
     set_light_strip_sleeping();
-    while (M5.Mic.isRecording()) {
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-    M5.Mic.end();
 }
 
 static void pause_voice_listener_for_shared_peripherals(const char* reason)
@@ -845,23 +835,6 @@ static void pause_voice_listener_for_shared_peripherals(const char* reason)
     voice_listener_paused = true;
     ESP_LOGI(TAG, "Voice listener pause requested: %s depth=%d",
              reason != nullptr ? reason : "shared peripheral use", voice_listener_pause_count);
-
-    if (xTaskGetCurrentTaskHandle() == xiaozhi_task_handle) {
-        while (M5.Mic.isRecording()) {
-            vTaskDelay(pdMS_TO_TICKS(1));
-        }
-        if (M5.Mic.isEnabled()) {
-            M5.Mic.end();
-        }
-        return;
-    }
-
-    while (M5.Mic.isRecording()) {
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-    if (M5.Mic.isEnabled()) {
-        M5.Mic.end();
-    }
 }
 
 static void resume_voice_listener_after_shared_peripherals()
@@ -896,16 +869,9 @@ static void run_xiaozhi_speech_loop()
         return;
     }
 
-    codec_audio_output_end();
-    auto mic_cfg = M5.Mic.config();
-    mic_cfg.sample_rate = kAudioSampleRate;
-    mic_cfg.magnification = CONFIG_STACKCHAN_MIC_MAGNIFICATION;
-    mic_cfg.noise_filter_level = 0;
-    mic_cfg.task_pinned_core = 1;
-    M5.Mic.config(mic_cfg);
-    if (!M5.Mic.isEnabled() && !M5.Mic.begin()) {
-        set_app1_status("Mic Fail", "M5.Mic.begin failed", "", "", false, false);
-        ESP_LOGE(TAG, "M5.Mic.begin failed");
+    if (!audio_service_start()) {
+        set_app1_status("Audio Fail", "AudioService start failed", "", "", false, false);
+        ESP_LOGE(TAG, "audio_service_start failed");
         return;
     }
 
@@ -990,18 +956,17 @@ static void run_xiaozhi_speech_loop()
     while (!app1_stop_requested) {
         handle_pending_wake_find_owner();
 
+        if (!receive_ws_once(ws, 0, got_hello, stt_text) &&
+            !reconnect_ws("websocket read failed before mic poll")) {
+            break;
+        }
+
         if (voice_listener_paused || !local_voice_can_sample_mic()) {
-            while (M5.Mic.isRecording()) {
-                vTaskDelay(pdMS_TO_TICKS(1));
-            }
-            if (M5.Mic.isEnabled()) {
-                M5.Mic.end();
-            }
             LocalVoiceState paused_state = local_voice_current_state();
             if (paused_state == LocalVoiceState::Speaking) {
-                set_app1_status("Speaking", "Local speech output", "Mic is gated", "", true, false);
+                set_app1_status("Speaking", "Local speech output", "ASR is gated", "", true, false);
             } else if (paused_state == LocalVoiceState::Waiting) {
-                set_app1_status("Waiting", "OpenClaw is thinking", "Mic is gated", "", true, false);
+                set_app1_status("Waiting", "OpenClaw is thinking", "ASR is gated", "", true, false);
             } else {
                 set_app1_status("Paused", "Shared peripheral", "Listening resumes soon", "", true, false);
             }
@@ -1018,12 +983,6 @@ static void run_xiaozhi_speech_loop()
             if (!local_voice_can_sample_mic()) {
                 continue;
             }
-            M5.Mic.config(mic_cfg);
-            if (!M5.Mic.begin()) {
-                set_app1_status("Mic Fail", "M5.Mic.begin failed after pause", "", "", false, false);
-                ESP_LOGE(TAG, "M5.Mic.begin failed after realtime pause");
-                break;
-            }
             last_status_ms = 0;
             stt_text.clear();
             local_voice_apply_outputs(local_voice_current_state());
@@ -1035,22 +994,11 @@ static void run_xiaozhi_speech_loop()
             }
             continue;
         }
-        if (realtime_tts_playback_active) {
-            if (!receive_ws_once(ws, 100, got_hello, stt_text) &&
-                !reconnect_ws("websocket read failed during tts")) {
-                break;
-            }
-            continue;
-        }
-        if (!M5.Mic.isEnabled() && !realtime_tts_playback_active) {
-            M5.Mic.config(mic_cfg);
-            if (!M5.Mic.begin()) {
-                set_app1_status("Mic Fail", "M5.Mic.begin failed", "", "", false, false);
-                ESP_LOGE(TAG, "M5.Mic.begin failed while resuming realtime listener");
-                break;
-            }
-        }
         if (!mic_record_blocking(probe.data(), probe.size(), kAudioSampleRate)) {
+            if (!receive_ws_once(ws, 0, got_hello, stt_text) &&
+                !reconnect_ws("websocket read failed while waiting for mic")) {
+                break;
+            }
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -1102,10 +1050,6 @@ static void run_xiaozhi_speech_loop()
     local_voice_request_state(LocalVoiceState::Idle, "speech loop stopped");
     close_ws();
     esp_opus_enc_close(encoder);
-    while (M5.Mic.isRecording()) {
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-    M5.Mic.end();
 }
 
 void run_xiaozhi_ota_probe()

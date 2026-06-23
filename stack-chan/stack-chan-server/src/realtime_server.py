@@ -1,10 +1,13 @@
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
+import datetime as _dt
 import json
+import os
 import random
 import re
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
+import struct
 import threading
 import time
 from urllib.parse import parse_qs, urlparse
@@ -88,6 +91,22 @@ def safe_realtime_device_id(device_id: str) -> str:
     return safe or "default"
 
 
+def _wav_header(pcm_bytes: int, sample_rate: int) -> bytes:
+    data_size = int(pcm_bytes)
+    byte_rate = int(sample_rate) * 2
+    return b"".join(
+        (
+            b"RIFF",
+            struct.pack("<I", 36 + data_size),
+            b"WAVE",
+            b"fmt ",
+            struct.pack("<IHHIIHH", 16, 1, 1, int(sample_rate), byte_rate, 2, 16),
+            b"data",
+            struct.pack("<I", data_size),
+        )
+    )
+
+
 def has_realtime_wake_word(text: str) -> bool:
     normalized = normalize_realtime_command_text(text)
     return any(normalize_realtime_command_text(word) in normalized for word in REALTIME_WAKE_WORDS)
@@ -146,6 +165,8 @@ class RealtimeConfig:
     find_owner_gain_x: float = 1.0
     find_owner_gain_y: float = 0.8
     find_owner_stop_pixels: float = 32.0
+    audio_capture_dir: str = ""
+    save_audio_uploads: bool = True
     debug: bool = False
 
 
@@ -202,15 +223,29 @@ class RealtimeAsrBridge:
         self._thread = threading.Thread(target=self._run, name=f"asr-{session.device_id}", daemon=True)
         self._ws = None
         self._task_id = ""
+        self._finished = threading.Event()
+        self._queued_frames = 0
+        self._sent_frames = 0
+        self._capture_path = ""
+        self._capture_file = None
+        self._capture_pcm_bytes = 0
+        self._capture_lock = threading.Lock()
 
     @property
     def active(self) -> bool:
-        return self._thread.is_alive() and not self._stop.is_set()
+        return self._thread.is_alive() and not self._stop.is_set() and not self._finished.is_set()
 
     def start(self) -> None:
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, *, graceful: bool = True) -> None:
+        if graceful:
+            try:
+                self._queue.put(None, timeout=0.5)
+                return
+            except Full:
+                self.manager.logger(f"Realtime ASR audio queue full during stop: {self.device_id}")
+
         self._stop.set()
         try:
             self._queue.put_nowait(None)
@@ -218,11 +253,6 @@ class RealtimeAsrBridge:
             pass
         ws = self._ws
         if ws is not None:
-            try:
-                if self._task_id:
-                    ws.send(json.dumps(build_stop_transcription(self.manager.config.appkey, self._task_id), ensure_ascii=False))
-            except Exception:
-                pass
             try:
                 ws.close()
             except Exception:
@@ -233,11 +263,16 @@ class RealtimeAsrBridge:
             pcm = self.manager.opus.decode(opus_frame)
         except OpusUnavailableError as exc:
             self.manager.logger(f"Realtime ASR unavailable: {exc}")
-            self.stop()
+            self.stop(graceful=False)
             return
         try:
+            self._write_capture(pcm)
+        except Exception as exc:
+            self.manager.logger(f"Realtime ASR audio capture failed: {exc}")
+        try:
             self._queue.put_nowait(pcm)
-        except Exception:
+            self._queued_frames += 1
+        except Full:
             self.manager.logger(f"Realtime ASR audio queue full: {self.device_id}")
 
     def _run(self) -> None:
@@ -255,54 +290,149 @@ class RealtimeAsrBridge:
             ws, task_id = asr.connect()
             self._ws = ws
             self._task_id = task_id
+            self.manager.logger(f"Realtime ASR connected: device={self.device_id} task_id={task_id}")
             try:
                 ws.settimeout(0.02)
             except Exception:
                 pass
-            while not self._stop.is_set():
+            graceful_finish = False
+            while not self._stop.is_set() and not self._finished.is_set():
                 try:
                     pcm = self._queue.get(timeout=0.02)
                     if pcm is None:
+                        graceful_finish = True
                         break
                     ws.send_binary(pcm)
+                    self._sent_frames += 1
                 except Empty:
                     pass
                 except Exception as exc:
                     self.manager.logger(f"Realtime ASR send failed: {exc}")
                     break
                 self._drain_events(ws)
-            self._drain_events(ws)
+            if graceful_finish and not self._stop.is_set() and not self._finished.is_set():
+                self._send_stop_and_wait(ws)
+            else:
+                self._drain_events(ws)
         except Exception as exc:
             self.manager.logger(f"Realtime ASR bridge stopped: {exc}")
         finally:
+            self._close_capture()
             try:
                 if self._ws is not None:
                     self._ws.close()
             except Exception:
                 pass
-
-    def _drain_events(self, ws) -> None:
-        while not self._stop.is_set():
-            try:
-                raw = ws.recv()
-            except Exception as exc:
-                if exc.__class__.__name__ in ("WebSocketTimeoutException", "TimeoutError"):
-                    return
-                raise
-            if isinstance(raw, bytes):
-                continue
-            event = parse_asr_event(raw)
-            text = str(event.get("text") or "")
-            if not text:
-                if event.get("name") == "TaskFailed":
-                    raise RuntimeError(f"Aliyun ASR failed: {event.get('raw')}")
-                continue
-            self.manager.submit_asr_text(
-                self.device_id,
-                self.session_id,
-                text,
-                is_final=bool(event.get("is_final")),
+            self.manager.logger(
+                "Realtime ASR closed: "
+                f"device={self.device_id} queued_frames={self._queued_frames} sent_frames={self._sent_frames}"
             )
+
+    def _write_capture(self, pcm: bytes) -> None:
+        if not pcm or not self.manager.config.save_audio_uploads:
+            return
+        capture_dir = self.manager.config.audio_capture_dir
+        if not capture_dir:
+            return
+        with self._capture_lock:
+            if self._capture_file is None:
+                os.makedirs(capture_dir, exist_ok=True)
+                safe_device = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.device_id)[:40] or "unknown"
+                stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+                self._capture_path = os.path.join(capture_dir, f"realtime-{safe_device}-{stamp}.wav")
+                self._capture_file = open(self._capture_path, "wb")
+                self._capture_file.write(_wav_header(0, self.manager.config.sample_rate))
+            self._capture_file.write(pcm)
+            self._capture_pcm_bytes += len(pcm)
+
+    def _close_capture(self) -> None:
+        with self._capture_lock:
+            fp = self._capture_file
+            if fp is None:
+                return
+            self._capture_file = None
+            try:
+                fp.seek(0)
+                fp.write(_wav_header(self._capture_pcm_bytes, self.manager.config.sample_rate))
+                fp.close()
+                self.manager.logger(
+                    "Realtime ASR audio saved: "
+                    f"device={self.device_id} path={self._capture_path} pcm_bytes={self._capture_pcm_bytes}"
+                )
+            except Exception as exc:
+                try:
+                    fp.close()
+                except Exception:
+                    pass
+                self.manager.logger(f"Realtime ASR audio save failed: {exc}")
+            try:
+                self._capture_pcm_bytes = 0
+            except Exception:
+                pass
+
+    def _send_stop_and_wait(self, ws) -> None:
+        if self._task_id:
+            ws.send(json.dumps(build_stop_transcription(self.manager.config.appkey, self._task_id), ensure_ascii=False))
+            self.manager.logger(
+                "Realtime ASR stop sent: "
+                f"device={self.device_id} task_id={self._task_id} sent_frames={self._sent_frames}"
+            )
+        deadline = time.monotonic() + 3.0
+        while not self._stop.is_set() and not self._finished.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            self._drain_events(ws, timeout=min(0.2, remaining))
+        if not self._finished.is_set():
+            self.manager.logger(
+                "Realtime ASR finished without final text: "
+                f"device={self.device_id} sent_frames={self._sent_frames}"
+            )
+
+    def _drain_events(self, ws, *, timeout: float | None = None) -> None:
+        timeout_sentinel = object()
+        old_timeout = timeout_sentinel
+        if timeout is not None:
+            try:
+                old_timeout = ws.gettimeout()
+                ws.settimeout(timeout)
+            except Exception:
+                old_timeout = timeout_sentinel
+        try:
+            while not self._stop.is_set() and not self._finished.is_set():
+                try:
+                    raw = ws.recv()
+                except Exception as exc:
+                    if exc.__class__.__name__ in ("WebSocketTimeoutException", "TimeoutError"):
+                        return
+                    raise
+                if isinstance(raw, bytes):
+                    continue
+                event = parse_asr_event(raw)
+                name = str(event.get("name") or "")
+                if name == "TaskFailed":
+                    raise RuntimeError(f"Aliyun ASR failed: {event.get('raw')}")
+                text = str(event.get("text") or "")
+                is_final = bool(event.get("is_final"))
+                if text:
+                    self.manager.logger(
+                        f"Realtime ASR text: device={self.device_id} final={is_final} text={text!r}"
+                    )
+                    self.manager.submit_asr_text(
+                        self.device_id,
+                        self.session_id,
+                        text,
+                        is_final=is_final,
+                    )
+                if is_final or name == "TranscriptionCompleted":
+                    self._finished.set()
+                    return
+        finally:
+            if timeout is not None and old_timeout is not timeout_sentinel:
+                try:
+                    ws.settimeout(old_timeout)
+                except Exception:
+                    pass
 
 
 class RealtimeManager:
@@ -534,7 +664,7 @@ class RealtimeManager:
         except Exception as exc:
             self.logger(f"Xiaozhi realtime session ended: {exc}")
         finally:
-            self._stop_asr(session)
+            self._stop_asr(session, graceful=False)
             await self._abort_session_tts(session)
             self._unregister_session(session.device_id, session.session_id)
 
@@ -638,7 +768,7 @@ class RealtimeManager:
             self._mark(session, "asr_first_partial")
         await session.websocket.send(json_dumps(build_stt(text, is_final=is_final, session_id=session.session_id)))
         if is_final:
-            self._stop_asr(session)
+            self._stop_asr(session, graceful=False)
             await self._handle_final_text(session, text)
 
     def _start_asr(self, session: RealtimeDeviceSession) -> None:
@@ -649,11 +779,11 @@ class RealtimeManager:
         session.asr_bridge = RealtimeAsrBridge(self, session)
         session.asr_bridge.start()
 
-    def _stop_asr(self, session: RealtimeDeviceSession) -> None:
+    def _stop_asr(self, session: RealtimeDeviceSession, *, graceful: bool = True) -> None:
         bridge = session.asr_bridge
         session.asr_bridge = None
         if bridge is not None:
-            bridge.stop()
+            bridge.stop(graceful=graceful)
 
     async def _send_device_state(self, session: RealtimeDeviceSession, state: str) -> None:
         await session.websocket.send(

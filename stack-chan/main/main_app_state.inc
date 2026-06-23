@@ -37,15 +37,17 @@ static constexpr int kWakeFindOwnerPendingMaxMs = 8000;
 static constexpr int kLauncherAppCount = 5;
 static constexpr bool kShowAppStatusScreens = false;
 static constexpr uint32_t kWifiTaskStackBytes = 8 * 1024;
-static constexpr uint32_t kApp1TaskStackBytes = 40 * 1024;
+static constexpr uint32_t kApp1TaskStackBytes = 28 * 1024;
 static constexpr uint32_t kApp2TaskStackBytes = 16 * 1024;
-static constexpr uint32_t kCommandTaskStackBytes = 16 * 1024;
+static constexpr uint32_t kCommandTaskStackBytes = 8 * 1024;
 static constexpr uint32_t kCameraTaskStackBytes = 16 * 1024;
 static constexpr uint32_t kTrackingTaskStackBytes = 20 * 1024;
 static constexpr size_t kTtsMaxBytes = CONFIG_STACKCHAN_TTS_MAX_BYTES;
 static constexpr int kCameraWidth = 320;
 static constexpr int kCameraHeight = 240;
-static constexpr int kCameraFreshDiscardFrames = 2;
+static constexpr int kCameraFreshDiscardFrames = 1;
+static constexpr int kCameraCaptureAttempts = 3;
+static constexpr i2c_port_t kCoreS3InternalI2cPort = I2C_NUM_1;
 static constexpr float kTrackingCx = 160.0f;
 static constexpr float kTrackingCy = 120.0f;
 static constexpr float kTrackingFx = 364.0f;
@@ -66,16 +68,17 @@ static constexpr float kTrackingYawMinDeg = -180.0f;
 static constexpr float kTrackingYawMaxDeg = 180.0f;
 static constexpr float kTrackingPitchMinDeg = 0.0f;
 static constexpr float kTrackingPitchMaxDeg = 90.0f;
-static constexpr float kTrackingHomePitchDeg = 45.0f;
+static constexpr float kTrackingHomePitchDeg = 25.0f;
 static constexpr float kTrackingScanYawDeg = 25.0f;
-static constexpr float kTrackingScanPitchDeltaDeg = 20.0f;
+static constexpr float kTrackingScanLowPitchDeg = 10.0f;
+static constexpr float kTrackingScanHighPitchDeg = 32.0f;
 static constexpr int kFindOwnerMaxRounds = 3;
 static constexpr uint32_t kSedentaryFindOwnerIntervalMs = 5 * 60 * 1000;
 static constexpr int kSedentaryOwnerHitsRequired = 5;
 static constexpr int kVisionUploadTimeoutMs = 6000;
 static constexpr int kCommandLongPollSeconds = 5;
 static constexpr int kCommandLongPollHttpTimeoutMs = (kCommandLongPollSeconds + 3) * 1000;
-static constexpr bool kUseHttpCommandLongPoll = false;
+static constexpr bool kUseHttpCommandLongPoll = true;
 static constexpr float kPi = 3.14159265358979323846f;
 static constexpr uart_port_t kServoUart = UART_NUM_1;
 static constexpr int kServoTxPin = 6;
@@ -115,7 +118,8 @@ static constexpr uint32_t kPy32I2cFreq = 100000;
 static constexpr uint32_t kScreenTouchPollMs = 50;
 static constexpr uint32_t kScreenTouchTaskStackBytes = 6 * 1024;
 static constexpr uint32_t kScreenTouchAudioTaskStackBytes = 16 * 1024;
-static constexpr uint32_t kSpeakCommandTaskStackBytes = 16 * 1024;
+static constexpr uint32_t kSpeakCommandTaskStackBytes = 12 * 1024;
+static constexpr uint32_t kMemoryMonitorTaskStackBytes = 4 * 1024;
 static constexpr size_t kSpeakCommandMaxTextBytes = 512;
 static constexpr size_t kSpeakCommandCacheNameBytes = 64;
 static constexpr size_t kSpeakCommandVoiceBytes = 64;
@@ -142,6 +146,7 @@ TaskHandle_t speaking_light_task_handle = nullptr;
 TaskHandle_t head_touch_task_handle = nullptr;
 TaskHandle_t head_touch_audio_task_handle = nullptr;
 TaskHandle_t speak_command_task_handle = nullptr;
+TaskHandle_t memory_monitor_task_handle = nullptr;
 EventGroupHandle_t wifi_event_group = nullptr;
 SemaphoreHandle_t m5_mutex = nullptr;
 SemaphoreHandle_t audio_mutex = nullptr;
@@ -249,8 +254,6 @@ struct XiaozhiConfig {
 };
 
 XiaozhiConfig xiaozhi_config;
-void* realtime_opus_decoder = nullptr;
-bool realtime_tts_audio_mutex_taken = false;
 
 static bool speech_output_is_busy()
 {
@@ -968,12 +971,6 @@ void draw_touch_status(const char* event_name, const m5::Touch_Class::touch_deta
 
 void enter_app(AppId app)
 {
-    if (current_app == AppId::VoiceDemo && app != AppId::VoiceDemo) {
-        while (M5.Mic.isRecording()) {
-            vTaskDelay(pdMS_TO_TICKS(1));
-        }
-        M5.Mic.end();
-    }
     if (current_app == AppId::StreamTtsDemo && app != AppId::StreamTtsDemo) {
         app2_stop_requested = true;
         codec_audio_output_stop();

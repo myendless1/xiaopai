@@ -1,6 +1,7 @@
 #include <M5Unified.h>
 #include <cstdlib>
 
+#include "audio/xiaopai_audio_service.h"
 #include "codec_audio_output.h"
 #include "expression_controller.h"
 #include "freertos/FreeRTOS.h"
@@ -34,6 +35,7 @@
 #include "esp_opus_enc.h"
 #include "esp_opus_dec.h"
 #include "esp_audio_types.h"
+#include "driver/i2c_master.h"
 #include "driver/uart.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -112,9 +114,11 @@ extern "C" void app_main(void)
         should_restore_listening_light_after_speech,
     });
     auto cfg = M5.config();
-    cfg.internal_mic = true;
+    cfg.internal_mic = false;
     cfg.internal_spk = false;
     M5.begin(cfg);
+    audio_service_init();
+    audio_service_start();
 
     M5.Display.setBrightness(180);
     M5.Display.setRotation(1);

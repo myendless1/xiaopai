@@ -35,19 +35,25 @@ static constexpr int kMaxIntentionalOffsetY = 18;
 
 enum class FaceKind : uint8_t {
     Calm,
+    CalmBlink,
     SleepDark,
-    Speak1,
-    Speak2,
     Thinking,
+    ThinkingBlink,
     Shy,
+    ShyBlink,
     Smile,
+    SmileBlink,
     Happy,
     Relaxed,
-    Wink,
+    WinkOpen,
+    WinkBlink,
+    Grin,
+    GrinBlink,
 };
 
 enum class EyeStyle : uint8_t {
     Open,
+    ClosedLine,
     ClosedHappy,
     ClosedRelaxed,
     WinkRight,
@@ -60,12 +66,11 @@ enum class BrowStyle : uint8_t {
 
 enum class MouthShape : uint8_t {
     Closed,
-    Speak1,
-    Speak2,
     Frown,
     Smile,
     SmileWide,
     HappyOpen,
+    Grin,
 };
 
 enum class CheekStyle : uint8_t {
@@ -108,21 +113,22 @@ static constexpr ExpressionAnimation kExpressionAnimations[] = {
     {"happy_squint_dynamic", kHappyDynamicFrames, sizeof(kHappyDynamicFrames) / sizeof(kHappyDynamicFrames[0]), 180},
 };
 
+static constexpr uint32_t kEyeBlinkClosedMs = 200;
+static constexpr uint32_t kEyeBlinkDelayMinMs = 1000;
+static constexpr uint32_t kEyeBlinkDelayMaxMs = 2000;
+
 SemaphoreHandle_t display_mutex = nullptr;
 ExpressionControllerHooks hooks = {};
 TaskHandle_t expression_animation_task_handle = nullptr;
 TaskHandle_t temporary_expression_task_handle = nullptr;
-TaskHandle_t mouth_animation_task_handle = nullptr;
+TaskHandle_t eye_blink_task_handle = nullptr;
 volatile bool expression_animation_running = false;
 volatile uint32_t temporary_expression_until_ms = 0;
-volatile bool mouth_animation_running = false;
-volatile bool speech_expression_overridden = false;
-volatile uint32_t mouth_audio_level_ms = 0;
+volatile bool eye_blink_running = false;
+uint32_t eye_blink_rng_state = 0x8f3c2d1u;
 bool expression_screen_visible = false;
 const ExpressionAnimation* current_expression_animation = nullptr;
 FaceKind current_face_kind = FaceKind::Calm;
-MouthShape mouth_shape = MouthShape::Closed;
-bool manual_mouth_override = false;
 volatile bool sleep_dark_visible = false;
 volatile uint32_t last_lit_expression_ms = 0;
 lgfx::LovyanGFX* active_draw_target = nullptr;
@@ -195,68 +201,9 @@ static uint16_t cheek_color_locked()
     return draw_target_locked().color565(255, 155, 185);
 }
 
-static bool name_equals_any(const char* name, const char* const* aliases, size_t alias_count)
+static uint16_t tooth_line_color_locked()
 {
-    if (name == nullptr || name[0] == '\0') {
-        return false;
-    }
-    for (size_t i = 0; i < alias_count; ++i) {
-        if (strcmp(name, aliases[i]) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool mouth_shape_from_name(const char* mouth, MouthShape* shape)
-{
-    static constexpr const char* kClosedAliases[] = {
-        "closed", "close", "closed_mouth", "shut", "none",
-    };
-    static constexpr const char* kSpeak1Aliases[] = {
-        "small", "small_open", "small_mouth", "little", "speak", "speaking", "speak1",
-    };
-    static constexpr const char* kSpeak2Aliases[] = {
-        "big", "big_open", "big_mouth", "open", "large", "speak2",
-    };
-    static constexpr const char* kFrownAliases[] = {
-        "frown", "thinking_mouth",
-    };
-    static constexpr const char* kSmileAliases[] = {
-        "smile_mouth", "smile",
-    };
-    static constexpr const char* kHappyOpenAliases[] = {
-        "happy_open", "laugh",
-    };
-
-    if (shape == nullptr || mouth == nullptr || mouth[0] == '\0') {
-        return false;
-    }
-    if (name_equals_any(mouth, kClosedAliases, sizeof(kClosedAliases) / sizeof(kClosedAliases[0]))) {
-        *shape = MouthShape::Closed;
-        return true;
-    }
-    if (name_equals_any(mouth, kSpeak1Aliases, sizeof(kSpeak1Aliases) / sizeof(kSpeak1Aliases[0]))) {
-        *shape = MouthShape::Speak1;
-        return true;
-    }
-    if (name_equals_any(mouth, kSpeak2Aliases, sizeof(kSpeak2Aliases) / sizeof(kSpeak2Aliases[0]))) {
-        *shape = MouthShape::Speak2;
-        return true;
-    }
-    if (name_equals_any(mouth, kFrownAliases, sizeof(kFrownAliases) / sizeof(kFrownAliases[0]))) {
-        *shape = MouthShape::Frown;
-        return true;
-    }
-    if (name_equals_any(mouth, kSmileAliases, sizeof(kSmileAliases) / sizeof(kSmileAliases[0]))) {
-        *shape = MouthShape::Smile;
-        return true;
-    }
-    if (name_equals_any(mouth, kHappyOpenAliases, sizeof(kHappyOpenAliases) / sizeof(kHappyOpenAliases[0]))) {
-        *shape = MouthShape::HappyOpen;
-        return true;
-    }
-    return false;
+    return draw_target_locked().color565(216, 221, 230);
 }
 
 static bool face_kind_from_name(const char* expression, FaceKind* kind)
@@ -278,17 +225,16 @@ static bool face_kind_from_name(const char* expression, FaceKind* kind)
         *kind = FaceKind::Calm;
         return true;
     }
-    if (strcmp(name, "speak1") == 0 || strcmp(name, "speaking") == 0 ||
-        strcmp(name, "speak") == 0) {
-        *kind = FaceKind::Speak1;
-        return true;
-    }
-    if (strcmp(name, "speak2") == 0) {
-        *kind = FaceKind::Speak2;
+    if (strcmp(name, "calm_blink") == 0) {
+        *kind = FaceKind::CalmBlink;
         return true;
     }
     if (strcmp(name, "shy") == 0) {
         *kind = FaceKind::Shy;
+        return true;
+    }
+    if (strcmp(name, "shy_blink") == 0) {
+        *kind = FaceKind::ShyBlink;
         return true;
     }
     if (strcmp(name, "thinking") == 0 || strcmp(name, "waiting") == 0 ||
@@ -296,17 +242,38 @@ static bool face_kind_from_name(const char* expression, FaceKind* kind)
         *kind = FaceKind::Thinking;
         return true;
     }
+    if (strcmp(name, "thinking_blink") == 0 || strcmp(name, "waiting_blink") == 0 ||
+        strcmp(name, "wait_blink") == 0) {
+        *kind = FaceKind::ThinkingBlink;
+        return true;
+    }
     if (strcmp(name, "relaxed") == 0) {
         *kind = FaceKind::Relaxed;
         return true;
     }
-    if (strcmp(name, "smile") == 0 || strcmp(name, "smile_blink") == 0) {
+    if (strcmp(name, "smile") == 0) {
         *kind = FaceKind::Smile;
         return true;
     }
-    if (strcmp(name, "wink") == 0 || strcmp(name, "wink_half") == 0 ||
-        strcmp(name, "wink_closed") == 0) {
-        *kind = FaceKind::Wink;
+    if (strcmp(name, "smile_blink") == 0) {
+        *kind = FaceKind::SmileBlink;
+        return true;
+    }
+    if (strcmp(name, "wink") == 0 || strcmp(name, "wink_open") == 0 || strcmp(name, "wink open") == 0) {
+        *kind = FaceKind::WinkOpen;
+        return true;
+    }
+    if (strcmp(name, "wink_half") == 0 || strcmp(name, "wink_closed") == 0 ||
+        strcmp(name, "wink_blink") == 0 || strcmp(name, "wink blink") == 0) {
+        *kind = FaceKind::WinkBlink;
+        return true;
+    }
+    if (strcmp(name, "grin") == 0) {
+        *kind = FaceKind::Grin;
+        return true;
+    }
+    if (strcmp(name, "grin_blink") == 0 || strcmp(name, "grin blink") == 0) {
+        *kind = FaceKind::GrinBlink;
         return true;
     }
     if (strcmp(name, "happy") == 0 || strcmp(name, "happy_squint") == 0) {
@@ -352,23 +319,46 @@ static FacePose pose_for_kind(FaceKind kind)
         pose.sleep_dark = true;
         pose.cheeks = CheekStyle::None;
         break;
-    case FaceKind::Speak1:
-        pose.default_mouth = MouthShape::Speak1;
-        break;
-    case FaceKind::Speak2:
-        pose.default_mouth = MouthShape::Speak2;
+    case FaceKind::CalmBlink:
+        pose.left_eye = EyeStyle::ClosedLine;
+        pose.right_eye = EyeStyle::ClosedLine;
+        pose.mouth_width = 38;
+        pose.mouth_height = 7;
+        pose.mouth_radius = 4;
         break;
     case FaceKind::Thinking:
         pose.left_brow = BrowStyle::Thinking;
         pose.default_mouth = MouthShape::Frown;
         pose.mouth_y_offset = -3;
         break;
+    case FaceKind::ThinkingBlink:
+        pose.left_eye = EyeStyle::ClosedLine;
+        pose.right_eye = EyeStyle::ClosedLine;
+        pose.left_brow = BrowStyle::Thinking;
+        pose.default_mouth = MouthShape::Frown;
+        pose.mouth_y_offset = -3;
+        break;
     case FaceKind::Shy:
+    case FaceKind::WinkOpen:
+        pose.default_mouth = MouthShape::Smile;
+        pose.cheeks = CheekStyle::Shy;
+        pose.mouth_y_offset = -4;
+        break;
+    case FaceKind::ShyBlink:
+        pose.left_eye = EyeStyle::ClosedLine;
+        pose.right_eye = EyeStyle::ClosedLine;
         pose.default_mouth = MouthShape::Smile;
         pose.cheeks = CheekStyle::Shy;
         pose.mouth_y_offset = -4;
         break;
     case FaceKind::Smile:
+        pose.default_mouth = MouthShape::SmileWide;
+        pose.cheeks = CheekStyle::Shy;
+        pose.mouth_y_offset = -5;
+        break;
+    case FaceKind::SmileBlink:
+        pose.left_eye = EyeStyle::ClosedLine;
+        pose.right_eye = EyeStyle::ClosedLine;
         pose.default_mouth = MouthShape::SmileWide;
         pose.cheeks = CheekStyle::Shy;
         pose.mouth_y_offset = -5;
@@ -387,11 +377,23 @@ static FacePose pose_for_kind(FaceKind kind)
         pose.cheeks = CheekStyle::Shy;
         pose.mouth_y_offset = -6;
         break;
-    case FaceKind::Wink:
+    case FaceKind::WinkBlink:
         pose.right_eye = EyeStyle::WinkRight;
         pose.default_mouth = MouthShape::Smile;
         pose.cheeks = CheekStyle::Shy;
         pose.mouth_y_offset = -5;
+        break;
+    case FaceKind::Grin:
+        pose.default_mouth = MouthShape::Grin;
+        pose.cheeks = CheekStyle::Shy;
+        pose.mouth_y_offset = 5;
+        break;
+    case FaceKind::GrinBlink:
+        pose.left_eye = EyeStyle::ClosedLine;
+        pose.right_eye = EyeStyle::ClosedLine;
+        pose.default_mouth = MouthShape::Grin;
+        pose.cheeks = CheekStyle::Shy;
+        pose.mouth_y_offset = 5;
         break;
     case FaceKind::Calm:
     default:
@@ -401,6 +403,70 @@ static FacePose pose_for_kind(FaceKind kind)
         break;
     }
     return pose;
+}
+
+static bool face_kind_is_blink_variant(FaceKind kind)
+{
+    switch (kind) {
+    case FaceKind::CalmBlink:
+    case FaceKind::ThinkingBlink:
+    case FaceKind::ShyBlink:
+    case FaceKind::SmileBlink:
+    case FaceKind::WinkBlink:
+    case FaceKind::GrinBlink:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static FaceKind open_face_kind_for(FaceKind kind)
+{
+    switch (kind) {
+    case FaceKind::CalmBlink:
+        return FaceKind::Calm;
+    case FaceKind::ThinkingBlink:
+        return FaceKind::Thinking;
+    case FaceKind::ShyBlink:
+        return FaceKind::Shy;
+    case FaceKind::SmileBlink:
+        return FaceKind::Smile;
+    case FaceKind::WinkBlink:
+        return FaceKind::WinkOpen;
+    case FaceKind::GrinBlink:
+        return FaceKind::Grin;
+    default:
+        return kind;
+    }
+}
+
+static bool blink_face_kind_for(FaceKind kind, FaceKind* blink_kind)
+{
+    if (blink_kind == nullptr) {
+        return false;
+    }
+    switch (open_face_kind_for(kind)) {
+    case FaceKind::Calm:
+        *blink_kind = FaceKind::CalmBlink;
+        return true;
+    case FaceKind::Thinking:
+        *blink_kind = FaceKind::ThinkingBlink;
+        return true;
+    case FaceKind::Shy:
+        *blink_kind = FaceKind::ShyBlink;
+        return true;
+    case FaceKind::Smile:
+        *blink_kind = FaceKind::SmileBlink;
+        return true;
+    case FaceKind::WinkOpen:
+        *blink_kind = FaceKind::WinkBlink;
+        return true;
+    case FaceKind::Grin:
+        *blink_kind = FaceKind::GrinBlink;
+        return true;
+    default:
+        return false;
+    }
 }
 
 static void stroke_segment_locked(Point a, Point b, int width, uint16_t color)
@@ -460,6 +526,9 @@ static void draw_eye_locked(Point center, EyeStyle style, uint16_t color)
     case EyeStyle::ClosedRelaxed:
         stroke_oval_arc_locked({center.x, center.y - 4}, 31, 17, 35, 145, 6, color);
         break;
+    case EyeStyle::ClosedLine:
+        display.fillRoundRect(center.x - 15, center.y - 4, 30, 8, 4, color);
+        break;
     case EyeStyle::WinkRight:
         stroke_segment_locked({center.x + 20, center.y - 18}, {center.x - 15, center.y}, 7, color);
         stroke_segment_locked({center.x - 15, center.y}, {center.x + 18, center.y + 15}, 7, color);
@@ -469,6 +538,12 @@ static void draw_eye_locked(Point center, EyeStyle style, uint16_t color)
         display.fillCircle(center.x, center.y, 15, color);
         break;
     }
+}
+
+static void draw_eye_pair_for_pose_locked(const FacePose& pose, uint16_t color)
+{
+    draw_eye_locked(anchor_point_locked(FaceLayout::kLeftEyeCenter, pose), pose.left_eye, color);
+    draw_eye_locked(anchor_point_locked(FaceLayout::kRightEyeCenter, pose), pose.right_eye, color);
 }
 
 static void draw_brow_locked(Point center, BrowStyle style, bool left, uint16_t color)
@@ -501,25 +576,48 @@ static void draw_happy_mouth_locked(Point center, uint16_t color)
     display.fillRoundRect(center.x - 31, flat_y - 3, 62, 13, 9, color);
 }
 
-static MouthShape effective_mouth_for_pose(const FacePose& pose)
+static void draw_grin_mouth_locked(Point center, uint16_t color)
 {
-    if (mouth_animation_running || manual_mouth_override) {
-        return mouth_shape;
+    auto& display = draw_target_locked();
+    const int rx = 49;
+    const int ry = 44;
+    const int flat_y = center.y - 8;
+    const int bottom_y = center.y + 36;
+    for (int y = flat_y; y <= bottom_y; ++y) {
+        const float t = static_cast<float>(y - flat_y) / static_cast<float>(ry);
+        const int half = static_cast<int>(lroundf(static_cast<float>(rx) * sqrtf(std::max(0.0f, 1.0f - t * t))));
+        display.drawFastHLine(center.x - half, y, half * 2 + 1, color);
     }
-    return pose.default_mouth;
+    display.fillRoundRect(center.x - rx, flat_y - 4, rx * 2, 20, 10, color);
+
+    const uint16_t divider = tooth_line_color_locked();
+    static constexpr int kDividerOffsets[] = {-16, 16};
+    for (int xoff : kDividerOffsets) {
+        const float dx = static_cast<float>(xoff) / static_cast<float>(rx);
+        const int divider_bottom = flat_y + static_cast<int>(lroundf(static_cast<float>(ry) *
+                                    sqrtf(std::max(0.0f, 1.0f - dx * dx)))) - 3;
+        stroke_segment_locked({center.x + xoff, flat_y + 3}, {center.x + xoff, divider_bottom}, 2, divider);
+    }
+}
+
+static void clear_eye_regions_locked(const FacePose& pose)
+{
+    auto& display = draw_target_locked();
+    static constexpr int kEyeRegionHalfWidth = 34;
+    static constexpr int kEyeRegionHalfHeight = 23;
+    const Point left = anchor_point_locked(FaceLayout::kLeftEyeCenter, pose);
+    const Point right = anchor_point_locked(FaceLayout::kRightEyeCenter, pose);
+    display.fillRect(left.x - kEyeRegionHalfWidth, left.y - kEyeRegionHalfHeight,
+                     kEyeRegionHalfWidth * 2, kEyeRegionHalfHeight * 2, TFT_BLACK);
+    display.fillRect(right.x - kEyeRegionHalfWidth, right.y - kEyeRegionHalfHeight,
+                     kEyeRegionHalfWidth * 2, kEyeRegionHalfHeight * 2, TFT_BLACK);
 }
 
 static void draw_mouth_locked(const FacePose& pose, uint16_t color)
 {
-    const MouthShape shape = effective_mouth_for_pose(pose);
+    const MouthShape shape = pose.default_mouth;
     Point center = anchor_point_locked(FaceLayout::kMouthCenter, pose, 0, pose.mouth_y_offset);
     switch (shape) {
-    case MouthShape::Speak1:
-        fill_round_rect_locked({center.x, center.y + 2}, 34, 14, 6, color);
-        break;
-    case MouthShape::Speak2:
-        fill_round_rect_locked({center.x, center.y + 4}, 50, 21, 9, color);
-        break;
     case MouthShape::Frown:
         stroke_oval_arc_locked({center.x, center.y + 11}, 18, 14, 200, 340, 5, color);
         break;
@@ -531,6 +629,9 @@ static void draw_mouth_locked(const FacePose& pose, uint16_t color)
         break;
     case MouthShape::HappyOpen:
         draw_happy_mouth_locked(center, color);
+        break;
+    case MouthShape::Grin:
+        draw_grin_mouth_locked(center, color);
         break;
     case MouthShape::Closed:
     default:
@@ -573,8 +674,7 @@ static void draw_face_locked(FaceKind kind)
 
     draw_brow_locked(anchor_point_locked(FaceLayout::kLeftBrowCenter, pose), pose.left_brow, true, line);
     draw_brow_locked(anchor_point_locked(FaceLayout::kRightBrowCenter, pose), pose.right_brow, false, line);
-    draw_eye_locked(anchor_point_locked(FaceLayout::kLeftEyeCenter, pose), pose.left_eye, line);
-    draw_eye_locked(anchor_point_locked(FaceLayout::kRightEyeCenter, pose), pose.right_eye, line);
+    draw_eye_pair_for_pose_locked(pose, line);
     draw_cheek_pair_locked(pose);
     draw_mouth_locked(pose, line);
 
@@ -618,12 +718,113 @@ static void render_expression_frame(FaceKind kind)
     render_face_to_display_locked(kind);
 }
 
-static void redraw_current_face()
+static void draw_partial_eye_frame_to_display_locked(FaceKind kind)
 {
-    if (!expression_screen_visible) {
+    if (open_face_kind_for(current_face_kind) != open_face_kind_for(kind)) {
         return;
     }
-    render_expression_frame(current_face_kind);
+
+    const FacePose pose = pose_for_kind(kind);
+    const uint16_t line = line_color_locked();
+    const bool has_canvas = face_canvas_ready && face_canvas != nullptr;
+    if (has_canvas) {
+        active_draw_target = face_canvas;
+        clear_eye_regions_locked(pose);
+        draw_eye_pair_for_pose_locked(pose, line);
+        active_draw_target = nullptr;
+    }
+
+    active_draw_target = nullptr;
+    clear_eye_regions_locked(pose);
+    draw_eye_pair_for_pose_locked(pose, line);
+
+    current_face_kind = kind;
+    expression_screen_visible = true;
+    sleep_dark_visible = false;
+}
+
+static void render_partial_eye_frame(FaceKind kind)
+{
+    DisplayLock lock;
+    draw_partial_eye_frame_to_display_locked(kind);
+}
+
+static uint32_t next_eye_blink_delay_ms()
+{
+    eye_blink_rng_state = eye_blink_rng_state * 1664525u + 1013904223u;
+    return kEyeBlinkDelayMinMs + (eye_blink_rng_state % (kEyeBlinkDelayMaxMs - kEyeBlinkDelayMinMs + 1));
+}
+
+static void notify_eye_blink_task()
+{
+    TaskHandle_t task = eye_blink_task_handle;
+    if (task != nullptr) {
+        xTaskNotifyGive(task);
+    }
+}
+
+static void stop_eye_blink_loop(bool restore_open_eye = true)
+{
+    eye_blink_running = false;
+    notify_eye_blink_task();
+    for (int i = 0; i < 30 && eye_blink_task_handle != nullptr; ++i) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    if (restore_open_eye && expression_screen_visible && !sleep_dark_visible &&
+        face_kind_is_blink_variant(current_face_kind)) {
+        render_partial_eye_frame(open_face_kind_for(current_face_kind));
+    }
+}
+
+static void start_eye_blink_loop(FaceKind kind)
+{
+    FaceKind blink_kind;
+    if (face_kind_is_blink_variant(kind) || !blink_face_kind_for(kind, &blink_kind)) {
+        stop_eye_blink_loop(!face_kind_is_blink_variant(kind));
+        return;
+    }
+
+    eye_blink_rng_state ^= static_cast<uint32_t>(M5.millis()) | 1u;
+    eye_blink_running = true;
+    if (eye_blink_task_handle != nullptr) {
+        notify_eye_blink_task();
+        return;
+    }
+
+    xTaskCreatePinnedToCore([](void*) {
+        while (eye_blink_running) {
+            const uint32_t delay_ms = next_eye_blink_delay_ms();
+            if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(delay_ms)) > 0) {
+                continue;
+            }
+            if (!eye_blink_running) {
+                break;
+            }
+
+            const FaceKind open_kind = open_face_kind_for(current_face_kind);
+            FaceKind blink_kind;
+            if (!expression_screen_visible || sleep_dark_visible || current_expression_animation != nullptr ||
+                face_kind_is_blink_variant(current_face_kind) || !blink_face_kind_for(open_kind, &blink_kind)) {
+                continue;
+            }
+
+            render_partial_eye_frame(blink_kind);
+            if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(kEyeBlinkClosedMs)) > 0) {
+                if (eye_blink_running && open_face_kind_for(current_face_kind) == open_kind) {
+                    render_partial_eye_frame(open_kind);
+                }
+                continue;
+            }
+            if (!eye_blink_running) {
+                break;
+            }
+            if (open_face_kind_for(current_face_kind) == open_kind) {
+                render_partial_eye_frame(open_kind);
+            }
+        }
+        eye_blink_task_handle = nullptr;
+        vTaskDelete(nullptr);
+    }, "eye_blink", 4 * 1024, nullptr, 2, &eye_blink_task_handle, 0);
 }
 
 static void stop_expression_animation()
@@ -667,13 +868,11 @@ static void notify_temporary_expression_task()
     }
 }
 
-static void show_expression_internal(const char* expression, bool notify_temporary_task, bool reset_manual_mouth)
+static void show_expression_internal(const char* expression, bool notify_temporary_task)
 {
     const ExpressionAnimation* animation = find_expression_animation(expression);
     if (animation != nullptr) {
-        if (reset_manual_mouth && !mouth_animation_running) {
-            manual_mouth_override = false;
-        }
+        stop_eye_blink_loop();
         start_expression_animation(animation);
         if (notify_temporary_task) {
             notify_temporary_expression_task();
@@ -683,23 +882,9 @@ static void show_expression_internal(const char* expression, bool notify_tempora
 
     FaceKind kind = FaceKind::Calm;
     if (face_kind_from_name(expression, &kind)) {
-        if (reset_manual_mouth && !mouth_animation_running) {
-            manual_mouth_override = false;
-        }
         stop_expression_animation();
         render_expression_frame(kind);
-        if (notify_temporary_task) {
-            notify_temporary_expression_task();
-        }
-        return;
-    }
-
-    MouthShape shape;
-    if (mouth_shape_from_name(expression, &shape)) {
-        stop_expression_animation();
-        mouth_shape = shape;
-        manual_mouth_override = true;
-        redraw_current_face();
+        start_eye_blink_loop(kind);
         if (notify_temporary_task) {
             notify_temporary_expression_task();
         }
@@ -707,11 +892,9 @@ static void show_expression_internal(const char* expression, bool notify_tempora
     }
 
     kind = FaceKind::Calm;
-    if (reset_manual_mouth && !mouth_animation_running) {
-        manual_mouth_override = false;
-    }
     stop_expression_animation();
     render_expression_frame(kind);
+    start_eye_blink_loop(kind);
     if (notify_temporary_task) {
         notify_temporary_expression_task();
     }
@@ -756,46 +939,14 @@ bool sleep_dark_is_visible()
     return sleep_dark_visible;
 }
 
-bool speaking_animation_is_running()
-{
-    return mouth_animation_running;
-}
-
-void expression_set_speech_overridden(bool overridden)
-{
-    speech_expression_overridden = overridden;
-}
-
 void show_expression(const char* expression)
 {
-    show_expression_internal(expression, true, true);
-}
-
-void show_expression_with_mouth(const char* expression, const char* mouth)
-{
-    MouthShape shape;
-    const bool has_mouth = mouth_shape_from_name(mouth, &shape);
-    if (has_mouth) {
-        mouth_shape = shape;
-        manual_mouth_override = true;
-    }
-    show_expression_internal(expression, true, !has_mouth);
-}
-
-void set_mouth_shape(const char* mouth)
-{
-    MouthShape shape;
-    if (mouth_shape_from_name(mouth, &shape)) {
-        stop_expression_animation();
-        mouth_shape = shape;
-        manual_mouth_override = true;
-        redraw_current_face();
-    }
+    show_expression_internal(expression, true);
 }
 
 void show_idle_sleep_dark_if_due(uint32_t idle_ms)
 {
-    if (sleep_dark_visible || current_expression_animation != nullptr || mouth_animation_running) {
+    if (sleep_dark_visible || current_expression_animation != nullptr) {
         return;
     }
     uint32_t last = last_lit_expression_ms;
@@ -804,7 +955,7 @@ void show_idle_sleep_dark_if_due(uint32_t idle_ms)
         return;
     }
     if (static_cast<uint32_t>(M5.millis() - last) >= idle_ms) {
-        show_expression_internal("sleep_dark", false, true);
+        show_expression_internal("sleep_dark", false);
     }
 }
 
@@ -814,9 +965,10 @@ void show_temporary_expression(const char* expression, uint32_t duration_ms)
     if (!face_kind_from_name(expression, &expected_kind)) {
         expected_kind = FaceKind::Calm;
     }
+    expected_kind = open_face_kind_for(expected_kind);
 
     temporary_expression_until_ms = static_cast<uint32_t>(M5.millis() + duration_ms);
-    show_expression_internal(expression, false, true);
+    show_expression_internal(expression, false);
 
     if (temporary_expression_task_handle != nullptr) {
         return;
@@ -825,7 +977,7 @@ void show_temporary_expression(const char* expression, uint32_t duration_ms)
     xTaskCreatePinnedToCore([](void* arg) {
         const auto expected_kind = static_cast<FaceKind>(reinterpret_cast<uintptr_t>(arg));
         while (true) {
-            if (current_face_kind != expected_kind || current_expression_animation != nullptr) {
+            if (open_face_kind_for(current_face_kind) != expected_kind || current_expression_animation != nullptr) {
                 break;
             }
 
@@ -837,9 +989,9 @@ void show_temporary_expression(const char* expression, uint32_t duration_ms)
                 continue;
             }
 
-            if (until == temporary_expression_until_ms && current_face_kind == expected_kind &&
+            if (until == temporary_expression_until_ms && open_face_kind_for(current_face_kind) == expected_kind &&
                 current_expression_animation == nullptr) {
-                show_expression_internal(kDefaultExpression, false, true);
+                show_expression_internal(kDefaultExpression, false);
             }
 
             break;
@@ -851,98 +1003,17 @@ void show_temporary_expression(const char* expression, uint32_t duration_ms)
        &temporary_expression_task_handle, 0);
 }
 
-void start_mouth_animation()
+void start_speech_visual_feedback()
 {
     if (hooks.start_speaking_light_animation != nullptr) {
         hooks.start_speaking_light_animation();
     }
-    mouth_animation_running = true;
-    mouth_audio_level_ms = 0;
-    mouth_shape = MouthShape::Closed;
-    manual_mouth_override = false;
-    redraw_current_face();
-    if (mouth_animation_task_handle != nullptr) {
-        return;
-    }
-    xTaskCreatePinnedToCore([](void*) {
-        bool big = false;
-        while (mouth_animation_running) {
-            uint32_t last_level_ms = mouth_audio_level_ms;
-            if (last_level_ms == 0 ||
-                static_cast<uint32_t>(M5.millis() - last_level_ms) > 220) {
-                mouth_shape = big ? MouthShape::Speak2 : MouthShape::Speak1;
-                redraw_current_face();
-                big = !big;
-            }
-            vTaskDelay(pdMS_TO_TICKS(120));
-        }
-        mouth_animation_task_handle = nullptr;
-        vTaskDelete(nullptr);
-    }, "mouth_anim", 4 * 1024, nullptr, 2, &mouth_animation_task_handle, 0);
 }
 
-void start_speech_visual_feedback(bool animate_mouth)
+void stop_speech_visual_feedback()
 {
-    if (animate_mouth) {
-        start_mouth_animation();
-        return;
-    }
-    if (hooks.start_speaking_light_animation != nullptr) {
-        hooks.start_speaking_light_animation();
-    }
-}
-
-void stop_mouth_animation()
-{
-    mouth_animation_running = false;
-    for (int i = 0; i < 30 && mouth_animation_task_handle != nullptr; ++i) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-    mouth_audio_level_ms = 0;
-    mouth_shape = MouthShape::Closed;
-    manual_mouth_override = false;
-    redraw_current_face();
     if (hooks.stop_speaking_light_animation != nullptr) {
         hooks.stop_speaking_light_animation();
     }
-    speech_expression_overridden = false;
     restore_light_after_speaking();
-}
-
-void stop_speech_visual_feedback(bool animate_mouth)
-{
-    if (animate_mouth) {
-        stop_mouth_animation();
-        return;
-    }
-    if (hooks.stop_speaking_light_animation != nullptr) {
-        hooks.stop_speaking_light_animation();
-    }
-    speech_expression_overridden = false;
-    restore_light_after_speaking();
-}
-
-void update_mouth_from_speaking_level(uint8_t level)
-{
-    if (!mouth_animation_running) {
-        return;
-    }
-    mouth_audio_level_ms = M5.millis();
-    if (level == 0) {
-        mouth_shape = MouthShape::Closed;
-    } else if (level == 1) {
-        mouth_shape = MouthShape::Speak1;
-    } else {
-        mouth_shape = MouthShape::Speak2;
-    }
-    redraw_current_face();
-}
-
-void cancel_mouth_animation_now()
-{
-    mouth_animation_running = false;
-    mouth_audio_level_ms = 0;
-    mouth_shape = MouthShape::Closed;
-    manual_mouth_override = false;
-    redraw_current_face();
 }

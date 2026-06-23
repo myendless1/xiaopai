@@ -21,6 +21,7 @@ from mcp_client import (
 from realtime_server import (
     REALTIME_SLEEP_REPLY_BYE_EVENTS,
     REALTIME_SLEEP_REPLY_REST_EVENTS,
+    RealtimeAsrBridge,
     RealtimeConfig,
     RealtimeDeviceSession,
     RealtimeManager,
@@ -156,6 +157,73 @@ class RealtimeMappingTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "Timed out"):
             wait_for_transcription_started(FakeWebSocket([]), timeout_s=0.01)
+
+    def test_realtime_asr_bridge_waits_for_final_text_after_stop(self):
+        import realtime_server
+
+        class FakeAsrWebSocket:
+            def __init__(self):
+                self.sent = []
+                self.binary = []
+                self.timeout = None
+                self.closed = False
+                self.stop_seen = False
+                self.events = [
+                    '{"header":{"name":"SentenceEnd","status":20000000},'
+                    '"payload":{"result":"你好小派"}}',
+                ]
+
+            def gettimeout(self):
+                return self.timeout
+
+            def settimeout(self, timeout):
+                self.timeout = timeout
+
+            def send(self, payload):
+                self.sent.append(payload)
+                self.stop_seen = self.stop_seen or "StopTranscription" in payload
+
+            def send_binary(self, payload):
+                self.binary.append(payload)
+
+            def recv(self):
+                if self.stop_seen and self.events:
+                    return self.events.pop(0)
+                raise TimeoutError("timeout")
+
+            def close(self):
+                self.closed = True
+
+        class FakeAsrSession:
+            def __init__(self, **_kwargs):
+                pass
+
+            def connect(self):
+                return fake_ws, "task_1"
+
+        fake_ws = FakeAsrWebSocket()
+        original_asr_session = realtime_server.AliyunStreamingAsrSession
+        realtime_server.AliyunStreamingAsrSession = FakeAsrSession
+        try:
+            manager = RealtimeManager(RealtimeConfig(appkey="app", token_getter=lambda: "token"), logger=lambda _msg: None)
+            manager._opus = types.SimpleNamespace(decode=lambda _frame: b"pcm")
+            submitted = []
+            manager.submit_asr_text = lambda device_id, session_id, text, is_final: submitted.append(
+                (device_id, session_id, text, is_final)
+            )
+            session = RealtimeDeviceSession(device_id="dev1", websocket=types.SimpleNamespace(), session_id="sess1")
+            bridge = RealtimeAsrBridge(manager, session)
+            bridge.start()
+            bridge.push_opus(b"opus")
+            bridge.stop(graceful=True)
+            bridge._thread.join(timeout=1.0)
+            self.assertFalse(bridge._thread.is_alive())
+            self.assertEqual(fake_ws.binary, [b"pcm"])
+            self.assertTrue(any("StopTranscription" in payload for payload in fake_ws.sent))
+            self.assertEqual(submitted, [("dev1", "sess1", "你好小派", True)])
+            self.assertTrue(fake_ws.closed)
+        finally:
+            realtime_server.AliyunStreamingAsrSession = original_asr_session
 
     def test_sentence_split(self):
         self.assertEqual(split_sentences("你好。我们开始吧！"), ["你好。", "我们开始吧！"])

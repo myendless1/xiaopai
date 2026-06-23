@@ -1,0 +1,58 @@
+Command: ninja all
+[1/9] Performing build step for 'bootloader'
+[1/1] cd /home/myendless/xiaopai/stack-chan/build_codec_probe/bootloader/esp-idf/esptool_py && /home/myendless/stack-chan/.venv/bin/python /home/myendless/stack-chan/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x0 /home/myendless/xiaopai/stack-chan/build_codec_probe/bootloader/bootloader.bin
+Bootloader binary size 0x57e0 bytes. 0x2820 bytes (31%) free.
+[2/9] No install step for 'bootloader'
+[3/9] Completed 'bootloader'
+[4/9] Building CXX object esp-idf/main/CMakeFiles/__idf_main.dir/main.cpp.obj
+In file included from /home/myendless/xiaopai/stack-chan/main/main.cpp:90:
+/home/myendless/xiaopai/stack-chan/main/main_tts_commands.inc:414:20: warning: 'const char* cached_wake_reply_name_for_text(const char*)' defined but not used [-Wunused-function]
+  414 | static const char* cached_wake_reply_name_for_text(const char* text)
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /home/myendless/xiaopai/stack-chan/main/main.cpp:89:
+/home/myendless/xiaopai/stack-chan/main/main_camera_motion.inc:68:20: warning: 'std::string make_stream_tts_url()' defined but not used [-Wunused-function]
+   68 | static std::string make_stream_tts_url()
+      |                    ^~~~~~~~~~~~~~~~~~~
+/home/myendless/xiaopai/stack-chan/main/main_camera_motion.inc:18:20: warning: 'std::string make_tts_url()' defined but not used [-Wunused-function]
+   18 | static std::string make_tts_url()
+      |                    ^~~~~~~~~~~~
+In file included from /home/myendless/xiaopai/stack-chan/main/main.cpp:88:
+/home/myendless/xiaopai/stack-chan/main/main_realtime_speech.inc:735:13: warning: 'void run_local_record_upload_loop()' defined but not used [-Wunused-function]
+  735 | static void run_local_record_upload_loop()
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/myendless/xiaopai/stack-chan/main/main_realtime_speech.inc:104:13: warning: 'bool request_xiaozhi_ota_config()' defined but not used [-Wunused-function]
+  104 | static bool request_xiaozhi_ota_config()
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /home/myendless/xiaopai/stack-chan/main/main.cpp:83:
+/home/myendless/xiaopai/stack-chan/main/main_app_state.inc:1147:6: warning: 'void {anonymous}::update_tracking_user()' defined but not used [-Wunused-function]
+ 1147 | void update_tracking_user()
+      |      ^~~~~~~~~~~~~~~~~~~~
+/home/myendless/xiaopai/stack-chan/main/main_app_state.inc:1139:6: warning: 'void {anonymous}::update_camera_upload()' defined but not used [-Wunused-function]
+ 1139 | void update_camera_upload()
+      |      ^~~~~~~~~~~~~~~~~~~~
+/home/myendless/xiaopai/stack-chan/main/main_app_state.inc:1129:6: warning: 'void {anonymous}::update_stream_tts_demo()' defined but not used [-Wunused-function]
+ 1129 | void update_stream_tts_demo()
+      |      ^~~~~~~~~~~~~~~~~~~~~~
+/home/myendless/xiaopai/stack-chan/main/main_app_state.inc:1120:6: warning: 'void {anonymous}::update_voice_demo()' defined but not used [-Wunused-function]
+ 1120 | void update_voice_demo()
+      |      ^~~~~~~~~~~~~~~~~
+/home/myendless/xiaopai/stack-chan/main/main_app_state.inc:1103:6: warning: 'void {anonymous}::update_wifi_connect()' defined but not used [-Wunused-function]
+ 1103 | void update_wifi_connect()
+      |      ^~~~~~~~~~~~~~~~~~~
+/home/myendless/xiaopai/stack-chan/main/main_app_state.inc:1068:6: warning: 'void {anonymous}::update_launcher()' defined but not used [-Wunused-function]
+ 1068 | void update_launcher()
+      |      ^~~~~~~~~~~~~~~
+/home/myendless/xiaopai/stack-chan/main/main_app_state.inc:898:13: warning: 'const char* {anonymous}::touch_state_name(const m5::Touch_Class::touch_detail_t&)' defined but not used [-Wunused-function]
+  898 | const char* touch_state_name(const m5::Touch_Class::touch_detail_t& touch)
+      |             ^~~~~~~~~~~~~~~~
+[5/9] Linking C static library esp-idf/main/libmain.a
+[6/9] Generating esp-idf/esp_system/ld/sections.ld
+[7/9] Linking CXX executable xiaopai-counter-demo.elf
+[8/9] Generating binary image from built executable
+esptool.py v4.12.dev2
+Creating esp32s3 image...
+Merged 2 ELF sections
+Successfully created esp32s3 image.
+Generated /home/myendless/xiaopai/stack-chan/build_codec_probe/xiaopai-counter-demo.bin
+[9/9] cd /home/myendless/xiaopai/stack-chan/build_codec_probe/esp-idf/esptool_py && /home/myendless/stack-chan/.venv/bin/python /home/myendless/stack-chan/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /home/myendless/xiaopai/stack-chan/build_codec_probe/partition_table/partition-table.bin /home/myendless/xiaopai/stack-chan/build_codec_probe/xiaopai-counter-demo.bin
+xiaopai-counter-demo.bin binary size 0x1a2f40 bytes. Smallest app partition is 0x700000 bytes. 0x55d0c0 bytes (77%) free.

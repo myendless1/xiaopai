@@ -80,6 +80,29 @@ static bool command_is_sleep_or_stop(const cJSON* command)
     return false;
 }
 
+static bool sequence_step_failure_is_nonfatal(const cJSON* step)
+{
+    if (!cJSON_IsObject(step)) {
+        return false;
+    }
+    if (json_bool_value(step, "continue_on_fail", false) ||
+        json_bool_value(step, "continue_on_failure", false) ||
+        json_bool_value(step, "optional", false)) {
+        return true;
+    }
+
+    const cJSON* payload = command_payload_or_self(step);
+    if (json_bool_value(payload, "continue_on_fail", false) ||
+        json_bool_value(payload, "continue_on_failure", false) ||
+        json_bool_value(payload, "optional", false)) {
+        return true;
+    }
+
+    std::string type = json_string_value(step, "type");
+    return type == "find_owner" || type == "locate_owner" ||
+           type == "capture_image" || type == "track_once" || type == "camera";
+}
+
 static bool execute_command_object(const cJSON* command)
 {
     return execute_command_object_internal(command, false, nullptr);
@@ -109,12 +132,6 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
         VoiceListenerPauseGuard voice_pause("audio test");
         if (audio_mutex != nullptr) {
             xSemaphoreTake(audio_mutex, portMAX_DELAY);
-        }
-        while (M5.Mic.isRecording()) {
-            vTaskDelay(pdMS_TO_TICKS(1));
-        }
-        if (M5.Mic.isEnabled()) {
-            M5.Mic.end();
         }
         codec_audio_output_dump_state();
         bool ok = codec_audio_output_test_tone(sample_rate, tone_hz, duration_ms, volume);
@@ -193,6 +210,15 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
                                       json_bool_value(payload, "lip_sync", true)));
         bool pause_listener = json_bool_value(payload, "pause_listener", false) ||
                               json_bool_value(payload, "pause_voice_listener", false);
+        if (voice_recording_active) {
+            bool queued = enqueue_speak_command("", text.c_str(), cache_name.c_str(), pause_listener, voice.c_str(),
+                                                sample_rate, volume, speech_rate, pitch_rate, animate_mouth);
+            if (in_sequence) {
+                ESP_LOGI(TAG, "Sequence speak queued until current recording finishes: queued=%d",
+                         static_cast<int>(queued));
+            }
+            return queued;
+        }
         if (in_sequence) {
             wait_for_voice_recording_to_finish();
             if (voice_recording_active) {
@@ -201,10 +227,6 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
             }
             return execute_speak_command_internal(text.c_str(), pause_listener, cache_name.c_str(), voice.c_str(),
                                                   sample_rate, volume, speech_rate, pitch_rate, animate_mouth);
-        }
-        if (voice_recording_active) {
-            return enqueue_speak_command("", text.c_str(), cache_name.c_str(), pause_listener, voice.c_str(),
-                                         sample_rate, volume, speech_rate, pitch_rate, animate_mouth);
         }
         return execute_speak_command_internal(text.c_str(), pause_listener, cache_name.c_str(), voice.c_str(),
                                               sample_rate, volume, speech_rate, pitch_rate, animate_mouth);
@@ -296,6 +318,12 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
         for (int i = 0; i < count; ++i) {
             const cJSON* step = cJSON_GetArrayItem(payload, i);
             if (!execute_command_object_internal(step, true, sleep_or_stop_executed)) {
+                if (sequence_step_failure_is_nonfatal(step)) {
+                    std::string step_type = json_string_value(step, "type");
+                    ESP_LOGW(TAG, "Sequence step failed but continuing: index=%d type=%s",
+                             i, step_type.c_str());
+                    continue;
+                }
                 ok = false;
                 break;
             }
@@ -409,6 +437,7 @@ static void run_command_http_loop()
     while (!wifi_is_connected() || !active_server_selected) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
+    ESP_LOGI(TAG, "HTTP command long-poll started");
     show_expression(kDefaultExpression);
 
     while (true) {
@@ -417,12 +446,89 @@ static void run_command_http_loop()
         url += url_encode(mac_address().c_str());
         url += "&timeout=";
         url += std::to_string(kCommandLongPollSeconds);
+        ESP_LOGI(TAG, "HTTP command poll: %s", url.c_str());
         std::string response;
         if (http_get_string(url, &response, kCommandLongPollHttpTimeoutMs) && !response.empty()) {
             handle_command_response(response);
         } else {
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
+    }
+}
+
+static void log_task_stack_watermark(const char* name, TaskHandle_t handle)
+{
+    if (handle == nullptr) {
+        ESP_LOGI(TAG, "MEM task %-18s inactive", name);
+        return;
+    }
+    ESP_LOGI(TAG, "MEM task %-18s stack_free=%u", name,
+             static_cast<unsigned>(uxTaskGetStackHighWaterMark(handle)));
+}
+
+static void log_memory_snapshot(const char* reason)
+{
+    uint32_t total_free = esp_get_free_heap_size();
+    uint32_t total_min = esp_get_minimum_free_heap_size();
+    uint32_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    uint32_t internal_min = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    uint32_t internal_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    uint32_t dma_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    uint32_t dma_min = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    uint32_t dma_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    uint32_t spiram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint32_t spiram_min = heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint32_t spiram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
+    ESP_LOGI(TAG,
+             "MEM %s total_free=%u total_min=%u internal_free=%u internal_min=%u internal_largest=%u "
+             "dma_free=%u dma_min=%u dma_largest=%u spiram_free=%u spiram_min=%u spiram_largest=%u",
+             reason != nullptr ? reason : "snapshot",
+             static_cast<unsigned>(total_free), static_cast<unsigned>(total_min),
+             static_cast<unsigned>(internal_free), static_cast<unsigned>(internal_min),
+             static_cast<unsigned>(internal_largest), static_cast<unsigned>(dma_free),
+             static_cast<unsigned>(dma_min), static_cast<unsigned>(dma_largest),
+             static_cast<unsigned>(spiram_free), static_cast<unsigned>(spiram_min),
+             static_cast<unsigned>(spiram_largest));
+    ESP_LOGI(TAG,
+             "MEM stack_budget voice=%u command=%u speak=%u touch=%u touch_audio=%u sedentary=%u monitor=%u boot=%u",
+             static_cast<unsigned>(kApp1TaskStackBytes), static_cast<unsigned>(kCommandTaskStackBytes),
+             static_cast<unsigned>(kSpeakCommandTaskStackBytes), static_cast<unsigned>(kScreenTouchTaskStackBytes),
+             static_cast<unsigned>(kScreenTouchAudioTaskStackBytes), static_cast<unsigned>(kTrackingTaskStackBytes),
+             static_cast<unsigned>(kMemoryMonitorTaskStackBytes), static_cast<unsigned>(kWifiTaskStackBytes));
+
+    log_task_stack_watermark("boot", boot_task_handle);
+    log_task_stack_watermark("bg_voice", xiaozhi_task_handle);
+    log_task_stack_watermark("bg_command", command_task_handle);
+    log_task_stack_watermark("speak_cmd", speak_command_task_handle);
+    log_task_stack_watermark("screen_touch", head_touch_task_handle);
+    log_task_stack_watermark("touch_audio", head_touch_audio_task_handle);
+    log_task_stack_watermark("sedentary_owner", sedentary_task_handle);
+    log_task_stack_watermark("mem_mon", memory_monitor_task_handle);
+}
+
+static void run_memory_monitor_loop()
+{
+    ESP_LOGI(TAG, "Memory monitor started");
+    while (true) {
+        log_memory_snapshot("periodic");
+        vTaskDelay(pdMS_TO_TICKS(10000));
+    }
+}
+
+static void start_memory_monitor_service()
+{
+    if (memory_monitor_task_handle != nullptr) {
+        return;
+    }
+    BaseType_t created = xTaskCreatePinnedToCore([](void*) {
+        run_memory_monitor_loop();
+    }, "mem_mon", kMemoryMonitorTaskStackBytes, nullptr, 1, &memory_monitor_task_handle, 0);
+    if (created == pdPASS) {
+        ESP_LOGI(TAG, "Memory monitor task created");
+    } else {
+        memory_monitor_task_handle = nullptr;
+        ESP_LOGE(TAG, "Failed to create memory monitor task");
     }
 }
 
@@ -443,36 +549,57 @@ static void start_background_services()
         }
 
         check_and_apply_firmware_ota_once();
+        log_memory_snapshot("after ota");
 
         current_app = AppId::VoiceDemo;
         voice_status_screen_suppressed = true;
         show_expression(kDefaultExpression);
         enable_servo_power();
+        log_memory_snapshot("before camera preinit");
         if (init_camera_once()) {
             ESP_LOGI(TAG, "Camera pre-initialized for find-owner flow");
             release_camera_driver();
         } else {
             ESP_LOGW(TAG, "Camera pre-initialization failed; will retry on demand");
         }
+        log_memory_snapshot("after camera preinit");
+
         start_head_touch_services();
         start_speak_command_service();
         start_sedentary_find_owner_service();
+        log_memory_snapshot("after helper tasks");
 
         if (xiaozhi_task_handle == nullptr) {
             app1_stop_requested = false;
-            xTaskCreatePinnedToCore([](void*) {
+            log_memory_snapshot("before bg_voice create");
+            BaseType_t created = xTaskCreatePinnedToCore([](void*) {
                 run_xiaozhi_ota_probe();
                 xiaozhi_task_handle = nullptr;
                 vTaskDelete(nullptr);
             }, "bg_voice", kApp1TaskStackBytes, nullptr, 3, &xiaozhi_task_handle, 1);
+            if (created == pdPASS) {
+                ESP_LOGI(TAG, "Realtime voice task created");
+            } else {
+                xiaozhi_task_handle = nullptr;
+                ESP_LOGE(TAG, "Failed to create realtime voice task");
+            }
+            log_memory_snapshot("after bg_voice create");
         }
 
+        start_memory_monitor_service();
+
         if (kUseHttpCommandLongPoll && command_task_handle == nullptr) {
-            xTaskCreatePinnedToCore([](void*) {
+            BaseType_t created = xTaskCreatePinnedToCore([](void*) {
                 run_command_http_loop();
                 command_task_handle = nullptr;
                 vTaskDelete(nullptr);
-            }, "bg_command", kCommandTaskStackBytes, nullptr, 3, &command_task_handle, 0);
+            }, "bg_command", kCommandTaskStackBytes, nullptr, 4, &command_task_handle, 0);
+            if (created == pdPASS) {
+                ESP_LOGI(TAG, "HTTP command long-poll task created");
+            } else {
+                command_task_handle = nullptr;
+                ESP_LOGE(TAG, "Failed to create HTTP command long-poll task");
+            }
         }
 
         boot_task_handle = nullptr;
