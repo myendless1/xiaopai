@@ -234,15 +234,9 @@ static float clamp_float(float value, float min_value, float max_value)
     return std::max(min_value, std::min(max_value, value));
 }
 
-static int speaker_volume_raw_from_percent(int percent)
-{
-    int clamped = std::max(kSpeakerVolumePercentMin, std::min(kSpeakerVolumePercentMax, percent));
-    return std::max(0, std::min(255, (clamped * 255 + 50) / 100));
-}
-
 static void apply_speaker_volume()
 {
-    M5.Speaker.setVolume(speaker_volume_raw_from_percent(speaker_volume_percent));
+    codec_audio_output_set_volume_percent(speaker_volume_percent);
 }
 
 static uint8_t scs_checksum(const uint8_t* data, size_t length_without_checksum)
@@ -1045,7 +1039,7 @@ static FindOwnerResult run_find_owner_detection(int rounds, float gain_x = kFind
         ESP_LOGI(TAG, "Find owner preserving speech playback");
     } else {
         request_speak_preempt("find owner");
-        M5.Speaker.end();
+        codec_audio_output_end();
     }
 
     int capped_rounds = std::max(1, std::min(rounds, kFindOwnerMaxRounds));
@@ -1162,8 +1156,7 @@ void run_camera_upload_app()
         return;
     }
 
-    M5.Speaker.stop();
-    M5.Speaker.end();
+    codec_audio_output_end();
 
     set_camera_status("Camera", "Initializing camera", "Taking one photo");
     set_camera_status("Capturing", "Taking photo", "Uploading follows");
@@ -1186,8 +1179,7 @@ void run_tracking_user_demo()
         return;
     }
 
-    M5.Speaker.stop();
-    M5.Speaker.end();
+    codec_audio_output_end();
 
     set_tracking_status("Servo", "Centering head", "Scan starts next");
     move_center_for_test();

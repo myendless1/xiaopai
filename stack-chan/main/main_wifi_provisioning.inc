@@ -71,7 +71,7 @@ static bool ensure_wifi_stack_started()
                                                             nullptr));
         ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, nullptr,
                                                             nullptr));
-        ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+        ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH));
         ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     }
 
@@ -126,6 +126,19 @@ static bool load_saved_wifi_credentials(std::string& ssid, std::string& password
     ssid = ssid_buf;
     password = password_buf;
     return true;
+}
+
+static bool load_driver_wifi_credentials(std::string& ssid, std::string& password)
+{
+    wifi_config_t wifi_config = {};
+    esp_err_t err = esp_wifi_get_config(WIFI_IF_STA, &wifi_config);
+    if (err != ESP_OK || wifi_config.sta.ssid[0] == '\0') {
+        return false;
+    }
+
+    ssid = reinterpret_cast<const char*>(wifi_config.sta.ssid);
+    password = reinterpret_cast<const char*>(wifi_config.sta.password);
+    return !ssid.empty();
 }
 
 static std::string get_saved_wifi_password(const std::string& ssid)
@@ -325,6 +338,7 @@ static bool connect_wifi_credentials(const std::string& ssid, const std::string&
     wifi_connect_requested = true;
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(provisioning_started ? WIFI_MODE_APSTA : WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_storage(persist ? WIFI_STORAGE_FLASH : WIFI_STORAGE_RAM));
     if (!configure_wifi_credentials(ssid, password)) {
         wifi_connect_requested = false;
         return false;
@@ -802,7 +816,19 @@ static bool ensure_wifi_connected(bool allow_connect, bool force_candidate_scan 
     std::string saved_ssid;
     std::string saved_password;
     if (!force_candidate_scan && load_saved_wifi_credentials(saved_ssid, saved_password)) {
-        return connect_wifi_credentials(saved_ssid, saved_password, false);
+        if (connect_wifi_credentials(saved_ssid, saved_password, false)) {
+            return true;
+        }
+        ESP_LOGW(TAG, "Saved WiFi connection failed; trying built-in candidates");
+    }
+
+    if (!force_candidate_scan && load_driver_wifi_credentials(saved_ssid, saved_password)) {
+        ESP_LOGI(TAG, "Trying WiFi credentials from driver storage: %s", saved_ssid.c_str());
+        if (connect_wifi_credentials(saved_ssid, saved_password, false)) {
+            save_wifi_credentials(saved_ssid, saved_password);
+            return true;
+        }
+        ESP_LOGW(TAG, "Driver-stored WiFi connection failed; trying built-in candidates");
     }
 
     for (int offset = 0; offset < kWifiCandidateCount; ++offset) {
@@ -820,6 +846,7 @@ static bool ensure_wifi_connected(bool allow_connect, bool force_candidate_scan 
             vTaskDelay(pdMS_TO_TICKS(300));
             wifi_manual_switching = false;
         }
+        ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
         if (!configure_wifi_candidate(candidate)) {
             continue;
         }
@@ -839,6 +866,7 @@ static bool ensure_wifi_connected(bool allow_connect, bool force_candidate_scan 
             active_wifi_ssid = candidate.ssid;
             active_wifi_candidate_index = candidate_index;
             active_server_selected = false;
+            save_wifi_credentials(candidate.ssid, candidate.password != nullptr ? candidate.password : "");
             ESP_LOGI(TAG, "WiFi candidate connected: %s", active_wifi_ssid.c_str());
             return true;
         }
@@ -917,12 +945,13 @@ static bool try_saved_network_ready()
     if (!wifi_is_connected() && load_saved_wifi_credentials(saved_ssid, saved_password)) {
         if (!connect_wifi_credentials(saved_ssid, saved_password, false)) {
             ESP_LOGW(TAG, "Saved WiFi auto-connect failed: %s", saved_ssid.c_str());
-            return false;
         }
     }
 
     if (!wifi_is_connected()) {
-        return false;
+        if (!ensure_wifi_connected(true)) {
+            return false;
+        }
     }
 
     std::string saved_server;

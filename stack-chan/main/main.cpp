@@ -1,6 +1,7 @@
 #include <M5Unified.h>
 #include <cstdlib>
 
+#include "codec_audio_output.h"
 #include "expression_controller.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -12,6 +13,7 @@
 #include "esp_chip_info.h"
 #include "esp_crt_bundle.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -40,6 +42,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cmath>
+#include <new>
 #include <stdio.h>
 #include <string.h>
 #include <string>
@@ -69,10 +72,10 @@ static void apply_speaker_volume();
 static bool execute_speak_command(const char* text);
 static bool execute_speak_command_internal(const char* text, bool pause_voice_listener, const char* cache_name = nullptr,
                                            const char* voice = nullptr, int sample_rate = 0, int volume = 0,
-                                           int speech_rate = 0, int pitch_rate = 0);
+                                           int speech_rate = 0, int pitch_rate = 0, bool animate_mouth = true);
 static bool enqueue_speak_command(const char* cmd_id, const char* text, const char* cache_name, bool pause_voice_listener,
                                   const char* voice = nullptr, int sample_rate = 0, int volume = 0, int speech_rate = 0,
-                                  int pitch_rate = 0);
+                                  int pitch_rate = 0, bool animate_mouth = true);
 static void request_speak_preempt(const char* reason);
 static bool run_find_owner_command(int rounds, const char* reply, float gain_x, float gain_y, float stop_pixels,
                                    bool preserve_speech_playback, bool wait_for_speech);
@@ -110,9 +113,8 @@ extern "C" void app_main(void)
     });
     auto cfg = M5.config();
     cfg.internal_mic = true;
-    cfg.internal_spk = true;
+    cfg.internal_spk = false;
     M5.begin(cfg);
-    configure_speaker_for_tts();
 
     M5.Display.setBrightness(180);
     M5.Display.setRotation(1);
@@ -129,9 +131,8 @@ extern "C" void app_main(void)
                 M5.update();
             }
         }
-        if (current_app != AppId::WifiConnect && wifi_is_connected() && active_server_selected &&
-            local_voice_current_state() == LocalVoiceState::Idle && !speech_output_is_busy()) {
-            show_idle_sleep_dark_if_due(kIdleSleepDarkDelayMs);
+        if (auto_sleep_dark_due()) {
+            show_sleep_dark_listening("idle timeout");
         }
 
         vTaskDelay(pdMS_TO_TICKS(10));

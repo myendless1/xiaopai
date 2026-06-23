@@ -23,6 +23,16 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 2.4.1
+  espressif/esp_codec_dev:
+    component_hash: 896c67360ae1f8dedaf8a53dfe48c015317fa455f061a5165307892296990028
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.5.10
   espressif/esp_jpeg:
     component_hash: defb83669293cbf86d0fa86b475ba5517aceed04ed70db435388c151ab37b5d7
     dependencies:
@@ -38,12 +48,12 @@ dependencies:
       type: idf
     version: 5.5.2
   m5stack/m5gfx:
-    component_hash: 44770c05520e12d0cd15662b25ae1abe0f4f98c9b08166232b4f03b07c26a535
+    component_hash: 96695547f4403f0864a637325b63b37276233999fcbdd5e485f4e71fd2210020
     dependencies: []
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 0.2.22
+    version: 0.2.23
   m5stack/m5unified:
     component_hash: 363c05d034f103471dcbe76e5e0773ecc0fe263212930259867212341b1e48a4
     dependencies:
@@ -58,8 +68,9 @@ dependencies:
 direct_dependencies:
 - espressif/esp32-camera
 - espressif/esp_audio_codec
+- espressif/esp_codec_dev
 - idf
 - m5stack/m5unified
-manifest_hash: 7c0ba680e55fd8018fc303aedb510ff879298382c09a281fe65f8660285d08b9
+manifest_hash: c6480d78bb06856d409b2f00b8f95881ec48ce594d9319e5db7d7a056b88ebac
 target: esp32s3
 version: 2.0.0

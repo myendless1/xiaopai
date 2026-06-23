@@ -2000,7 +2000,7 @@ class Handler(BaseHTTPRequestHandler):
         device_id = safe_device_id(device_id)
         with self.server.device_lock:
             self.server.dialog_awake_until[device_id] = 0
-        self._enqueue_command(device_id, make_command("face", {"expression": "calm"}, priority=1, interrupt=True))
+        self._send_device_state_command(device_id, "sleep", reason=reason)
         self._log_info("Dialog sleep")
         self._log_debug(f"Dialog sleep detail: device={device_id} reason={reason!r}")
 
@@ -2485,18 +2485,36 @@ class Handler(BaseHTTPRequestHandler):
 
         stream_started = time.perf_counter()
         try:
-            self._log_info(f"TTS prepare first sentence: voice={options.voice} text={parts[0]!r}")
-            first_audio = self._aliyun_tts_pcm_with_retries(parts[0], options)
+            self._log_info(
+                f"TTS prepare buffered stream: voice={options.voice} sentences={len(parts)} text={text!r}"
+            )
+            audio_parts: list[bytes] = []
+            if len(parts) == 1:
+                audio = self._aliyun_tts_pcm_with_retries(parts[0], options)
+                audio_parts.append(audio)
+                self._log_info(f"TTS audio bytes: {len(audio)} for {parts[0]!r}")
+            else:
+                workers = max(1, min(self.server.tts_prefetch_workers, len(parts)))
+                future_timeout = self.server.tts_request_timeout * (self.server.tts_retries + 1) + 5
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = [pool.submit(self._aliyun_tts_pcm_with_retries, part, options) for part in parts]
+                    for part, future in zip(parts, futures):
+                        wait_started = time.perf_counter()
+                        audio = future.result(timeout=future_timeout)
+                        wait_ms = (time.perf_counter() - wait_started) * 1000
+                        audio_parts.append(audio)
+                        self._log_info(f"TTS audio bytes: {len(audio)} wait_ms={wait_ms:.0f} for {part!r}")
+            tail_silence = self._tts_tail_silence(options.sample_rate)
+            pcm = b"".join(audio_parts) + tail_silence
         except Exception as exc:
-            self._log_error(f"TTS failed before stream started: {exc}")
+            self._log_error(f"TTS failed before response started: {exc}")
             self._send_json({"type": "error", "message": str(exc)}, HTTPStatus.BAD_GATEWAY)
             return
 
-        first_ready_ms = (time.perf_counter() - stream_started) * 1000
-        tail_silence = self._tts_tail_silence(options.sample_rate)
+        ready_ms = (time.perf_counter() - stream_started) * 1000
         self._log_info(
-            f"TTS stream: voice={options.voice} sentences={len(parts)} "
-            f"first_ready_ms={first_ready_ms:.0f}, text={text!r}"
+            f"TTS stream ready: voice={options.voice} sentences={len(parts)} "
+            f"bytes={len(pcm)} ready_ms={ready_ms:.0f}, text={text!r}"
         )
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/octet-stream")
@@ -2507,53 +2525,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-TTS-Volume", str(options.volume))
         self.send_header("X-TTS-Speech-Rate", str(options.speech_rate))
         self.send_header("X-TTS-Pitch-Rate", str(options.pitch_rate))
-        if len(parts) == 1:
-            self.send_header("Content-Length", str(len(first_audio) + len(tail_silence)))
+        self.send_header("Content-Length", str(len(pcm)))
         self.send_header("Connection", "close")
         self.end_headers()
         self.close_connection = True
 
         try:
-            self._log_info(f"TTS audio bytes: {len(first_audio)} for {parts[0]!r}")
-            if first_audio:
-                self.wfile.write(first_audio)
+            if pcm:
+                self.wfile.write(pcm)
                 self.wfile.flush()
-            sent_bytes = len(first_audio)
-
-            remaining = parts[1:]
-            if not remaining:
-                if tail_silence:
-                    self.wfile.write(tail_silence)
-                    self.wfile.flush()
-                    sent_bytes += len(tail_silence)
-                total_ms = (time.perf_counter() - stream_started) * 1000
-                self._log_info(f"TTS stream done: bytes={sent_bytes} total_ms={total_ms:.0f}")
-                return
-
-            workers = max(1, min(self.server.tts_prefetch_workers, len(remaining)))
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = [pool.submit(self._aliyun_tts_pcm_with_retries, part, options) for part in remaining]
-                future_timeout = self.server.tts_request_timeout * (self.server.tts_retries + 1) + 5
-                for part, future in zip(remaining, futures):
-                    wait_started = time.perf_counter()
-                    self._log_info(f"TTS sentence ready wait: {part!r}")
-                    audio = future.result(timeout=future_timeout)
-                    wait_ms = (time.perf_counter() - wait_started) * 1000
-                    self._log_info(f"TTS audio bytes: {len(audio)} wait_ms={wait_ms:.0f} for {part!r}")
-                    if audio:
-                        self.wfile.write(audio)
-                        self.wfile.flush()
-                        sent_bytes += len(audio)
-            if tail_silence:
-                self.wfile.write(tail_silence)
-                self.wfile.flush()
-                sent_bytes += len(tail_silence)
             total_ms = (time.perf_counter() - stream_started) * 1000
-            self._log_info(f"TTS stream done: bytes={sent_bytes} total_ms={total_ms:.0f}")
+            self._log_info(f"TTS stream done: bytes={len(pcm)} total_ms={total_ms:.0f}")
         except (BrokenPipeError, ConnectionResetError):
             self._log_info("TTS client disconnected")
-        except TimeoutError:
-            self._log_error("TTS failed after stream started: sentence timed out")
         except Exception as exc:
             self._log_error(f"TTS failed after stream started: {exc}")
 
@@ -3104,6 +3088,13 @@ def command_payload_from_query(command_type: str, query: dict):
         voice = first_value(query, "voice")
         if voice:
             payload["voice"] = voice
+        animate_mouth = (
+            first_value(query, "animate_mouth")
+            or first_value(query, "mouth_animation")
+            or first_value(query, "lip_sync")
+        )
+        if animate_mouth != "":
+            payload["animate_mouth"] = parse_bool(animate_mouth)
         for key in ("sample_rate", "volume", "speech_rate", "pitch_rate"):
             value = first_value(query, key)
             if value != "":
@@ -3175,6 +3166,13 @@ def command_payload_from_query(command_type: str, query: dict):
             voice = first_value(query, "voice")
             if voice:
                 speak_step["voice"] = voice
+            animate_mouth = (
+                first_value(query, "animate_mouth")
+                or first_value(query, "mouth_animation")
+                or first_value(query, "lip_sync")
+            )
+            if animate_mouth != "":
+                speak_step["animate_mouth"] = parse_bool(animate_mouth)
             for key in ("sample_rate", "volume", "speech_rate", "pitch_rate"):
                 value = first_value(query, key)
                 if value != "":

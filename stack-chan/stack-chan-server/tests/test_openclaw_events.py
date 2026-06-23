@@ -81,6 +81,27 @@ class CommandPayloadTest(unittest.TestCase):
         self.assertEqual(payload["speech_rate"], -80)
         self.assertEqual(payload["pitch_rate"], 20)
 
+    def test_speak_query_can_disable_mouth_animation(self):
+        payload = server.command_payload_from_query(
+            "speak",
+            {"text": ["保持静态表情说话。"], "animate_mouth": ["false"]},
+        )
+
+        self.assertEqual(payload["text"], "保持静态表情说话。")
+        self.assertIs(payload["animate_mouth"], False)
+
+    def test_sequence_query_can_disable_mouth_animation(self):
+        payload = server.command_payload_from_query(
+            "sequence",
+            {"expression": ["thinking"], "text": ["我想一下。"], "mouth_animation": ["false"]},
+        )
+
+        self.assertEqual(payload[0], {"type": "face", "expression": "thinking"})
+        self.assertEqual(
+            payload[1],
+            {"type": "speak", "text": "我想一下。", "pause_listener": True, "animate_mouth": False},
+        )
+
     def test_speech_text_normalizes_inline_markdown_table(self):
         text = (
             "你今天（2026年6月16日 周二）有 **2 个日程**： "

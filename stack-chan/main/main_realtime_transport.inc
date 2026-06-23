@@ -16,8 +16,8 @@ static bool start_realtime_tts_playback()
         xSemaphoreTake(audio_mutex, portMAX_DELAY);
         realtime_tts_audio_mutex_taken = true;
     }
-    if (!M5.Speaker.begin()) {
-        ESP_LOGE(TAG, "M5.Speaker.begin failed for realtime TTS");
+    if (!codec_audio_output_begin(kTtsStreamSampleRate, speaker_volume_percent)) {
+        ESP_LOGE(TAG, "esp_codec_dev_open failed for realtime TTS");
         if (realtime_tts_audio_mutex_taken && audio_mutex != nullptr) {
             xSemaphoreGive(audio_mutex);
             realtime_tts_audio_mutex_taken = false;
@@ -34,7 +34,7 @@ static bool start_realtime_tts_playback()
     esp_audio_err_t ret = esp_opus_dec_open(&opus_cfg, sizeof(opus_cfg), &realtime_opus_decoder);
     if (ret != ESP_AUDIO_ERR_OK || realtime_opus_decoder == nullptr) {
         ESP_LOGE(TAG, "esp_opus_dec_open failed: %d", ret);
-        M5.Speaker.end();
+        codec_audio_output_end();
         if (realtime_tts_audio_mutex_taken && audio_mutex != nullptr) {
             xSemaphoreGive(audio_mutex);
             realtime_tts_audio_mutex_taken = false;
@@ -45,7 +45,6 @@ static bool start_realtime_tts_playback()
 
     apply_speaker_volume();
     app2_stop_requested = false;
-    M5.Speaker.stop();
     speech_playback_active = true;
     realtime_tts_playback_active = true;
     expression_set_speech_overridden(false);
@@ -60,18 +59,14 @@ static void finish_realtime_tts_playback()
         return;
     }
     uint32_t started_ms = M5.millis();
-    while (M5.Speaker.isPlaying() && !app2_stop_requested) {
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
     if (!app2_stop_requested) {
-        vTaskDelay(pdMS_TO_TICKS(kSpeakerDmaTailDrainMs));
+        codec_audio_output_drain();
         mark_speech_output_finished();
     }
     ESP_LOGI(TAG, "Realtime TTS playback %s after %u ms", app2_stop_requested ? "stopped" : "done",
              static_cast<unsigned>(M5.millis() - started_ms));
-    M5.Speaker.stop();
-    M5.Speaker.end();
     stop_mouth_animation();
+    codec_audio_output_end();
     speech_playback_active = false;
     realtime_tts_playback_active = false;
     local_voice_end_speaking("realtime tts finished");
@@ -136,8 +131,8 @@ static bool play_realtime_opus_frame(const uint8_t* data, size_t len)
     memcpy(pcm.data(), out_frame.buffer, sample_count * sizeof(int16_t));
     pcm_buffer_index = (pcm_buffer_index + 1) % pcm_buffers.size();
     update_speaking_light_level(pcm.data(), sample_count);
-    if (!M5.Speaker.playRaw(pcm.data(), sample_count, kTtsStreamSampleRate, false, 1, 0, false)) {
-        ESP_LOGE(TAG, "Realtime TTS playRaw failed");
+    if (!codec_audio_output_write(pcm.data(), sample_count)) {
+        ESP_LOGE(TAG, "Realtime TTS esp_codec_dev_write failed");
         return false;
     }
     return true;
@@ -321,6 +316,7 @@ static void wake_for_server_command(const char* command_type)
         return;
     }
 
+    mark_user_interaction("server command");
     local_voice_request_state(LocalVoiceState::Listening, "server command");
     wake_find_owner_pending = false;
     show_expression(kDefaultExpression);
@@ -429,10 +425,12 @@ static bool handle_ws_text_message(esp_transport_handle_t ws, const char* data, 
         std::string state = json_string_value(root, "state");
         ESP_LOGI(TAG, "Device state=%s", state.c_str());
         if (state == "sleep" || state == "sleeping" || state == "idle") {
-            local_voice_request_state(LocalVoiceState::Idle, "ws device_state");
+            show_sleep_dark_listening("ws device_state");
         } else if (state == "wake" || state == "awake" || state == "listen" || state == "listening") {
+            mark_user_interaction("ws device_state wake");
             local_voice_request_state(LocalVoiceState::Listening, "ws device_state");
         } else if (state == "wait" || state == "waiting" || state == "thinking") {
+            mark_user_interaction("ws device_state waiting");
             local_voice_request_state(LocalVoiceState::Waiting, "ws device_state");
             if (state == "thinking") {
                 show_expression("thinking");

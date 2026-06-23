@@ -740,7 +740,7 @@ static void run_local_record_upload_loop()
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 
-    M5.Speaker.end();
+    codec_audio_output_end();
     auto mic_cfg = M5.Mic.config();
     mic_cfg.sample_rate = kRecordSampleRate;
     mic_cfg.magnification = CONFIG_STACKCHAN_MIC_MAGNIFICATION;
@@ -819,6 +819,7 @@ static void run_local_record_upload_loop()
             ESP_LOGI(TAG, "Voice threshold triggered: level=%ld smooth=%ld start=%d stop=%d pre_roll=%ums sample_rate=%d",
                      static_cast<long>(level), static_cast<long>(smooth_level), kVoiceStartThreshold,
                      kVoiceStopThreshold, kPreRollMs, kRecordSampleRate);
+            mark_user_interaction("voice activity");
             request_speak_preempt("voice activity");
             auto pcm = record_pcm_after_trigger(pre_roll, smooth_level);
             if (!pcm.empty() && !app1_stop_requested && !voice_listener_paused) {
@@ -895,7 +896,7 @@ static void run_xiaozhi_speech_loop()
         return;
     }
 
-    M5.Speaker.end();
+    codec_audio_output_end();
     auto mic_cfg = M5.Mic.config();
     mic_cfg.sample_rate = kAudioSampleRate;
     mic_cfg.magnification = CONFIG_STACKCHAN_MIC_MAGNIFICATION;
@@ -1082,6 +1083,7 @@ static void run_xiaozhi_speech_loop()
         if (local_voice_can_sample_mic() && level >= kVoiceStartThreshold) {
             ESP_LOGI(TAG, "Voice threshold triggered: level=%ld threshold=%d state=%s",
                      static_cast<long>(level), kVoiceStartThreshold, local_voice_state_name(local_voice_current_state()));
+            mark_user_interaction("voice activity");
             if (!run_one_speech_recognition(ws, encoder, encoder_frame_samples, encoder_outbuf_size, probe.data(),
                                             probe.size())) {
                 ESP_LOGW(TAG, "Speech recognition round failed; reconnecting WebSocket");

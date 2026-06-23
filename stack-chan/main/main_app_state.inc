@@ -28,7 +28,7 @@ static constexpr int kRecordMaxMs = CONFIG_STACKCHAN_RECORD_MAX_MS;
 static constexpr int kSilenceStopMs = CONFIG_STACKCHAN_SILENCE_STOP_MS;
 static constexpr int kRealtimeSttDrainTimeoutMs = 1800;
 static constexpr int kTtsStreamSampleRate = 16000;
-static constexpr size_t kTtsStreamBufferSamples = 2048;
+static constexpr size_t kTtsStreamBufferSamples = 4096;
 static constexpr int kSpeakerDmaTailDrainMs = 384;
 static constexpr int kPostSpeechEchoGuardMs = 0;
 static constexpr int kWakeFindOwnerServerGraceMs = 1200;
@@ -107,7 +107,7 @@ static constexpr uint8_t kLightStripWaitingB = 48;
 static constexpr uint32_t kListeningLightFrameMs = 60;
 static constexpr int kListeningLightSilenceLevel = 120;
 static constexpr int kListeningLightFullScaleLevel = 3600;
-static constexpr uint32_t kIdleSleepDarkDelayMs = 500;
+static constexpr uint32_t kIdleSleepDarkDelayMs = 5 * 60 * 1000;
 static constexpr uint32_t kSpeakingLightFrameMs = 60;
 static constexpr int kSpeakingLightSilenceLevel = 180;
 static constexpr int kSpeakingLightFullScaleLevel = 5200;
@@ -127,17 +127,6 @@ static constexpr int kVolumeDropdownPanelX = 14;
 static constexpr int kVolumeDropdownPanelY = 8;
 static constexpr int kVolumeDropdownPanelH = 66;
 static constexpr int kVolumeDropdownControlPad = 10;
-
-static void configure_speaker_for_tts()
-{
-    auto spk_cfg = M5.Speaker.config();
-    spk_cfg.sample_rate = kTtsStreamSampleRate;
-    spk_cfg.dma_buf_len = 512;
-    spk_cfg.dma_buf_count = 12;
-    spk_cfg.task_priority = 4;
-    spk_cfg.task_pinned_core = 0;
-    M5.Speaker.config(spk_cfg);
-}
 
 AppId current_app = AppId::Launcher;
 int selected_menu = 0;
@@ -177,6 +166,7 @@ volatile uint8_t speaking_light_level = 0;
 volatile uint32_t speaking_light_level_ms = 0;
 volatile bool speak_command_active = false;
 volatile uint32_t speech_output_finished_ms = 0;
+volatile uint32_t last_user_interaction_ms = 0;
 volatile bool wake_find_owner_pending = false;
 volatile uint32_t wake_find_owner_requested_ms = 0;
 volatile uint32_t wake_find_owner_last_run_ms = 0;
@@ -231,6 +221,7 @@ struct SpeakCommandItem {
     int speech_rate;
     int pitch_rate;
     bool pause_voice_listener;
+    bool animate_mouth;
 };
 
 struct WifiCandidate {
@@ -264,7 +255,7 @@ bool realtime_tts_audio_mutex_taken = false;
 static bool speech_output_is_busy()
 {
     if (speech_playback_active || realtime_tts_playback_active || speak_command_active ||
-        speaking_animation_is_running() || M5.Speaker.isPlaying()) {
+        speaking_animation_is_running() || codec_audio_output_is_active()) {
         return true;
     }
     if (audio_mutex == nullptr) {
@@ -289,6 +280,38 @@ static bool post_speech_echo_guard_active()
     }
     uint32_t finished_ms = speech_output_finished_ms;
     return finished_ms != 0 && static_cast<uint32_t>(M5.millis() - finished_ms) < kPostSpeechEchoGuardMs;
+}
+
+static void mark_user_interaction(const char* reason)
+{
+    last_user_interaction_ms = M5.millis();
+    if (sleep_dark_is_visible()) {
+        show_expression(kDefaultExpression);
+    }
+    ESP_LOGI(TAG, "User interaction: %s", reason != nullptr ? reason : "");
+}
+
+static void show_sleep_dark_listening(const char* reason)
+{
+    if (local_voice_current_state() != LocalVoiceState::Listening) {
+        local_voice_request_state(LocalVoiceState::Listening, reason != nullptr ? reason : "sleep dark");
+    }
+    show_expression("sleep_dark");
+    set_light_strip_listening();
+}
+
+static bool auto_sleep_dark_due()
+{
+    if (sleep_dark_is_visible() || current_app == AppId::WifiConnect || !wifi_is_connected() ||
+        !active_server_selected || speech_output_is_busy()) {
+        return false;
+    }
+    uint32_t last = last_user_interaction_ms;
+    if (last == 0) {
+        last_user_interaction_ms = M5.millis();
+        return false;
+    }
+    return static_cast<uint32_t>(M5.millis() - last) >= kIdleSleepDarkDelayMs;
 }
 
 static void mark_wake_find_owner_pending(const char* reason)
@@ -953,7 +976,7 @@ void enter_app(AppId app)
     }
     if (current_app == AppId::StreamTtsDemo && app != AppId::StreamTtsDemo) {
         app2_stop_requested = true;
-        M5.Speaker.stop();
+        codec_audio_output_stop();
     }
     if (current_app == AppId::TrackingUser && app != AppId::TrackingUser) {
         tracking_stop_requested = true;
@@ -1108,7 +1131,7 @@ void update_stream_tts_demo()
 {
     if (back_requested()) {
         app2_stop_requested = true;
-        M5.Speaker.stop();
+        codec_audio_output_stop();
         enter_app(AppId::Launcher);
         return;
     }

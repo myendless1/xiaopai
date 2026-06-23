@@ -1,13 +1,127 @@
+static bool execute_command_object_internal(const cJSON* command, bool in_sequence,
+                                            bool* sequence_sleep_or_stop_executed);
+
+static const cJSON* command_payload_or_self(const cJSON* command)
+{
+    const cJSON* payload = cJSON_GetObjectItemCaseSensitive(command, "payload");
+    if (!cJSON_IsObject(payload) && !cJSON_IsArray(payload)) {
+        payload = command;
+    }
+    return payload;
+}
+
+static std::string command_expression_value(const cJSON* payload)
+{
+    std::string expression = json_string_value(payload, "expression");
+    if (expression.empty()) {
+        expression = json_string_value(payload, "face");
+    }
+    if (expression.empty()) {
+        expression = json_string_value(payload, "name");
+    }
+    if (expression.empty()) {
+        expression = json_string_value(payload, "action");
+    }
+    return expression;
+}
+
+static bool sequence_expression_should_restore(const std::string& expression)
+{
+    const std::string name = expression.empty() ? std::string(kDefaultExpression) : expression;
+    if (name == "calm" || name == "default" || name == "listening" ||
+        name == "wake" || name == "awake" ||
+        name == "sleep_dark" || name == "screen_off" ||
+        name == "sleep" || name == "sleeping" || name == "stopped" ||
+        name == "node_head" || name == "nod_head") {
+        return false;
+    }
+    return true;
+}
+
+static bool sequence_step_sets_temporary_expression(const cJSON* step)
+{
+    if (!cJSON_IsObject(step)) {
+        return false;
+    }
+    std::string type = json_string_value(step, "type");
+    const cJSON* payload = command_payload_or_self(step);
+    if (type == "sequence" && cJSON_IsArray(payload)) {
+        const int count = cJSON_GetArraySize(payload);
+        for (int i = 0; i < count; ++i) {
+            if (sequence_step_sets_temporary_expression(cJSON_GetArrayItem(payload, i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if (type != "face" && type != "expression" && type != "action") {
+        return false;
+    }
+    return sequence_expression_should_restore(command_expression_value(payload));
+}
+
+static bool command_is_sleep_or_stop(const cJSON* command)
+{
+    if (!cJSON_IsObject(command)) {
+        return false;
+    }
+    std::string type = json_string_value(command, "type");
+    const cJSON* payload = command_payload_or_self(command);
+    if (type == "sleep" || type == "stop") {
+        return true;
+    }
+    if (type == "state" || type == "device_state") {
+        std::string state = json_string_value(payload, "state");
+        if (state.empty()) {
+            state = type;
+        }
+        return state == "sleep" || state == "sleeping" || state == "idle";
+    }
+    return false;
+}
+
 static bool execute_command_object(const cJSON* command)
+{
+    return execute_command_object_internal(command, false, nullptr);
+}
+
+static bool execute_command_object_internal(const cJSON* command, bool in_sequence,
+                                            bool* sequence_sleep_or_stop_executed)
 {
     if (!cJSON_IsObject(command)) {
         return false;
     }
 
     std::string type = json_string_value(command, "type");
-    const cJSON* payload = cJSON_GetObjectItemCaseSensitive(command, "payload");
-    if (!cJSON_IsObject(payload) && !cJSON_IsArray(payload)) {
-        payload = command;
+    const cJSON* payload = command_payload_or_self(command);
+    if (in_sequence && sequence_sleep_or_stop_executed != nullptr && command_is_sleep_or_stop(command)) {
+        *sequence_sleep_or_stop_executed = true;
+    }
+    if (type != "sleep" && type != "state" && type != "device_state") {
+        mark_user_interaction("command");
+    }
+
+    if (type == "audio_test" || type == "codec_test" || type == "tone") {
+        int sample_rate = json_int_value(payload, "sample_rate", kTtsStreamSampleRate);
+        int tone_hz = json_int_value(payload, "freq", json_int_value(payload, "tone_hz", 1000));
+        int duration_ms = json_int_value(payload, "duration_ms", 1200);
+        int volume = json_int_value(payload, "volume", speaker_volume_percent);
+        VoiceListenerPauseGuard voice_pause("audio test");
+        if (audio_mutex != nullptr) {
+            xSemaphoreTake(audio_mutex, portMAX_DELAY);
+        }
+        while (M5.Mic.isRecording()) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+        if (M5.Mic.isEnabled()) {
+            M5.Mic.end();
+        }
+        codec_audio_output_dump_state();
+        bool ok = codec_audio_output_test_tone(sample_rate, tone_hz, duration_ms, volume);
+        if (audio_mutex != nullptr) {
+            xSemaphoreGive(audio_mutex);
+        }
+        return ok;
     }
 
     if (type == "mouth") {
@@ -23,16 +137,7 @@ static bool execute_command_object(const cJSON* command)
     }
 
     if (type == "face" || type == "expression" || type == "action") {
-        std::string expression = json_string_value(payload, "expression");
-        if (expression.empty()) {
-            expression = json_string_value(payload, "face");
-        }
-        if (expression.empty()) {
-            expression = json_string_value(payload, "name");
-        }
-        if (expression.empty()) {
-            expression = json_string_value(payload, "action");
-        }
+        std::string expression = command_expression_value(payload);
         if (expression == "thinking") {
             local_voice_request_state(LocalVoiceState::Waiting, "thinking expression command");
         }
@@ -60,11 +165,12 @@ static bool execute_command_object(const cJSON* command)
             return true;
         }
         if (state == "wake" || state == "awake" || state == "listen" || state == "listening") {
+            mark_user_interaction("wake state command");
             local_voice_request_state(LocalVoiceState::Listening, "state command");
             return true;
         }
         if (state == "sleep" || state == "sleeping" || state == "idle") {
-            local_voice_request_state(LocalVoiceState::Idle, "state command");
+            show_sleep_dark_listening("state sleep command");
             return true;
         }
         if (state == "speak" || state == "speaking") {
@@ -82,14 +188,26 @@ static bool execute_command_object(const cJSON* command)
         int volume = json_int_value(payload, "volume", 0);
         int speech_rate = json_int_value(payload, "speech_rate", 0);
         int pitch_rate = json_int_value(payload, "pitch_rate", 0);
+        bool animate_mouth = json_bool_value(payload, "animate_mouth",
+                                  json_bool_value(payload, "mouth_animation",
+                                      json_bool_value(payload, "lip_sync", true)));
         bool pause_listener = json_bool_value(payload, "pause_listener", false) ||
                               json_bool_value(payload, "pause_voice_listener", false);
+        if (in_sequence) {
+            wait_for_voice_recording_to_finish();
+            if (voice_recording_active) {
+                ESP_LOGW(TAG, "Sequence speak could not wait for voice recording to finish");
+                return false;
+            }
+            return execute_speak_command_internal(text.c_str(), pause_listener, cache_name.c_str(), voice.c_str(),
+                                                  sample_rate, volume, speech_rate, pitch_rate, animate_mouth);
+        }
         if (voice_recording_active) {
             return enqueue_speak_command("", text.c_str(), cache_name.c_str(), pause_listener, voice.c_str(),
-                                         sample_rate, volume, speech_rate, pitch_rate);
+                                         sample_rate, volume, speech_rate, pitch_rate, animate_mouth);
         }
         return execute_speak_command_internal(text.c_str(), pause_listener, cache_name.c_str(), voice.c_str(),
-                                              sample_rate, volume, speech_rate, pitch_rate);
+                                              sample_rate, volume, speech_rate, pitch_rate, animate_mouth);
     }
     if (type == "volume" || type == "sound") {
         return execute_volume_command(payload);
@@ -169,29 +287,39 @@ static bool execute_command_object(const cJSON* command)
             return false;
         }
         const int count = cJSON_GetArraySize(payload);
+        const bool restore_expression = sequence_step_sets_temporary_expression(command);
+        bool local_sleep_or_stop_executed = false;
+        bool* sleep_or_stop_executed = sequence_sleep_or_stop_executed != nullptr
+            ? sequence_sleep_or_stop_executed
+            : &local_sleep_or_stop_executed;
+        bool ok = true;
         for (int i = 0; i < count; ++i) {
             const cJSON* step = cJSON_GetArrayItem(payload, i);
-            if (!execute_command_object(step)) {
-                return false;
+            if (!execute_command_object_internal(step, true, sleep_or_stop_executed)) {
+                ok = false;
+                break;
             }
         }
-        return true;
+        if (restore_expression && !*sleep_or_stop_executed && !in_sequence) {
+            show_expression(kDefaultExpression);
+        }
+        return ok;
     }
     if (type == "stop") {
         app2_stop_requested = true;
-        M5.Speaker.stop();
+        codec_audio_output_stop();
         show_expression("stopped");
         local_voice_request_state(LocalVoiceState::Idle, "stop command");
         return true;
     }
     if (type == "sleep") {
         app2_stop_requested = true;
-        M5.Speaker.stop();
-        show_expression("sleep_dark");
-        local_voice_request_state(LocalVoiceState::Idle, "sleep command");
+        codec_audio_output_stop();
+        show_sleep_dark_listening("sleep command");
         return true;
     }
     if (type == "wake" || type == "listen" || type == "listening") {
+        mark_user_interaction("wake command");
         show_expression(kDefaultExpression);
         local_voice_request_state(LocalVoiceState::Listening, "command");
         return true;
@@ -229,6 +357,9 @@ static bool handle_command_response(const std::string& response)
     std::string cmd_type = json_string_value(command, "type");
     ESP_LOGI(TAG, "Command received: id=%s type=%s", cmd_id.c_str(), cmd_type.c_str());
     send_command_ack(cmd_id.c_str(), "received");
+    if (cmd_type != "sleep" && cmd_type != "state" && cmd_type != "device_state") {
+        mark_user_interaction("http command");
+    }
     wake_for_server_command(cmd_type.c_str());
 
     if (cmd_type == "speak") {
@@ -243,10 +374,14 @@ static bool handle_command_response(const std::string& response)
         int volume = json_int_value(payload, "volume", 0);
         int speech_rate = json_int_value(payload, "speech_rate", 0);
         int pitch_rate = json_int_value(payload, "pitch_rate", 0);
+        bool animate_mouth = json_bool_value(payload, "animate_mouth",
+                                  json_bool_value(payload, "mouth_animation",
+                                      json_bool_value(payload, "lip_sync", true)));
         bool pause_listener = json_bool_value(payload, "pause_listener", false) ||
                               json_bool_value(payload, "pause_voice_listener", false);
         bool queued = enqueue_speak_command(cmd_id.c_str(), text.c_str(), cache_name.c_str(), pause_listener,
-                                            voice.c_str(), sample_rate, volume, speech_rate, pitch_rate);
+                                            voice.c_str(), sample_rate, volume, speech_rate, pitch_rate,
+                                            animate_mouth);
         if (!queued) {
             send_command_ack(cmd_id.c_str(), "failed", "speak queue unavailable or empty text");
         }
