@@ -74,10 +74,10 @@ static void apply_speaker_volume();
 static bool execute_speak_command(const char* text);
 static bool execute_speak_command_internal(const char* text, bool pause_voice_listener, const char* cache_name = nullptr,
                                            const char* voice = nullptr, int sample_rate = 0, int volume = 0,
-                                           int speech_rate = 0, int pitch_rate = 0, bool animate_mouth = true);
+                                           int speech_rate = 0, int pitch_rate = 0);
 static bool enqueue_speak_command(const char* cmd_id, const char* text, const char* cache_name, bool pause_voice_listener,
                                   const char* voice = nullptr, int sample_rate = 0, int volume = 0, int speech_rate = 0,
-                                  int pitch_rate = 0, bool animate_mouth = true);
+                                  int pitch_rate = 0);
 static void request_speak_preempt(const char* reason);
 static bool run_find_owner_command(int rounds, const char* reply, float gain_x, float gain_y, float stop_pixels,
                                    bool preserve_speech_playback, bool wait_for_speech);

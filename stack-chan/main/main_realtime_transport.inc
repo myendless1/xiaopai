@@ -15,8 +15,7 @@ static bool start_realtime_tts_playback()
     app2_stop_requested = false;
     speech_playback_active = true;
     realtime_tts_playback_active = true;
-    expression_set_speech_overridden(false);
-    start_mouth_animation();
+    start_speech_visual_feedback();
     set_app1_status("Realtime TTS", "Playing server audio", "WebSocket Opus stream", "");
     return true;
 }
@@ -33,7 +32,7 @@ static void finish_realtime_tts_playback()
     }
     ESP_LOGI(TAG, "Realtime TTS playback %s after %u ms", app2_stop_requested ? "stopped" : "done",
              static_cast<unsigned>(M5.millis() - started_ms));
-    stop_mouth_animation();
+    stop_speech_visual_feedback();
     speech_playback_active = false;
     realtime_tts_playback_active = false;
     local_voice_end_speaking("realtime tts finished");

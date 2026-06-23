@@ -113,15 +113,6 @@ AVAILABLE_EXPRESSIONS = (
     "happy_squint_soft",
 )
 
-AVAILABLE_MOUTHS = (
-    "closed",
-    "small",
-    "big",
-    "wry",
-    "small_heart",
-    "big_heart",
-)
-
 AVAILABLE_ACTIONS = (
     "blink",
     "wink",
@@ -149,7 +140,6 @@ COMMAND_DEFAULT_PRIORITIES = {
     "capture_image": 70,
     "track_once": 70,
     "camera": 70,
-    "mouth": 66,
     "face": 65,
     "expression": 65,
     "action": 65,
@@ -180,8 +170,8 @@ COMMAND_DEFAULT_TTL_SECONDS = {
     "ota_check": 600.0,
     "firmware_ota": 600.0,
 }
-COMMAND_COALESCE_BY_TYPE = {"state", "device_state", "face", "expression", "action", "mouth", "node_head", "nod_head", "motion", "move", "speak", "check_ota", "ota_check", "firmware_ota"}
-COMMAND_DISCARDABLE_TYPES = {"state", "device_state", "face", "expression", "action", "mouth", "node_head", "nod_head", "motion", "move", "speak", "sequence", "check_ota", "ota_check", "firmware_ota"}
+COMMAND_COALESCE_BY_TYPE = {"state", "device_state", "face", "expression", "action", "node_head", "nod_head", "motion", "move", "speak", "check_ota", "ota_check", "firmware_ota"}
+COMMAND_DISCARDABLE_TYPES = {"state", "device_state", "face", "expression", "action", "node_head", "nod_head", "motion", "move", "speak", "sequence", "check_ota", "ota_check", "firmware_ota"}
 
 WAKE_REPLY_EVENTS = (
     ("wake_reply", "我在。"),

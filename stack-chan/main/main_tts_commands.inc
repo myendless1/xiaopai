@@ -237,9 +237,7 @@ void run_stream_tts_demo()
     }
     apply_speaker_volume();
     app2_stop_requested = false;
-    start_mouth_animation();
     stream_tts_pcm();
-    stop_mouth_animation();
     audio_service_wait_playback_idle(pdMS_TO_TICKS(1000));
 }
 
@@ -385,7 +383,6 @@ static void update_speaking_light_level(const int16_t* samples, size_t sample_co
     }
     speaking_light_level = speaking_light_level_from_pcm(samples, sample_count);
     speaking_light_level_ms = M5.millis();
-    update_mouth_from_speaking_level(speaking_light_level);
 }
 
 static void start_speaking_light_animation()
@@ -436,7 +433,6 @@ static void request_speak_preempt(const char* reason)
 {
     app2_stop_requested = true;
     stop_speaking_light_animation();
-    cancel_mouth_animation_now();
     if (realtime_tts_playback_active) {
         audio_service_abort_playback();
         finish_realtime_tts_playback();
@@ -448,7 +444,7 @@ static void request_speak_preempt(const char* reason)
 
 static bool execute_speak_command_internal(const char* text, bool pause_voice_listener, const char* cache_name,
                                            const char* voice, int sample_rate, int volume, int speech_rate,
-                                           int pitch_rate, bool animate_mouth)
+                                           int pitch_rate)
 {
     if (text == nullptr || text[0] == '\0') {
         return true;
@@ -474,13 +470,12 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
     apply_speaker_volume();
     app2_stop_requested = false;
     speech_playback_active = true;
-    expression_set_speech_overridden(false);
-    start_speech_visual_feedback(animate_mouth);
+    start_speech_visual_feedback();
     const char* selected_cache_name = cache_name != nullptr && cache_name[0] != '\0' ? cache_name : "";
     bool ok = selected_cache_name[0] != '\0' ? stream_cached_reply_pcm(selected_cache_name, text)
                                              : stream_tts_pcm_for_text(text, voice, sample_rate, volume, speech_rate,
                                                                        pitch_rate);
-    stop_speech_visual_feedback(animate_mouth);
+    stop_speech_visual_feedback();
     codec_audio_output_end();
     speech_playback_active = false;
     if (audio_mutex != nullptr) {
@@ -507,8 +502,7 @@ static void wait_for_voice_recording_to_finish()
 }
 
 static bool enqueue_speak_command(const char* cmd_id, const char* text, const char* cache_name, bool pause_voice_listener,
-                                  const char* voice, int sample_rate, int volume, int speech_rate, int pitch_rate,
-                                  bool animate_mouth)
+                                  const char* voice, int sample_rate, int volume, int speech_rate, int pitch_rate)
 {
     if (speak_command_queue == nullptr || text == nullptr || text[0] == '\0') {
         return false;
@@ -524,7 +518,6 @@ static bool enqueue_speak_command(const char* cmd_id, const char* text, const ch
     item.speech_rate = speech_rate;
     item.pitch_rate = pitch_rate;
     item.pause_voice_listener = pause_voice_listener;
-    item.animate_mouth = animate_mouth;
     request_speak_preempt("new speak command");
     return xQueueOverwrite(speak_command_queue, &item) == pdPASS;
 }
@@ -546,8 +539,7 @@ static void run_speak_command_loop()
         app2_stop_requested = false;
         speak_command_active = true;
         bool ok = execute_speak_command_internal(item.text, item.pause_voice_listener, item.cache_name, item.voice,
-                                                 item.sample_rate, item.volume, item.speech_rate, item.pitch_rate,
-                                                 item.animate_mouth);
+                                                 item.sample_rate, item.volume, item.speech_rate, item.pitch_rate);
         speak_command_active = false;
         if (item.cmd_id[0] != '\0') {
             send_command_ack(item.cmd_id, ok ? "done" : "failed", ok ? "" : "speak command interrupted or failed");

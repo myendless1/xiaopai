@@ -226,7 +226,6 @@ struct SpeakCommandItem {
     int speech_rate;
     int pitch_rate;
     bool pause_voice_listener;
-    bool animate_mouth;
 };
 
 struct WifiCandidate {
@@ -258,7 +257,7 @@ XiaozhiConfig xiaozhi_config;
 static bool speech_output_is_busy()
 {
     if (speech_playback_active || realtime_tts_playback_active || speak_command_active ||
-        speaking_animation_is_running() || codec_audio_output_is_active()) {
+        codec_audio_output_is_active()) {
         return true;
     }
     if (audio_mutex == nullptr) {

@@ -141,28 +141,12 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
         return ok;
     }
 
-    if (type == "mouth") {
-        std::string mouth = json_string_value(payload, "mouth");
-        if (mouth.empty()) {
-            mouth = json_string_value(payload, "name");
-        }
-        if (mouth.empty()) {
-            mouth = json_string_value(payload, "shape");
-        }
-        set_mouth_shape(mouth.c_str());
-        return true;
-    }
-
     if (type == "face" || type == "expression" || type == "action") {
         std::string expression = command_expression_value(payload);
         if (expression == "thinking") {
             local_voice_request_state(LocalVoiceState::Waiting, "thinking expression command");
         }
-        std::string mouth = json_string_value(payload, "mouth");
-        if (mouth.empty()) {
-            mouth = json_string_value(payload, "mouth_shape");
-        }
-        show_expression_with_mouth(expression.empty() ? kDefaultExpression : expression.c_str(), mouth.c_str());
+        show_expression(expression.empty() ? kDefaultExpression : expression.c_str());
         return true;
     }
     if (type == "check_ota" || type == "ota_check" || type == "firmware_ota") {
@@ -205,14 +189,11 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
         int volume = json_int_value(payload, "volume", 0);
         int speech_rate = json_int_value(payload, "speech_rate", 0);
         int pitch_rate = json_int_value(payload, "pitch_rate", 0);
-        bool animate_mouth = json_bool_value(payload, "animate_mouth",
-                                  json_bool_value(payload, "mouth_animation",
-                                      json_bool_value(payload, "lip_sync", true)));
         bool pause_listener = json_bool_value(payload, "pause_listener", false) ||
                               json_bool_value(payload, "pause_voice_listener", false);
         if (voice_recording_active) {
             bool queued = enqueue_speak_command("", text.c_str(), cache_name.c_str(), pause_listener, voice.c_str(),
-                                                sample_rate, volume, speech_rate, pitch_rate, animate_mouth);
+                                                sample_rate, volume, speech_rate, pitch_rate);
             if (in_sequence) {
                 ESP_LOGI(TAG, "Sequence speak queued until current recording finishes: queued=%d",
                          static_cast<int>(queued));
@@ -226,10 +207,10 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
                 return false;
             }
             return execute_speak_command_internal(text.c_str(), pause_listener, cache_name.c_str(), voice.c_str(),
-                                                  sample_rate, volume, speech_rate, pitch_rate, animate_mouth);
+                                                  sample_rate, volume, speech_rate, pitch_rate);
         }
         return execute_speak_command_internal(text.c_str(), pause_listener, cache_name.c_str(), voice.c_str(),
-                                              sample_rate, volume, speech_rate, pitch_rate, animate_mouth);
+                                              sample_rate, volume, speech_rate, pitch_rate);
     }
     if (type == "volume" || type == "sound") {
         return execute_volume_command(payload);
@@ -402,14 +383,10 @@ static bool handle_command_response(const std::string& response)
         int volume = json_int_value(payload, "volume", 0);
         int speech_rate = json_int_value(payload, "speech_rate", 0);
         int pitch_rate = json_int_value(payload, "pitch_rate", 0);
-        bool animate_mouth = json_bool_value(payload, "animate_mouth",
-                                  json_bool_value(payload, "mouth_animation",
-                                      json_bool_value(payload, "lip_sync", true)));
         bool pause_listener = json_bool_value(payload, "pause_listener", false) ||
                               json_bool_value(payload, "pause_voice_listener", false);
         bool queued = enqueue_speak_command(cmd_id.c_str(), text.c_str(), cache_name.c_str(), pause_listener,
-                                            voice.c_str(), sample_rate, volume, speech_rate, pitch_rate,
-                                            animate_mouth);
+                                            voice.c_str(), sample_rate, volume, speech_rate, pitch_rate);
         if (!queued) {
             send_command_ack(cmd_id.c_str(), "failed", "speak queue unavailable or empty text");
         }
