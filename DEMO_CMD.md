@@ -18,7 +18,7 @@ http://127.0.0.1:8091/command
 ## 1. 晨间唤醒
 
 - 屏幕表情：微笑表情
-- 头部动作：find_owner
+- 头部动作：无
 - 说话内容：早上好及日期播报
 
 ```bash
@@ -29,7 +29,6 @@ curl -X POST 'http://127.0.0.1:8091/command' \
     "interrupt": true,
     "payload": [
       {"type":"face","expression":"smile_blink"},
-      {"type":"find_owner","rounds":1,"speak":false,"preserve_speech":true},
       {"type":"speak","text":"早上好呀！今天是6月1日，周一，新的一周开始啦！"}
     ]
   }'
@@ -76,7 +75,7 @@ curl -X POST 'http://127.0.0.1:8091/command' \
 ## 4. 语音助手唤醒
 
 - 屏幕表情：眨眼表情
-- 头部动作：find_owner
+- 头部动作：轻微抬头
 - 说话内容：“我在呢，请问有什么可以帮您？”
 
 

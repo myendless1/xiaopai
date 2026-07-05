@@ -4,10 +4,10 @@ static bool start_realtime_tts_playback()
         return true;
     }
 
-    local_voice_begin_speaking("realtime tts");
+    xiaopai_state_begin_speaking("realtime tts");
     if (!audio_service_start()) {
         ESP_LOGE(TAG, "audio_service_start failed for realtime TTS");
-        local_voice_end_speaking("realtime tts begin failed");
+        xiaopai_state_end_speaking("realtime tts begin failed");
         return false;
     }
 
@@ -15,7 +15,7 @@ static bool start_realtime_tts_playback()
     app2_stop_requested = false;
     speech_playback_active = true;
     realtime_tts_playback_active = true;
-    start_speech_visual_feedback();
+    expression_state_start_speech_visual_feedback();
     set_app1_status("Realtime TTS", "Playing server audio", "WebSocket Opus stream", "");
     return true;
 }
@@ -32,10 +32,10 @@ static void finish_realtime_tts_playback()
     }
     ESP_LOGI(TAG, "Realtime TTS playback %s after %u ms", app2_stop_requested ? "stopped" : "done",
              static_cast<unsigned>(M5.millis() - started_ms));
-    stop_speech_visual_feedback();
+    expression_state_stop_speech_visual_feedback();
     speech_playback_active = false;
     realtime_tts_playback_active = false;
-    local_voice_end_speaking("realtime tts finished");
+    xiaopai_state_end_speaking("realtime tts finished");
 }
 
 static bool play_realtime_opus_frame(const uint8_t* data, size_t len)
@@ -83,17 +83,27 @@ static bool send_ws_frame(esp_transport_handle_t ws, ws_transport_opcodes_t opco
                           const char* label, int timeout_ms = 5000)
 {
     static constexpr int kWsFinalFrameBit = 0x80;
+    static constexpr int kMaxZeroWriteRetries = 3;
     ws_transport_opcodes_t final_opcode = static_cast<ws_transport_opcodes_t>(
         static_cast<int>(opcode) | kWsFinalFrameBit);
-    int written = esp_transport_ws_send_raw(ws, final_opcode, data, len, timeout_ms);
-    ESP_LOGI(TAG, "WS send %s opcode=%d written=%d expected=%u", label, static_cast<int>(final_opcode), written,
-             static_cast<unsigned>(len));
-    if (written < 0 || written < static_cast<int>(len)) {
-        ESP_LOGE(TAG, "WS send %s failed or short write: written=%d expected=%u", label, written,
-                 static_cast<unsigned>(len));
-        return false;
+    int written = -1;
+    for (int attempt = 1; attempt <= kMaxZeroWriteRetries; ++attempt) {
+        written = esp_transport_ws_send_raw(ws, final_opcode, data, len, timeout_ms);
+        ESP_LOGI(TAG, "WS发送%s opcode=%d 第%d次 written=%d expected=%u", label,
+                 static_cast<int>(final_opcode), attempt, written, static_cast<unsigned>(len));
+        if (written == static_cast<int>(len)) {
+            return true;
+        }
+        if (written > 0) {
+            break;
+        }
+        if (attempt < kMaxZeroWriteRetries) {
+            vTaskDelay(pdMS_TO_TICKS(30 * attempt));
+        }
     }
-    return true;
+    ESP_LOGE(TAG, "WS发送%s失败或短写: written=%d expected=%u", label, written,
+             static_cast<unsigned>(len));
+    return false;
 }
 
 static bool send_ws_text(esp_transport_handle_t ws, const std::string& text, const char* label)
@@ -227,15 +237,14 @@ static void wake_for_server_command(const char* command_type)
         strcmp(type, "firmware_ota") == 0) {
         return;
     }
-    LocalVoiceState current = local_voice_current_state();
+    LocalVoiceState current = xiaopai_state_get().state;
     if (current != LocalVoiceState::Idle && current != LocalVoiceState::Waiting) {
         return;
     }
 
     mark_user_interaction("server command");
-    local_voice_request_state(LocalVoiceState::Listening, "server command");
-    wake_find_owner_pending = false;
-    show_expression(kDefaultExpression);
+    xiaopai_state_set(LocalVoiceState::Listening, "server command");
+    expression_state_set(kDefaultExpression);
 }
 
 static bool handle_mcp_message(esp_transport_handle_t ws, const cJSON* root)
@@ -344,15 +353,15 @@ static bool handle_ws_text_message(esp_transport_handle_t ws, const char* data, 
             show_sleep_dark_listening("ws device_state");
         } else if (state == "wake" || state == "awake" || state == "listen" || state == "listening") {
             mark_user_interaction("ws device_state wake");
-            local_voice_request_state(LocalVoiceState::Listening, "ws device_state");
+            xiaopai_state_set(LocalVoiceState::Listening, "ws device_state");
         } else if (state == "wait" || state == "waiting" || state == "thinking") {
             mark_user_interaction("ws device_state waiting");
-            local_voice_request_state(LocalVoiceState::Waiting, "ws device_state");
+            xiaopai_state_set(LocalVoiceState::Waiting, "ws device_state");
             if (state == "thinking") {
-                show_expression("thinking");
+                expression_state_set("thinking");
             }
         } else if (state == "speak" || state == "speaking") {
-            local_voice_request_state(LocalVoiceState::Speaking, "ws device_state");
+            xiaopai_state_set(LocalVoiceState::Speaking, "ws device_state");
         }
     } else if (!type.empty()) {
         ESP_LOGI(TAG, "Unhandled WS message type=%s", type.c_str());

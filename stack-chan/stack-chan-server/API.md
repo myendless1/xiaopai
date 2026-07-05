@@ -157,7 +157,7 @@ Useful startup arguments:
 
 `--visual-tracking-gain-x` controls left/right sensitivity for normal `/upload-image` auto-tracking, and `--visual-tracking-gain-y` controls up/down sensitivity.
 
-`find_owner` uploads frames with `X-Visual-Tracking: false`, so wake-up owner finding uses the `--find-owner-*` startup arguments that the server sends in the command payload. `--find-owner-gain-x` is the horizontal movement multiplier for the wake-up owner-finding path. Horizontal and vertical find-owner movement no longer has a per-step degree cap; only the final servo angle range is clamped by the firmware.
+`find_owner` uploads frames with `X-Visual-Tracking: false`, so explicit owner-finding commands use the `--find-owner-*` startup arguments that the server sends in the command payload. `--find-owner-gain-x` is the horizontal movement multiplier for that command path. Horizontal and vertical find-owner movement no longer has a per-step degree cap; only the final servo angle range is clamped by the firmware.
 
 ## Sequence
 

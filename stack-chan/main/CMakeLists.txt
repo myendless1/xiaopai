@@ -5,6 +5,11 @@ idf_component_register(
         "codec_audio_output.cpp"
         "voice_state.cpp"
         "expression_controller.cpp"
+        "xiaopai_state.cpp"
+        "expression_state.cpp"
+        "debug_events.cpp"
+        "audio/dji_mic_receiver_input.cpp"
+        "audio/dji_mic_uac_recorder.cpp"
     INCLUDE_DIRS "." "audio"
-    REQUIRES esp_wifi esp_http_client esp_http_server esp_netif esp_event nvs_flash json app_update mbedtls tcp_transport esp_audio_codec esp_codec_dev esp32-camera esp_driver_i2s esp_driver_uart esp_driver_gpio esp_audio_effects esp-sr
+    REQUIRES esp_wifi esp_http_client esp_http_server esp_netif esp_event nvs_flash json app_update mbedtls tcp_transport esp_audio_codec esp_codec_dev esp32-camera esp_driver_i2s esp_driver_uart esp_driver_gpio esp_audio_effects esp-sr usb usb_stream
 )

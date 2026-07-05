@@ -40,7 +40,12 @@ REALTIME_WAKE_WORDS = (
     "小白",
     "小坏",
     "小壞",
+    "小蔡同学",
+    "小蔡同學",
     "小蔡",
+    "小的同学",
+    "小的同學",
+    "小的",
     "小外",
     "小机器",
     "机器人",
@@ -48,7 +53,20 @@ REALTIME_WAKE_WORDS = (
     "小泡",
     "xiaopai",
 )
-REALTIME_WAKE_ONLY_FILLERS = ("你好", "您好", "在吗", "在嗎", "醒醒", "hello", "hi", "嗨", "哈喽", "哈囉")
+REALTIME_WAKE_ONLY_FILLERS = (
+    "你好",
+    "您好",
+    "同学",
+    "同學",
+    "在吗",
+    "在嗎",
+    "醒醒",
+    "hello",
+    "hi",
+    "嗨",
+    "哈喽",
+    "哈囉",
+)
 REALTIME_WAKE_REPLIES = ("我在。", "有什么要帮忙的", "你好呀", "我在呢", "小派在呢")
 REALTIME_SLEEP_BYE_WORDS = (
     "拜拜",
@@ -169,11 +187,11 @@ class RealtimeConfig:
     openclaw_timeout: int = 45
     openclaw_session_prefix: str = "xiaopai"
     openclaw_max_completion_tokens: int = 512
-    find_owner_gain_x: float = 1.0
-    find_owner_gain_y: float = 0.8
-    find_owner_stop_pixels: float = 32.0
     audio_capture_dir: str = ""
     save_audio_uploads: bool = True
+    recording_callback: Callable[[dict], None] | None = None
+    command_callback: Callable[[str, dict], bool] | None = None
+    device_connected_callback: Callable[[str], None] | None = None
     debug: bool = False
 
 
@@ -186,6 +204,7 @@ class RealtimeDeviceSession:
         self.last_seen = self.connected_at
         self.last_stt = ""
         self.dialog_awake = False
+        self.listen_active = False
         self.tts_task: asyncio.Task | None = None
         self.asr_bridge: RealtimeAsrBridge | None = None
         self.latency_started_at = time.perf_counter()
@@ -200,6 +219,7 @@ class RealtimeDeviceSession:
             "online": True,
             "last_stt": self.last_stt,
             "dialog_awake": self.dialog_awake,
+            "listen_active": self.listen_active,
             "asr_active": bool(self.asr_bridge and self.asr_bridge.active),
             "latency_ms": self.latency_snapshot(),
         }
@@ -251,7 +271,7 @@ class RealtimeAsrBridge:
                 self._queue.put(None, timeout=0.5)
                 return
             except Full:
-                self.manager.logger(f"Realtime ASR audio queue full during stop: {self.device_id}")
+                self.manager.logger(f"实时 ASR 停止时音频队列已满: device={self.device_id}")
 
         self._stop.set()
         try:
@@ -269,22 +289,22 @@ class RealtimeAsrBridge:
         try:
             pcm = self.manager.opus.decode(opus_frame)
         except OpusUnavailableError as exc:
-            self.manager.logger(f"Realtime ASR unavailable: {exc}")
+            self.manager.logger(f"实时 ASR 不可用: {exc}")
             self.stop(graceful=False)
             return
         try:
             self._write_capture(pcm)
         except Exception as exc:
-            self.manager.logger(f"Realtime ASR audio capture failed: {exc}")
+            self.manager.logger(f"实时 ASR 音频采集保存失败: {exc}")
         try:
             self._queue.put_nowait(pcm)
             self._queued_frames += 1
         except Full:
-            self.manager.logger(f"Realtime ASR audio queue full: {self.device_id}")
+            self.manager.logger(f"实时 ASR 音频队列已满: device={self.device_id}")
 
     def _run(self) -> None:
         if not self.manager.config.appkey or self.manager.config.token_getter is None:
-            self.manager.logger("Realtime ASR skipped: missing Aliyun appkey/token getter")
+            self.manager.logger("实时 ASR 已跳过: 缺少阿里云 appkey/token getter")
             return
         try:
             asr = AliyunStreamingAsrSession(
@@ -297,7 +317,7 @@ class RealtimeAsrBridge:
             ws, task_id = asr.connect()
             self._ws = ws
             self._task_id = task_id
-            self.manager.logger(f"Realtime ASR connected: device={self.device_id} task_id={task_id}")
+            self.manager.logger(f"实时 ASR 已连接: device={self.device_id} task_id={task_id}")
             try:
                 ws.settimeout(0.02)
             except Exception:
@@ -314,7 +334,7 @@ class RealtimeAsrBridge:
                 except Empty:
                     pass
                 except Exception as exc:
-                    self.manager.logger(f"Realtime ASR send failed: {exc}")
+                    self.manager.logger(f"实时 ASR 发送失败: {exc}")
                     break
                 self._drain_events(ws)
             if graceful_finish and not self._stop.is_set() and not self._finished.is_set():
@@ -322,7 +342,7 @@ class RealtimeAsrBridge:
             else:
                 self._drain_events(ws)
         except Exception as exc:
-            self.manager.logger(f"Realtime ASR bridge stopped: {exc}")
+            self.manager.logger(f"实时 ASR 桥接已停止: {exc}")
         finally:
             self._close_capture()
             try:
@@ -331,9 +351,10 @@ class RealtimeAsrBridge:
             except Exception:
                 pass
             self.manager.logger(
-                "Realtime ASR closed: "
+                "实时 ASR 已关闭: "
                 f"device={self.device_id} queued_frames={self._queued_frames} sent_frames={self._sent_frames}"
             )
+            self.manager.notify_asr_bridge_finished(self.device_id, self.session_id, self)
 
     def _write_capture(self, pcm: bytes) -> None:
         if not pcm or not self.manager.config.save_audio_uploads:
@@ -363,15 +384,26 @@ class RealtimeAsrBridge:
                 fp.write(_wav_header(self._capture_pcm_bytes, self.manager.config.sample_rate))
                 fp.close()
                 self.manager.logger(
-                    "Realtime ASR audio saved: "
+                    "实时 ASR 音频已保存: "
                     f"device={self.device_id} path={self._capture_path} pcm_bytes={self._capture_pcm_bytes}"
                 )
+                if self.manager.config.recording_callback is not None:
+                    self.manager.config.recording_callback(
+                        {
+                            "source": "realtime-listen",
+                            "device_id": self.device_id,
+                            "path": self._capture_path,
+                            "bytes": self._capture_pcm_bytes,
+                            "audio_format": "wav",
+                            "sample_rate": self.manager.config.sample_rate,
+                        }
+                    )
             except Exception as exc:
                 try:
                     fp.close()
                 except Exception:
                     pass
-                self.manager.logger(f"Realtime ASR audio save failed: {exc}")
+                self.manager.logger(f"实时 ASR 音频保存失败: {exc}")
             try:
                 self._capture_pcm_bytes = 0
             except Exception:
@@ -381,7 +413,7 @@ class RealtimeAsrBridge:
         if self._task_id:
             ws.send(json.dumps(build_stop_transcription(self.manager.config.appkey, self._task_id), ensure_ascii=False))
             self.manager.logger(
-                "Realtime ASR stop sent: "
+                "实时 ASR 停止请求已发送: "
                 f"device={self.device_id} task_id={self._task_id} sent_frames={self._sent_frames}"
             )
         deadline = time.monotonic() + 3.0
@@ -392,7 +424,7 @@ class RealtimeAsrBridge:
             self._drain_events(ws, timeout=min(0.2, remaining))
         if not self._finished.is_set():
             self.manager.logger(
-                "Realtime ASR finished without final text: "
+                "实时 ASR 结束但没有最终文本: "
                 f"device={self.device_id} sent_frames={self._sent_frames}"
             )
 
@@ -418,12 +450,12 @@ class RealtimeAsrBridge:
                 event = parse_asr_event(raw)
                 name = str(event.get("name") or "")
                 if name == "TaskFailed":
-                    raise RuntimeError(f"Aliyun ASR failed: {event.get('raw')}")
+                    raise RuntimeError(f"阿里云 ASR 失败: {event.get('raw')}")
                 text = str(event.get("text") or "")
                 is_final = bool(event.get("is_final"))
                 if text:
                     self.manager.logger(
-                        f"Realtime ASR text: device={self.device_id} final={is_final} text={text!r}"
+                        f"实时 ASR 文本: device={self.device_id} final={is_final} text={text!r}"
                     )
                     self.manager.submit_asr_text(
                         self.device_id,
@@ -481,7 +513,7 @@ class RealtimeManager:
         self._thread.start()
         self._started.wait(timeout=5)
         if self._startup_error is not None:
-            raise RuntimeError(f"xiaozhi realtime server failed to start: {self._startup_error}") from self._startup_error
+            raise RuntimeError(f"小智实时服务启动失败: {self._startup_error}") from self._startup_error
 
     def _run_loop(self) -> None:
         loop = asyncio.new_event_loop()
@@ -494,7 +526,7 @@ class RealtimeManager:
         except BaseException as exc:
             self._startup_error = exc
             self._started.set()
-            self.logger(f"Xiaozhi realtime loop stopped: {exc}")
+            self.logger(f"小智实时循环已停止: {exc}")
         finally:
             if not loop.is_closed():
                 loop.run_until_complete(self._close_sessions())
@@ -505,7 +537,7 @@ class RealtimeManager:
             import websockets  # type: ignore
         except Exception as exc:
             self._started.set()
-            raise RuntimeError("websockets is required for xiaozhi realtime server") from exc
+            raise RuntimeError("小智实时服务需要 websockets") from exc
         self._server = await websockets.serve(
             self._dispatch,
             self.config.host,
@@ -513,13 +545,14 @@ class RealtimeManager:
             compression=None,
             ping_interval=None,
         )
-        self.logger(f"Xiaozhi realtime WebSocket ready: ws://{self.config.host}:{self.config.port}{self.config.path}")
+        self.logger(f"小智实时 WebSocket 已就绪: ws://{self.config.host}:{self.config.port}{self.config.path}")
 
     async def _close_sessions(self) -> None:
         with self._sessions_lock:
             sessions = list(self._sessions.values())
             self._sessions.clear()
         for session in sessions:
+            self._stop_asr(session, graceful=False)
             try:
                 await session.websocket.close()
             except Exception:
@@ -551,7 +584,7 @@ class RealtimeManager:
         try:
             return bool(future.result(timeout=1.5))
         except Exception as exc:
-            self.logger(f"Realtime command dispatch failed: {exc}")
+            self.logger(f"实时命令分发失败: {exc}")
             return False
 
     def set_device_state(self, device_id: str, state: str) -> bool:
@@ -561,8 +594,30 @@ class RealtimeManager:
         try:
             return bool(future.result(timeout=1.5))
         except Exception as exc:
-            self.logger(f"Realtime device state dispatch failed: {exc}")
+            self.logger(f"实时设备状态分发失败: {exc}")
             return False
+
+    def notify_asr_bridge_finished(self, device_id: str, session_id: str, bridge: RealtimeAsrBridge) -> None:
+        if self._loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(
+            self._handle_asr_bridge_finished(device_id, session_id, bridge),
+            self._loop,
+        )
+
+    async def _handle_asr_bridge_finished(
+        self,
+        device_id: str,
+        session_id: str,
+        bridge: RealtimeAsrBridge,
+    ) -> None:
+        session = self._select_session(device_id)
+        if session is None or session.session_id != session_id:
+            return
+        if session.asr_bridge is bridge:
+            session.asr_bridge = None
+            session.listen_active = False
+            self.logger(f"实时 ASR 会话已清理: device={device_id} session_id={session_id}")
 
     async def _set_device_state(self, device_id: str, state: str) -> bool:
         session = self._select_session(device_id)
@@ -625,7 +680,7 @@ class RealtimeManager:
             request = getattr(websocket, "request", None)
             path = getattr(websocket, "path", "") or getattr(request, "path", "")
         parsed = urlparse(path or "")
-        self.logger(f"Xiaozhi realtime WebSocket accepted: path={parsed.path!r} query={parsed.query!r}")
+        self.logger(f"小智实时 WebSocket 已接入: path={parsed.path!r} query={parsed.query!r}")
         if parsed.path != self.config.path:
             await websocket.close(code=1008, reason="invalid path")
             return
@@ -643,33 +698,44 @@ class RealtimeManager:
             hello = json_dumps(build_hello(session.session_id))
             hello_resent_after_device_hello = False
             await websocket.send(hello)
-            self.logger(f"Xiaozhi realtime server hello sent: device_id={session.device_id} bytes={len(hello)}")
+            self.logger(f"小智实时服务端 hello 已发送: device_id={session.device_id} bytes={len(hello)}")
             await self._send_device_state(session, "listening")
             async for frame in websocket:
                 if isinstance(frame, bytes):
                     session.last_seen = time.time()
-                    if session.asr_bridge is None:
-                        self.logger(f"Realtime ASR auto-start on binary audio: device_id={session.device_id}")
+                    if not session.listen_active:
+                        self.logger(
+                            "实时 ASR 已丢弃未处于 listen:start 的音频帧: "
+                            f"device_id={session.device_id} bytes={len(frame)}"
+                        )
+                        continue
+                    bridge = session.asr_bridge
+                    if bridge is not None and not bridge.active:
+                        session.asr_bridge = None
+                        bridge = None
+                    if bridge is None:
                         self._start_asr(session)
-                    if session.asr_bridge is not None:
-                        session.asr_bridge.push_opus(frame)
+                        bridge = session.asr_bridge
+                    if bridge is None:
+                        continue
+                    bridge.push_opus(frame)
                     continue
                 message = parse_json_message(frame)
                 if message.get("type") == "hello":
                     device_id = safe_realtime_device_id(extract_device_id_from_hello(message, session.device_id))
-                    self.logger(f"Xiaozhi realtime hello received: device_id={device_id} type={message.get('type')!r}")
+                    self.logger(f"小智实时 hello 已收到: device_id={device_id} type={message.get('type')!r}")
                     self._update_session_device_id(session, device_id)
                     if not hello_resent_after_device_hello:
                         await websocket.send(hello)
                         hello_resent_after_device_hello = True
                         self.logger(
-                            f"Xiaozhi realtime server hello resent after device hello: device_id={session.device_id} bytes={len(hello)}"
+                            f"小智实时服务端 hello 已在设备 hello 后重发: device_id={session.device_id} bytes={len(hello)}"
                         )
                     continue
                 session.last_seen = time.time()
                 await self._handle_json(session, message)
         except Exception as exc:
-            self.logger(f"Xiaozhi realtime session ended: {exc}")
+            self.logger(f"小智实时会话已结束: {exc}")
         finally:
             self._stop_asr(session, graceful=False)
             await self._abort_session_tts(session)
@@ -704,31 +770,62 @@ class RealtimeManager:
         return safe_realtime_device_id(value)
 
     def _register_session(self, session: RealtimeDeviceSession) -> None:
+        replaced = None
         with self._sessions_lock:
+            replaced = self._sessions.get(session.device_id)
             self._sessions[session.device_id] = session
-        self.logger(f"Xiaozhi device connected: {session.device_id}")
+        if replaced is not None and replaced is not session:
+            self._retire_replaced_session(replaced, f"device reconnected: {session.device_id}")
+        self.logger(f"小智设备已连接: {session.device_id}")
+        self._notify_device_connected(session.device_id)
 
     def _update_session_device_id(self, session: RealtimeDeviceSession, device_id: str) -> None:
         device_id = safe_realtime_device_id(device_id)
         old_device_id = session.device_id
         if device_id == old_device_id:
             return
+        replaced = None
         with self._sessions_lock:
             current = self._sessions.get(old_device_id)
             if current is session:
                 self._sessions.pop(old_device_id, None)
+            replaced = self._sessions.get(device_id)
             session.device_id = device_id
             self._sessions[device_id] = session
+        if replaced is not None and replaced is not session:
+            self._retire_replaced_session(replaced, f"device id replaced: {device_id}")
         if session.asr_bridge is not None:
             session.asr_bridge.device_id = device_id
-        self.logger(f"Xiaozhi device id updated: {old_device_id} -> {device_id}")
+        self.logger(f"小智设备 id 已更新: {old_device_id} -> {device_id}")
+        self._notify_device_connected(device_id)
+
+    def _retire_replaced_session(self, session: RealtimeDeviceSession, reason: str) -> None:
+        self.logger(
+            "小智旧实时会话已被替换: "
+            f"device_id={session.device_id} session_id={session.session_id} reason={reason}"
+        )
+        self._stop_asr(session, graceful=False)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(session.websocket.close(code=1000, reason=reason))
+
+    def _notify_device_connected(self, device_id: str) -> None:
+        callback = self.config.device_connected_callback
+        if callback is None:
+            return
+        try:
+            callback(device_id)
+        except Exception as exc:
+            self.logger(f"实时设备连接回调失败: device={device_id} error={exc}")
 
     def _unregister_session(self, device_id: str, session_id: str) -> None:
         with self._sessions_lock:
             current = self._sessions.get(device_id)
             if current and current.session_id == session_id:
                 self._sessions.pop(device_id, None)
-        self.logger(f"Xiaozhi device disconnected: {device_id}")
+        self.logger(f"小智设备已断开: {device_id}")
 
     async def _handle_json(self, session: RealtimeDeviceSession, message: dict) -> None:
         message_type = message.get("type")
@@ -739,8 +836,9 @@ class RealtimeManager:
             state = str(message.get("state") or "")
             if state in ("start", "detect"):
                 await self._abort_session_tts(session)
-                self._start_asr(session)
+                session.listen_active = True
             elif state == "stop":
+                session.listen_active = False
                 self._stop_asr(session)
             return
         if message_type == "mcp":
@@ -775,18 +873,23 @@ class RealtimeManager:
             self._mark(session, "asr_first_partial")
         await session.websocket.send(json_dumps(build_stt(text, is_final=is_final, session_id=session.session_id)))
         if is_final:
+            session.listen_active = False
             self._stop_asr(session, graceful=False)
             await self._handle_final_text(session, text)
 
     def _start_asr(self, session: RealtimeDeviceSession) -> None:
         if session.asr_bridge and session.asr_bridge.active:
             return
+        if session.asr_bridge is not None:
+            self.logger(f"实时 ASR 正在替换已结束的会话: device={session.device_id}")
+            session.asr_bridge = None
         session.reset_latency()
         self._mark(session, "asr_start")
         session.asr_bridge = RealtimeAsrBridge(self, session)
         session.asr_bridge.start()
 
     def _stop_asr(self, session: RealtimeDeviceSession, *, graceful: bool = True) -> None:
+        session.listen_active = False
         bridge = session.asr_bridge
         session.asr_bridge = None
         if bridge is not None:
@@ -807,17 +910,12 @@ class RealtimeManager:
             await self._send_device_state(session, "sleep")
             return
         if has_realtime_wake_word(text):
-            was_awake = session.dialog_awake
             session.dialog_awake = True
             await self._send_device_state(session, "listening")
             if is_realtime_wake_only_text(text):
                 self._mark(session, "wake_reply_start")
                 await self._speak(session, random.choice(REALTIME_WAKE_REPLIES))
-                if not was_awake:
-                    await self._send_wake_find_owner(session)
                 return
-            if not was_awake:
-                await self._send_wake_find_owner(session)
         elif not session.dialog_awake:
             self._mark(session, "dialog_sleeping_ignore")
             await self._send_device_state(session, "sleep")
@@ -832,36 +930,16 @@ class RealtimeManager:
             reply = await loop.run_in_executor(None, self._openclaw.chat, session.device_id, text)
             self._mark(session, "openclaw_done")
         except Exception as exc:
-            self.logger(f"OpenClaw realtime chat failed: {exc}")
+            self.logger(f"OpenClaw 实时对话失败: {exc}")
             reply = ""
             # Temporarily disabled: stay silent instead of fallback speech.
             return
         if reply:
             if speech_text_is_temporarily_suppressed(reply):
-                self.logger("Realtime OpenClaw reply suppressed by temporary fallback silence guard")
+                self.logger("实时 OpenClaw 回复已被临时静默保护抑制")
                 return
-            await session.websocket.send(json_dumps(build_llm(reply, session_id=session.session_id)))
-            self.logger("Realtime OpenClaw reply left to command playback")
-
-    async def _send_wake_find_owner(self, session: RealtimeDeviceSession) -> None:
-        command = {
-            "cmd_id": make_request_id("cmd"),
-            "type": "find_owner",
-            "payload": {
-                "rounds": 1,
-                "reply": "",
-                "preserve_speech": True,
-                "wait_for_speech": False,
-                "gain_x": self.config.find_owner_gain_x,
-                "gain_y": self.config.find_owner_gain_y,
-                "stop_pixels": self.config.find_owner_stop_pixels,
-            },
-        }
-        if await self._send_mcp_command(session, command):
-            self._mark(session, "wake_find_owner_sent")
-            self.logger(f"Realtime wake find-owner sent: device_id={session.device_id}")
-        else:
-            self.logger(f"Realtime wake find-owner not sent: device_id={session.device_id}")
+            await self._speak(session, reply)
+            self.logger("实时 OpenClaw 回复已加入播放队列")
 
     async def _speak(
         self,
@@ -876,7 +954,7 @@ class RealtimeManager:
         if not text:
             return
         if speech_text_is_temporarily_suppressed(text):
-            self.logger("Realtime speak suppressed by temporary fallback silence guard")
+            self.logger("实时语音播放已被临时静默保护抑制")
             return
         await self._abort_session_tts(session)
         self._mark(session, "device_tts_start")
@@ -889,6 +967,25 @@ class RealtimeManager:
         cache_name = str(cache_name or "").strip()
         if cache_name:
             speak_step["cache_name"] = cache_name
+        if self.config.command_callback is not None:
+            command = {
+                "cmd_id": make_request_id("cmd"),
+                "type": "speak",
+                "priority": 95,
+                "interrupt": True,
+                "ttl_seconds": 8.0,
+                "discardable": False,
+                "coalesce_key": "realtime_speak",
+                "payload": dict(speak_step),
+                "created_at": time.time(),
+            }
+            try:
+                if self.config.command_callback(session.device_id, command):
+                    self._mark(session, "device_speak_command_sent")
+                    self.logger(f"实时语音命令已通过 HTTP 入队: device_id={session.device_id}")
+                    return
+            except Exception as exc:
+                self.logger(f"实时语音命令回调失败: {exc}")
         command = {
             "cmd_id": make_request_id("cmd"),
             "type": "sequence",
@@ -900,7 +997,7 @@ class RealtimeManager:
         if await self._send_mcp_command(session, command):
             self._mark(session, "device_speak_command_sent")
         else:
-            self.logger(f"Realtime speak command not sent: device_id={session.device_id}")
+            self.logger(f"实时语音命令未发送: device_id={session.device_id}")
 
     async def _abort_session_tts(self, session: RealtimeDeviceSession) -> None:
         task = session.tts_task
@@ -916,7 +1013,7 @@ class RealtimeManager:
 
     async def _run_tts(self, session: RealtimeDeviceSession, text: str) -> None:
         if speech_text_is_temporarily_suppressed(text):
-            self.logger("Realtime TTS suppressed by temporary fallback silence guard")
+            self.logger("实时 TTS 已被临时静默保护抑制")
             return
         await session.websocket.send(json_dumps(build_llm(text, session_id=session.session_id)))
         await session.websocket.send(json_dumps(build_tts_state("start", session_id=session.session_id)))
@@ -979,11 +1076,11 @@ class RealtimeManager:
                 if "tts_first_opus_sent" not in session.latency_marks:
                     self._mark(session, "tts_first_opus_sent")
         except OpusUnavailableError as exc:
-            self.logger(f"Realtime TTS audio unavailable: {exc}")
+            self.logger(f"实时 TTS 音频不可用: {exc}")
         except Exception as exc:
-            self.logger(f"Realtime streaming TTS failed: {exc}")
+            self.logger(f"实时流式 TTS 失败: {exc}")
 
     def _mark(self, session: RealtimeDeviceSession, name: str) -> None:
         elapsed_ms = session.mark_latency(name)
         if self.config.debug:
-            self.logger(f"latency device={session.device_id} stage={name} elapsed_ms={elapsed_ms:.0f}")
+            self.logger(f"延迟统计: device={session.device_id} stage={name} elapsed_ms={elapsed_ms:.0f}")

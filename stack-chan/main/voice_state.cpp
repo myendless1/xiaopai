@@ -12,14 +12,6 @@ volatile LocalVoiceState return_state = LocalVoiceState::Idle;
 volatile int speaking_depth = 0;
 volatile uint32_t generation = 0;
 
-void maybe_notify_idle_to_listening(LocalVoiceState old_state, LocalVoiceState new_state, const char* reason)
-{
-    if (old_state == LocalVoiceState::Idle && new_state == LocalVoiceState::Listening &&
-        hooks.on_idle_to_listening != nullptr) {
-        hooks.on_idle_to_listening(reason);
-    }
-}
-
 } // namespace
 
 void local_voice_state_init(const LocalVoiceStateHooks& new_hooks)
@@ -45,6 +37,14 @@ const char* local_voice_state_name(LocalVoiceState state_value)
 LocalVoiceState local_voice_current_state()
 {
     return state;
+}
+
+LocalVoiceState local_voice_return_state_after_speaking(LocalVoiceState candidate)
+{
+    if (candidate == LocalVoiceState::Speaking || candidate == LocalVoiceState::Waiting) {
+        return LocalVoiceState::Listening;
+    }
+    return candidate;
 }
 
 uint32_t local_voice_generation()
@@ -102,7 +102,6 @@ void local_voice_request_state(LocalVoiceState new_state, const char* reason)
     generation = generation + 1;
     ESP_LOGI(TAG, "Local voice state: %s -> %s reason=%s", local_voice_state_name(old_state),
              local_voice_state_name(new_state), reason != nullptr ? reason : "");
-    maybe_notify_idle_to_listening(old_state, new_state, reason);
     local_voice_apply_outputs(new_state);
 }
 
@@ -116,7 +115,7 @@ void local_voice_begin_speaking(const char* reason)
     }
 
     LocalVoiceState old_state = state;
-    return_state = old_state == LocalVoiceState::Speaking ? LocalVoiceState::Listening : old_state;
+    return_state = local_voice_return_state_after_speaking(old_state);
     state = LocalVoiceState::Speaking;
     generation = generation + 1;
     ESP_LOGI(TAG, "Local voice state: %s -> speaking reason=%s", local_voice_state_name(old_state),
@@ -135,10 +134,7 @@ void local_voice_end_speaking(const char* reason)
         return;
     }
 
-    LocalVoiceState next_state = return_state;
-    if (next_state == LocalVoiceState::Speaking) {
-        next_state = LocalVoiceState::Listening;
-    }
+    LocalVoiceState next_state = local_voice_return_state_after_speaking(return_state);
     LocalVoiceState old_state = state;
     state = next_state;
     generation = generation + 1;

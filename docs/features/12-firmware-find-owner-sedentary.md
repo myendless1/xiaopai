@@ -1,7 +1,7 @@
 # 寻人和久坐提醒
 
 ## 职责
-让小派在唤醒或定时检查时主动寻找人脸，并在持续检测到用户久坐时播报提醒。
+让小派在显式命令或定时检查时主动寻找人脸，并在持续检测到用户久坐时播报提醒。
 
 ## 寻人逻辑
 1. 先回到相机 home pose。
@@ -18,10 +18,10 @@
 
 ## 关键实现
 - `stack-chan/main/main_camera_motion.inc`: `run_find_owner_detection`、`run_find_owner_command`、`run_sedentary_find_owner_loop`。
-- `mark_wake_find_owner_pending`: 唤醒状态机触发的寻人请求，避免重复执行。
+- 唤醒状态机不再自动触发寻人；需要转向用户时使用显式 `find_owner` 命令。
 
 ## 注意点
-- `preserve_speech_playback` 可让寻人在唤醒回复播放期间同时进行。
+- `preserve_speech_playback` 可让寻人在播报期间同时进行。
 - `wait_for_speech` 用于需要等播报完成再移动的场景。
-- 久坐提醒的 active/休眠判断使用 `sleep_dark_is_visible()`；active 模式到点只跳过当前判定，不重置休眠累计。
+- 久坐提醒的 active/休眠判断使用 `expression_state_get().sleep_dark`；active 模式到点只跳过当前判定，不重置休眠累计。
 - 久坐提醒是设备本地视觉策略，OpenClaw 的 wellbeing 插件是另一条基于事件的业务路径。

@@ -168,7 +168,7 @@ static void release_camera_driver()
         camera_initialized = false;
     }
     camera_owns_internal_i2c = false;
-    local_voice_apply_outputs(local_voice_current_state());
+    xiaopai_state_apply_outputs(xiaopai_state_get().state);
 }
 
 static camera_fb_t* get_fresh_camera_frame(const char* context)
@@ -714,7 +714,7 @@ static void set_listening_outputs()
 {
     set_light_strip_listening();
     if (!sequence_expression_hold_active()) {
-        show_expression(kDefaultExpression);
+        expression_state_set(kDefaultExpression);
     }
 }
 
@@ -771,7 +771,7 @@ static void run_light_strip_boot_probe()
 {
     set_light_strip_color(0, 0, 32, 4);
     vTaskDelay(pdMS_TO_TICKS(150));
-    local_voice_apply_outputs(local_voice_current_state());
+    xiaopai_state_apply_outputs(xiaopai_state_get().state);
 }
 
 static void enable_servo_power()
@@ -1379,7 +1379,7 @@ static void run_sedentary_find_owner_loop()
         }
         next_find_ms += kSedentaryFindOwnerIntervalMs;
 
-        if (!sleep_dark_is_visible()) {
+        if (!expression_state_get().sleep_dark) {
             ESP_LOGI(TAG, "Sedentary owner check skipped: active mode");
             continue;
         }

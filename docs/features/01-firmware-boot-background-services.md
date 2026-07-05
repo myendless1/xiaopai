@@ -4,7 +4,7 @@
 负责设备上电后的统一初始化，并启动常驻后台服务，让小派进入可联网、可听、可被控制的状态。
 
 ## 逻辑
-1. `app_main` 初始化 NVS、M5Unified、音频服务、语音状态机和表情控制器。
+1. `app_main` 初始化 NVS、M5Unified、音频服务、`xiaopai_state` 和 `expression_state`。
 2. 启动灯带探测和 `start_background_services`。
 3. 主循环只做触摸刷新、空闲自动暗屏和轻量轮询。
 

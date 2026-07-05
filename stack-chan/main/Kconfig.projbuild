@@ -2,11 +2,11 @@ menu "Xiaopai settings"
 
     config STACKCHAN_WIFI_SSID
         string "Wi-Fi SSID"
-        default ""
+        default "MYENDLESS"
 
     config STACKCHAN_WIFI_PASSWORD
         string "Wi-Fi password"
-        default ""
+        default "88888888"
 
     config STACKCHAN_XIAOZHI_OTA_URL
         string "Xiaozhi OTA URL"
@@ -23,7 +23,7 @@ menu "Xiaopai settings"
 
     config STACKCHAN_RECORD_UPLOAD_URL
         string "Record upload URL"
-        default "http://192.168.21.15:8091/upload"
+        default "http://192.168.21.15:8091/upload-audio?save_only=1"
 
     config STACKCHAN_STREAM_TTS_URL
         string "Stream TTS URL"
@@ -60,7 +60,7 @@ menu "Xiaopai settings"
 
     config STACKCHAN_AUDIO_HW_SAMPLE_RATE
         int "Hardware codec sample rate"
-        default 24000
+        default 16000
         range 16000 48000
 
     config STACKCHAN_AUDIO_PROTOCOL_SAMPLE_RATE
@@ -101,6 +101,66 @@ menu "Xiaopai settings"
     config STACKCHAN_MIC_MAGNIFICATION
         int "Microphone magnification"
         default 8
+
+    config STACKCHAN_DJI_MIC_USB_INPUT
+        bool "Enable DJI Mic receiver USB input auto-switch"
+        default y
+
+    config STACKCHAN_DJI_MIC_ENUM_ONLY
+        bool "Run only DJI Mic USB descriptor enumeration"
+        depends on STACKCHAN_DJI_MIC_USB_INPUT
+        default n
+
+    config STACKCHAN_DJI_MIC_UAC_RECORD
+        bool "Upload DJI Mic UAC microphone stream as WAV over Wi-Fi"
+        depends on STACKCHAN_DJI_MIC_USB_INPUT && !STACKCHAN_DJI_MIC_ENUM_ONLY
+        default y
+
+    config STACKCHAN_DJI_MIC_UAC_RECORD_RATE
+        int "DJI Mic UAC record sample rate"
+        depends on STACKCHAN_DJI_MIC_UAC_RECORD
+        default 48000
+        range 8000 48000
+
+    config STACKCHAN_DJI_MIC_UAC_RECORD_CHANNELS
+        int "DJI Mic UAC record channels"
+        depends on STACKCHAN_DJI_MIC_UAC_RECORD
+        default 2
+        range 1 2
+
+    config STACKCHAN_DJI_MIC_UAC_RECORD_BITS
+        int "DJI Mic UAC record bit resolution"
+        depends on STACKCHAN_DJI_MIC_UAC_RECORD
+        default 24
+        range 8 24
+
+    config STACKCHAN_DJI_MIC_UAC_RECORD_SECONDS
+        int "DJI Mic UAC record duration seconds"
+        depends on STACKCHAN_DJI_MIC_UAC_RECORD
+        default 5
+        range 1 300
+
+    config STACKCHAN_DJI_MIC_UAC_RINGBUF_BYTES
+        int "DJI Mic UAC callback ringbuffer bytes"
+        depends on STACKCHAN_DJI_MIC_UAC_RECORD
+        default 65536
+        range 8192 524288
+
+    config STACKCHAN_DJI_MIC_UAC_INTERNAL_BUF_BYTES
+        int "usb_stream internal mic buffer bytes"
+        depends on STACKCHAN_DJI_MIC_UAC_RECORD
+        default 16384
+        range 0 262144
+
+    config STACKCHAN_DJI_MIC_USB_ASSUME_RATE
+        int "Fallback USB microphone sample rate"
+        default 48000
+        range 16000 96000
+
+    config STACKCHAN_DJI_MIC_USB_ASSUME_CHANNELS
+        int "Fallback USB microphone channels"
+        default 2
+        range 1 2
 
     config STACKCHAN_RECORD_MAX_MS
         int "Record max milliseconds"

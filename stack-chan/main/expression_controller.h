@@ -16,8 +16,16 @@ struct ExpressionControllerHooks {
     bool (*should_restore_listening_light)();
 };
 
+struct ExpressionControllerState {
+    const char* name;
+    bool screen_visible;
+    bool sleep_dark_visible;
+    bool animation_active;
+};
+
 void expression_controller_init(SemaphoreHandle_t m5_mutex, const ExpressionControllerHooks& hooks);
 void mark_expression_screen_dirty();
+ExpressionControllerState expression_controller_current_state();
 bool expression_screen_is_visible();
 bool sleep_dark_is_visible();
 void show_expression(const char* expression);

@@ -15,6 +15,6 @@
 - `run_xiaozhi_ota_probe()`: 当前后台语音任务入口。
 
 ## 注意点
-- 语音采样受 `local_voice_can_sample_mic()` 控制，播报和等待状态会自动暂停采样。
+- 语音采样通过 `xiaopai_state_get().can_sample_mic` 判断，播报和等待状态会自动暂停采样。
 - `receive_ws_once` 能处理二进制 Opus 音频，直接交给 `audio_service_play_opus_frame_16k`。
 - MCP 工具调用映射到 `face`、`motion`、`find_owner`、`capture_image`、`volume`、`sequence`、`stop`。

@@ -300,6 +300,43 @@ static bool face_kind_from_name(const char* expression, FaceKind* kind)
     return false;
 }
 
+static const char* face_kind_name(FaceKind kind)
+{
+    switch (kind) {
+        case FaceKind::SleepDark:
+            return "sleep_dark";
+        case FaceKind::Calm:
+            return "calm";
+        case FaceKind::CalmBlink:
+            return "calm_blink";
+        case FaceKind::Thinking:
+            return "thinking";
+        case FaceKind::ThinkingBlink:
+            return "thinking_blink";
+        case FaceKind::Shy:
+            return "shy";
+        case FaceKind::ShyBlink:
+            return "shy_blink";
+        case FaceKind::Smile:
+            return "smile";
+        case FaceKind::SmileBlink:
+            return "smile_blink";
+        case FaceKind::Happy:
+            return "happy";
+        case FaceKind::Relaxed:
+            return "relaxed";
+        case FaceKind::WinkOpen:
+            return "wink_open";
+        case FaceKind::WinkBlink:
+            return "wink_blink";
+        case FaceKind::Grin:
+            return "grin";
+        case FaceKind::GrinBlink:
+            return "grin_blink";
+    }
+    return kDefaultExpression;
+}
+
 static const ExpressionAnimation* find_expression_animation(const char* expression)
 {
     const char* name = expression != nullptr && expression[0] != '\0' ? expression : "";
@@ -927,6 +964,18 @@ void expression_controller_init(SemaphoreHandle_t m5_mutex, const ExpressionCont
 void mark_expression_screen_dirty()
 {
     expression_screen_visible = false;
+}
+
+ExpressionControllerState expression_controller_current_state()
+{
+    ExpressionControllerState state = {};
+    state.name = current_expression_animation != nullptr
+        ? current_expression_animation->name
+        : face_kind_name(current_face_kind);
+    state.screen_visible = expression_screen_visible;
+    state.sleep_dark_visible = sleep_dark_visible;
+    state.animation_active = current_expression_animation != nullptr;
+    return state;
 }
 
 bool expression_screen_is_visible()

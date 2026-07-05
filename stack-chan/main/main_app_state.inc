@@ -31,15 +31,13 @@ static constexpr int kTtsStreamSampleRate = 16000;
 static constexpr size_t kTtsStreamBufferSamples = 1024;
 static constexpr int kSpeakerDmaTailDrainMs = 384;
 static constexpr int kPostSpeechEchoGuardMs = 0;
-static constexpr int kWakeFindOwnerServerGraceMs = 1200;
-static constexpr int kWakeFindOwnerDuplicateGuardMs = 5000;
-static constexpr int kWakeFindOwnerPendingMaxMs = 8000;
 static constexpr int kLauncherAppCount = 5;
 static constexpr bool kShowAppStatusScreens = false;
 static constexpr uint32_t kWifiTaskStackBytes = 8 * 1024;
 static constexpr uint32_t kApp1TaskStackBytes = 28 * 1024;
 static constexpr uint32_t kApp2TaskStackBytes = 16 * 1024;
 static constexpr uint32_t kCommandTaskStackBytes = 8 * 1024;
+static constexpr uint32_t kWifiDebugTaskStackBytes = 10 * 1024;
 static constexpr uint32_t kCameraTaskStackBytes = 16 * 1024;
 static constexpr uint32_t kTrackingTaskStackBytes = 20 * 1024;
 static constexpr size_t kTtsMaxBytes = CONFIG_STACKCHAN_TTS_MAX_BYTES;
@@ -140,6 +138,7 @@ TaskHandle_t stream_tts_task_handle = nullptr;
 TaskHandle_t camera_upload_task_handle = nullptr;
 TaskHandle_t tracking_task_handle = nullptr;
 TaskHandle_t command_task_handle = nullptr;
+TaskHandle_t wifi_debug_task_handle = nullptr;
 TaskHandle_t boot_task_handle = nullptr;
 TaskHandle_t sedentary_task_handle = nullptr;
 TaskHandle_t speaking_light_task_handle = nullptr;
@@ -170,12 +169,15 @@ volatile bool speaking_light_running = false;
 volatile uint8_t speaking_light_level = 0;
 volatile uint32_t speaking_light_level_ms = 0;
 volatile bool speak_command_active = false;
+volatile bool wifi_debug_log_enabled = true;
+volatile bool wifi_debug_usb_serial_enabled = true;
+volatile bool wifi_debug_state_events_enabled = true;
+volatile bool wifi_debug_internal_http = false;
+volatile int wifi_debug_config_poll_ms = 5000;
+volatile int wifi_debug_post_interval_ms = 1000;
 volatile int sequence_expression_hold_depth = 0;
 volatile uint32_t speech_output_finished_ms = 0;
 volatile uint32_t last_user_interaction_ms = 0;
-volatile bool wake_find_owner_pending = false;
-volatile uint32_t wake_find_owner_requested_ms = 0;
-volatile uint32_t wake_find_owner_last_run_ms = 0;
 bool light_strip_ready = false;
 bool light_strip_missing = false;
 bool light_strip_listening_after_speech = false;
@@ -307,24 +309,24 @@ static bool post_speech_echo_guard_active()
 static void mark_user_interaction(const char* reason)
 {
     last_user_interaction_ms = M5.millis();
-    if (sleep_dark_is_visible()) {
-        show_expression(kDefaultExpression);
+    if (expression_state_get().sleep_dark) {
+        expression_state_set(kDefaultExpression);
     }
     ESP_LOGI(TAG, "User interaction: %s", reason != nullptr ? reason : "");
 }
 
 static void show_sleep_dark_listening(const char* reason)
 {
-    if (local_voice_current_state() != LocalVoiceState::Listening) {
-        local_voice_request_state(LocalVoiceState::Listening, reason != nullptr ? reason : "sleep dark");
+    if (xiaopai_state_get().state != LocalVoiceState::Listening) {
+        xiaopai_state_set(LocalVoiceState::Listening, reason != nullptr ? reason : "sleep dark");
     }
-    show_expression("sleep_dark");
+    expression_state_set("sleep_dark");
     set_light_strip_listening();
 }
 
 static bool auto_sleep_dark_due()
 {
-    if (sleep_dark_is_visible() || current_app == AppId::WifiConnect || !wifi_is_connected() ||
+    if (expression_state_get().sleep_dark || current_app == AppId::WifiConnect || !wifi_is_connected() ||
         !active_server_selected || speech_output_is_busy()) {
         return false;
     }
@@ -336,49 +338,10 @@ static bool auto_sleep_dark_due()
     return static_cast<uint32_t>(M5.millis() - last) >= kIdleSleepDarkDelayMs;
 }
 
-static void mark_wake_find_owner_pending(const char* reason)
-{
-    uint32_t now = M5.millis();
-    if (wake_find_owner_last_run_ms != 0 &&
-        static_cast<uint32_t>(now - wake_find_owner_last_run_ms) < kWakeFindOwnerDuplicateGuardMs) {
-        ESP_LOGI(TAG, "Wake find-owner suppressed by duplicate guard reason=%s",
-                 reason != nullptr ? reason : "");
-        return;
-    }
-
-    wake_find_owner_pending = true;
-    wake_find_owner_requested_ms = now;
-    ESP_LOGI(TAG, "Wake find-owner pending reason=%s", reason != nullptr ? reason : "");
-}
-
 static bool should_restore_listening_light_after_speech()
 {
-    return light_strip_listening_after_speech && local_voice_current_state() == LocalVoiceState::Listening &&
+    return light_strip_listening_after_speech && xiaopai_state_get().state == LocalVoiceState::Listening &&
            !voice_listener_paused;
-}
-
-static void handle_pending_wake_find_owner()
-{
-    if (!wake_find_owner_pending) {
-        return;
-    }
-    uint32_t now = M5.millis();
-    if (static_cast<uint32_t>(now - wake_find_owner_requested_ms) > kWakeFindOwnerPendingMaxMs) {
-        ESP_LOGI(TAG, "Wake find-owner pending expired");
-        wake_find_owner_pending = false;
-        return;
-    }
-    if (static_cast<uint32_t>(now - wake_find_owner_requested_ms) < kWakeFindOwnerServerGraceMs) {
-        return;
-    }
-    if (local_voice_current_state() != LocalVoiceState::Listening || voice_listener_paused || speech_output_is_busy()) {
-        return;
-    }
-
-    wake_find_owner_pending = false;
-    wake_find_owner_last_run_ms = now;
-    ESP_LOGI(TAG, "Wake find-owner running locally");
-    run_find_owner_command(1, "", kFindOwnerYawGain, kFindOwnerPitchGain, kFindOwnerStopPixels, true, false);
 }
 
 struct App1Status {
@@ -418,7 +381,7 @@ private:
 
 void draw_header(const char* title)
 {
-    mark_expression_screen_dirty();
+    expression_state_mark_dirty();
     auto& display = M5.Display;
     display.fillScreen(TFT_BLACK);
     display.setTextDatum(top_left);
@@ -436,12 +399,12 @@ void draw_header(const char* title)
 void draw_launcher()
 {
     if (!kShowAppStatusScreens) {
-        if (!expression_screen_is_visible()) {
-            show_expression(kDefaultExpression);
+        if (!expression_state_get().screen_visible) {
+            expression_state_set(kDefaultExpression);
         }
         return;
     }
-    mark_expression_screen_dirty();
+    expression_state_mark_dirty();
     auto& display = M5.Display;
     display.fillScreen(TFT_BLACK);
     display.setTextDatum(top_left);
@@ -515,7 +478,7 @@ static void set_speaker_volume_percent(int percent)
 
 static void draw_volume_dropdown()
 {
-    mark_expression_screen_dirty();
+    expression_state_mark_dirty();
     auto& display = M5.Display;
     const int panel_w = display.width() - kVolumeDropdownPanelX * 2;
     const int control_x = kVolumeDropdownPanelX + kVolumeDropdownControlPad;
@@ -550,8 +513,8 @@ static void draw_volume_dropdown()
 static void redraw_after_volume_dropdown()
 {
     if (!kShowAppStatusScreens) {
-        mark_expression_screen_dirty();
-        show_expression(kDefaultExpression);
+        expression_state_mark_dirty();
+        expression_state_set(kDefaultExpression);
         return;
     }
 
@@ -663,7 +626,7 @@ void draw_wifi_status()
 
 void draw_wifi_setup_steps(const char* ap_ssid)
 {
-    mark_expression_screen_dirty();
+    expression_state_mark_dirty();
     auto& display = M5.Display;
     display.fillScreen(TFT_BLACK);
     display.setTextDatum(top_left);
@@ -962,8 +925,8 @@ const char* touch_state_name(const m5::Touch_Class::touch_detail_t& touch)
 void draw_touch_status(const char* event_name, const m5::Touch_Class::touch_detail_t& touch)
 {
     if (!kShowAppStatusScreens) {
-        if (!expression_screen_is_visible()) {
-            show_expression(kDefaultExpression);
+        if (!expression_state_get().screen_visible) {
+            expression_state_set(kDefaultExpression);
         }
         return;
     }

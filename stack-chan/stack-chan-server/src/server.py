@@ -52,6 +52,8 @@ DEVICE_ONLINE_TTL_SECONDS = 90
 DIALOG_AWAKE_SECONDS = 180
 DEFAULT_OTA_CHECK_INTERVAL_SECONDS = 300
 LOG_TEXT_MAX_CHARS = 2000
+DEVICE_LOG_MAX_ITEMS = 500
+DEVICE_RECORDING_MAX_ITEMS = 100
 DIALOG_WAKE_WORDS = (
     "小派同学",
     "小派同學",
@@ -63,7 +65,12 @@ DIALOG_WAKE_WORDS = (
     "小白",
     "小坏",
     "小壞",
+    "小蔡同学",
+    "小蔡同學",
     "小蔡",
+    "小的同学",
+    "小的同學",
+    "小的",
     "小外",
     "小机器",
     "机器人",
@@ -91,7 +98,20 @@ DIALOG_SLEEP_REST_WORDS = (
     "先這樣",
 )
 DIALOG_SLEEP_WORDS = DIALOG_SLEEP_REST_WORDS + DIALOG_SLEEP_BYE_WORDS
-DIALOG_WAKE_ONLY_FILLERS = ("你好", "您好", "在吗", "在嗎", "醒醒", "hello", "hi", "嗨", "哈喽", "哈囉")
+DIALOG_WAKE_ONLY_FILLERS = (
+    "你好",
+    "您好",
+    "同学",
+    "同學",
+    "在吗",
+    "在嗎",
+    "醒醒",
+    "hello",
+    "hi",
+    "嗨",
+    "哈喽",
+    "哈囉",
+)
 SUPPRESSED_FALLBACK_SPEECH_NORMALIZED = {
     "\u6211\u6ca1\u542c\u6e05\u53ef\u4ee5\u518d\u8bf4\u4e00\u904d\u5417",
 }
@@ -491,12 +511,40 @@ def save_audio_capture(
         return ""
     os.makedirs(capture_dir, exist_ok=True)
     safe_device = re.sub(r"[^A-Za-z0-9_.-]+", "_", safe_device_id(device_id))[:40] or "unknown"
+    safe_prefix = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(prefix or "upload"))[:48] or "upload"
     stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    path = os.path.join(capture_dir, f"{prefix}-{safe_device}-{stamp}.wav")
+    path = os.path.join(capture_dir, f"{safe_prefix}-{safe_device}-{stamp}.wav")
     data = audio if audio_format == "wav" else pcm_to_wav(audio, sample_rate)
     with open(path, "wb") as fp:
         fp.write(data)
     return path
+
+
+def wav_data_payload(data: bytes) -> bytes:
+    if len(data) < 44 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        return data
+    offset = 12
+    while offset + 8 <= len(data):
+        chunk_id = data[offset : offset + 4]
+        chunk_size = struct.unpack_from("<I", data, offset + 4)[0]
+        payload_start = offset + 8
+        payload_end = min(len(data), payload_start + chunk_size)
+        if chunk_id == b"data":
+            return data[payload_start:payload_end]
+        offset = payload_start + chunk_size + (chunk_size & 1)
+    return b""
+
+
+def save_wav_raw_sidecar(wav_path: str, audio: bytes) -> str:
+    if not wav_path:
+        return ""
+    raw = wav_data_payload(audio)
+    if not raw:
+        return ""
+    raw_path = os.path.splitext(wav_path)[0] + ".pcm"
+    with open(raw_path, "wb") as fp:
+        fp.write(raw)
+    return raw_path
 
 
 def parse_chinese_integer(text: str) -> int | None:
@@ -1156,6 +1204,7 @@ class AliyunVoiceServer(ThreadingHTTPServer):
     capture_save_mode: str
     save_audio_uploads: bool
     audio_capture_dir: str
+    device_log_dir: str
     command_queue_max_size: int
     capture_dir: str
     static_dir: str
@@ -1200,6 +1249,14 @@ class AliyunVoiceServer(ThreadingHTTPServer):
     last_ack: dict[str, dict]
     last_seen: dict[str, float]
     device_order: list[str]
+    debug_config_lock: threading.Lock
+    wifi_log_enabled: bool
+    usb_serial_enabled: bool
+    state_events_enabled: bool
+    device_config_poll_ms: int
+    device_log_post_interval_ms: int
+    device_logs: dict[str, list[dict]]
+    recording_cache: list[dict]
 
     def get_token(self) -> str:
         if self.access_key_id and self.access_key_secret:
@@ -1209,9 +1266,9 @@ class AliyunVoiceServer(ThreadingHTTPServer):
                     self.access_key_id, self.access_key_secret
                 )
                 if getattr(self, "debug_log", False):
-                    log_print(f"Aliyun NLS token refreshed, expires_at={self.token_expire_time}")
+                    log_print(f"阿里云 NLS token 已刷新，expires_at={self.token_expire_time}")
                 else:
-                    log_print("Aliyun NLS token refreshed")
+                    log_print("阿里云 NLS token 已刷新")
         return self.token
 
 
@@ -1278,6 +1335,7 @@ class Handler(BaseHTTPRequestHandler):
                     },
                     "realtime": self._realtime_status(),
                     "ota": self._ota_status(),
+                    "debug_config": self._debug_config_body(),
                     "command_queue": {
                         "max_size": self.server.command_queue_max_size,
                         "default_priorities": COMMAND_DEFAULT_PRIORITIES,
@@ -1320,6 +1378,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/devices":
             self._handle_devices()
+            return
+        if path == "/device/config":
+            self._handle_device_config(query)
+            return
+        if path == "/debug/config":
+            self._handle_debug_config(query)
+            return
+        if path == "/device/logs":
+            self._handle_device_logs(query)
+            return
+        if path == "/debug/recordings":
+            self._handle_recordings(query)
             return
         if path == "/command":
             self._handle_command(query)
@@ -1387,6 +1457,14 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(body.decode("utf-8")) if body else {}
             self._handle_command(query, posted=payload)
             return
+        if path == "/debug/config":
+            payload = json.loads(body.decode("utf-8")) if body else {}
+            self._handle_debug_config(query, posted=payload)
+            return
+        if path == "/device/logs":
+            payload = json.loads(body.decode("utf-8")) if body else {}
+            self._handle_device_logs(query, posted=payload)
+            return
         if path == "/device/ack":
             payload = json.loads(body.decode("utf-8")) if body else {}
             self._handle_ack(query, posted=payload)
@@ -1439,6 +1517,176 @@ class Handler(BaseHTTPRequestHandler):
             }
         return body
 
+    def _debug_config_body(self, device_id: str = "") -> dict:
+        with self.server.debug_config_lock:
+            save_recording = bool(getattr(self.server, "save_audio_uploads", True))
+            return {
+                "type": "device_config",
+                "device_id": safe_device_id(device_id) if device_id else "",
+                "wifi_log": bool(getattr(self.server, "wifi_log_enabled", True)),
+                "usb_serial": bool(getattr(self.server, "usb_serial_enabled", True)),
+                "state_events": bool(getattr(self.server, "state_events_enabled", True)),
+                "save_recording": save_recording,
+                "save-recording": save_recording,
+                "save_audio_uploads": save_recording,
+                "device_log_dir": str(getattr(self.server, "device_log_dir", "")),
+                "config_poll_ms": int(getattr(self.server, "device_config_poll_ms", 5000)),
+                "log_post_interval_ms": int(getattr(self.server, "device_log_post_interval_ms", 1000)),
+            }
+
+    def _optional_bool_value(self, values: dict, *keys: str) -> bool | None:
+        for key in keys:
+            if key not in values:
+                continue
+            value = values[key]
+            if value is None:
+                continue
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return value != 0
+            return parse_bool(str(value))
+        return None
+
+    def _apply_debug_config(self, values: dict) -> list[str]:
+        changed = []
+        wifi_log = self._optional_bool_value(values, "wifi_log", "wifi_logs", "wifi-log", "wifi-logs")
+        usb_serial = self._optional_bool_value(values, "usb_serial", "usb-serial", "serial", "console")
+        state_events = self._optional_bool_value(values, "state_events", "state-events", "state_log", "state-log")
+        save_recording = self._optional_bool_value(
+            values,
+            "save_recording",
+            "save-recording",
+            "save_audio_uploads",
+            "save-audio-uploads",
+        )
+        with self.server.debug_config_lock:
+            if wifi_log is not None and wifi_log != self.server.wifi_log_enabled:
+                self.server.wifi_log_enabled = wifi_log
+                changed.append("wifi_log")
+            if usb_serial is not None and usb_serial != self.server.usb_serial_enabled:
+                self.server.usb_serial_enabled = usb_serial
+                changed.append("usb_serial")
+            if state_events is not None and state_events != self.server.state_events_enabled:
+                self.server.state_events_enabled = state_events
+                changed.append("state_events")
+            if save_recording is not None and save_recording != self.server.save_audio_uploads:
+                self.server.save_audio_uploads = save_recording
+                manager = getattr(self.server, "realtime_manager", None)
+                if manager is not None:
+                    manager.config.save_audio_uploads = save_recording
+                changed.append("save_recording")
+        return changed
+
+    def _handle_device_config(self, query: dict) -> None:
+        device_id = self._device_id(query)
+        self._mark_device_seen(device_id)
+        self._send_json(self._debug_config_body(device_id))
+
+    def _handle_debug_config(self, query: dict, posted: dict | None = None) -> None:
+        values = {key: first_value(query, key) for key in query}
+        if posted:
+            values.update(posted)
+        changed = self._apply_debug_config(values)
+        body = self._debug_config_body(first_value(query, "device_id") or str(values.get("device_id") or ""))
+        body["changed"] = changed
+        self._send_json(body)
+
+    def _append_device_log(self, device_id: str, event: dict) -> None:
+        device_id = safe_device_id(device_id)
+        event = dict(event)
+        event["device_id"] = device_id
+        event.setdefault("server_ts", time.time())
+        with self.server.device_lock:
+            logs = self.server.device_logs.setdefault(device_id, [])
+            logs.append(event)
+            if len(logs) > DEVICE_LOG_MAX_ITEMS:
+                del logs[: len(logs) - DEVICE_LOG_MAX_ITEMS]
+            self._append_device_log_file(device_id, event)
+
+    def _append_device_log_file(self, device_id: str, event: dict) -> None:
+        try:
+            append_device_log_file(self.server, device_id, event)
+        except OSError as exc:
+            self._log_error(f"设备日志文件写入失败: device={safe_device_id(device_id)} error={exc}")
+
+    def _handle_device_logs(self, query: dict, posted: dict | None = None) -> None:
+        if posted is None:
+            requested = self._device_id(query)
+            limit = max(1, min(DEVICE_LOG_MAX_ITEMS, int(first_value(query, "limit") or "100")))
+            with self.server.device_lock:
+                if first_value(query, "device_id"):
+                    logs = list(self.server.device_logs.get(requested, []))[-limit:]
+                    body = {"type": "device_logs", "device_id": requested, "logs": logs}
+                else:
+                    body = {
+                        "type": "device_logs",
+                        "devices": {
+                            device_id: list(logs)[-limit:]
+                            for device_id, logs in self.server.device_logs.items()
+                        },
+                    }
+            self._send_json(body)
+            return
+
+        device_id = safe_device_id(posted.get("device_id") or self._device_id(query))
+        self._mark_device_seen(device_id)
+        raw_events = posted.get("events")
+        if isinstance(raw_events, list):
+            events = raw_events
+        elif isinstance(posted.get("event"), dict):
+            events = [posted["event"]]
+        else:
+            events = [posted]
+
+        accepted = 0
+        for raw_event in events[:50]:
+            if not isinstance(raw_event, dict):
+                continue
+            event = {
+                key: value
+                for key, value in raw_event.items()
+                if isinstance(key, str) and key not in ("device_id",)
+            }
+            event_type = str(event.get("type") or event.get("event_type") or "log")
+            event["type"] = event_type
+            if "message" in event:
+                event["message"] = truncate_log_text(str(event.get("message") or ""))
+            if "line" in event:
+                event["line"] = truncate_log_text(str(event.get("line") or ""))
+            self._append_device_log(device_id, event)
+            accepted += 1
+            if event_type in ("state", "state_change"):
+                source = event.get("source") or event.get("state_machine") or "state"
+                old = event.get("from") or event.get("old") or ""
+                new = event.get("to") or event.get("new") or event.get("state") or ""
+                reason = event.get("reason") or ""
+                self._log_info(f"设备状态事件: device={device_id} source={source} state={old}->{new} reason={reason}")
+        self._send_json({"type": "device_logs_ack", "device_id": device_id, "accepted": accepted})
+
+    def _append_recording_metadata(self, metadata: dict) -> None:
+        item = dict(metadata)
+        item.setdefault("ts", time.time())
+        with self.server.device_lock:
+            self.server.recording_cache.append(item)
+            if len(self.server.recording_cache) > DEVICE_RECORDING_MAX_ITEMS:
+                del self.server.recording_cache[: len(self.server.recording_cache) - DEVICE_RECORDING_MAX_ITEMS]
+
+    def _handle_recordings(self, query: dict) -> None:
+        limit = max(1, min(DEVICE_RECORDING_MAX_ITEMS, int(first_value(query, "limit") or "50")))
+        device_filter = safe_device_id(first_value(query, "device_id")) if first_value(query, "device_id") else ""
+        with self.server.device_lock:
+            recordings = list(self.server.recording_cache)
+        if device_filter:
+            recordings = [item for item in recordings if safe_device_id(item.get("device_id", "")) == device_filter]
+        self._send_json(
+            {
+                "type": "recordings",
+                "save_recording": bool(getattr(self.server, "save_audio_uploads", True)),
+                "recordings": recordings[-limit:],
+            }
+        )
+
     def _handle_xiaozhi_ota(self, query: dict) -> None:
         host = first_value(query, "host") or getattr(self.server, "xiaozhi_public_host", "")
         if not host:
@@ -1448,7 +1696,7 @@ class Handler(BaseHTTPRequestHandler):
         path = getattr(self.server, "xiaozhi_ws_path", "/xiaozhi/ws")
         token = getattr(self.server, "xiaozhi_local_token", "")
         ws_url = f"ws://{host}:{port}{path}"
-        self._log_info(f"Realtime config: host_header={self.headers.get('Host', '')!r} ws_url={ws_url}")
+        self._log_info(f"实时语音配置: host_header={self.headers.get('Host', '')!r} ws_url={ws_url}")
         body = ota_config(ws_url, token)
         firmware = find_latest_ota_firmware(self.server.ota_firmware_file, self.server.ota_firmware_dir)
         if firmware is not None:
@@ -1457,7 +1705,7 @@ class Handler(BaseHTTPRequestHandler):
                 firmware_body["force"] = 1
             body["firmware"] = firmware_body
             self._log_info(
-                f"OTA firmware advertised: version={firmware.version} "
+                f"OTA 固件已下发: version={firmware.version} "
                 f"file={os.path.basename(firmware.path)} size={firmware.size}"
             )
         self._send_json(body)
@@ -1498,7 +1746,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not chunk:
                     break
                 self.wfile.write(chunk)
-        self._log_info(f"OTA firmware served: {os.path.basename(firmware.path)} bytes={stat.st_size}")
+        self._log_info(f"OTA 固件已发送: file={os.path.basename(firmware.path)} bytes={stat.st_size}")
 
     def _handle_upload(self, body: bytes):
         if not body:
@@ -1510,26 +1758,73 @@ class Handler(BaseHTTPRequestHandler):
         self._mark_device_seen(device_id)
         sample_rate = detect_wav_sample_rate(body) or self.server.sample_rate
         audio_format = "wav" if detect_wav_sample_rate(body) else "pcm"
-        self._log_info(f"ASR upload received: {audio_format}, {len(body)} bytes")
-        self._log_debug(f"ASR upload detail: device={device_id} bytes={len(body)} format={audio_format} sample_rate={sample_rate}")
+        upload_mode = self.headers.get("X-Upload-Mode", "").strip().lower()
+        save_only = (
+            parse_bool(first_value(query, "save_only"))
+            or parse_bool(first_value(query, "save-only"))
+            or parse_bool(self.headers.get("X-Save-Only", ""))
+            or upload_mode in ("save", "save-only", "save_only", "record", "record-only", "record_only")
+        )
+        save_raw = parse_bool(first_value(query, "save_raw")) or parse_bool(self.headers.get("X-Save-Raw", ""))
+        upload_prefix = self.headers.get("X-Audio-Test-Name", "").strip() or first_value(query, "name") or "upload"
+        self._log_info(f"音频上传已收到: format={audio_format} bytes={len(body)} save_only={save_only}")
+        self._log_debug(f"音频上传详情: device={device_id} bytes={len(body)} format={audio_format} sample_rate={sample_rate}")
+        audio_path = ""
+        raw_path = ""
+        save_error = ""
         if getattr(self.server, "save_audio_uploads", True):
             try:
                 audio_path = save_audio_capture(
                     body,
                     capture_dir=self.server.audio_capture_dir,
                     device_id=device_id,
-                    prefix="upload",
+                    prefix=upload_prefix,
                     audio_format=audio_format,
                     sample_rate=sample_rate,
                 )
+                if audio_path and save_raw:
+                    raw_path = save_wav_raw_sidecar(audio_path, body)
                 if audio_path:
-                    self._log_info(f"ASR upload audio saved: device={device_id} path={audio_path}")
+                    self._log_info(f"ASR 上传音频已保存: device={device_id} path={audio_path}")
+                    if raw_path:
+                        self._log_info(f"ASR 上传原始 PCM 已保存: device={device_id} path={raw_path}")
+                    self._append_recording_metadata(
+                        {
+                            "source": "http-upload",
+                            "device_id": device_id,
+                            "path": audio_path,
+                            "raw_path": raw_path,
+                            "bytes": len(body),
+                            "audio_format": audio_format,
+                            "sample_rate": sample_rate,
+                        }
+                    )
             except Exception as exc:
-                self._log_error(f"ASR upload audio save failed: {exc}")
+                save_error = str(exc)
+                self._log_error(f"ASR 上传音频保存失败: {exc}")
+        if save_only:
+            if not audio_path:
+                message = save_error or "audio saving is disabled"
+                self._send_json({"type": "error", "message": message, "device_id": device_id}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self._log_info(f"音频保存模式完成: device={device_id} path={audio_path or '-'}")
+            self._send_json(
+                {
+                    "type": "audio_saved",
+                    "device_id": device_id,
+                    "path": audio_path,
+                    "raw_path": raw_path,
+                    "bytes": len(body),
+                    "audio_format": audio_format,
+                    "sample_rate": sample_rate,
+                    "saved": bool(audio_path),
+                }
+            )
+            return
         try:
             result = self._aliyun_asr(body, audio_format, sample_rate)
         except Exception as exc:
-            self._log_error(f"ASR failed: {exc}")
+            self._log_error(f"ASR 识别失败: {exc}")
             self._send_json({"type": "error", "message": str(exc)}, HTTPStatus.BAD_GATEWAY)
             return
 
@@ -1537,11 +1832,11 @@ class Handler(BaseHTTPRequestHandler):
         status = result.get("status")
         message = result.get("message", "")
         if text:
-            self._log_info(f"ASR recognized: {text!r}")
+            self._log_info(f"ASR 识别结果: {text!r}")
         else:
-            self._log_info("ASR recognized no speech")
+            self._log_info("ASR 未识别到语音")
         self._log_debug(
-            "ASR result detail: "
+            "ASR 结果详情: "
             f"device={device_id} status={status} task_id={result.get('task_id', '')!r} "
             f"text={text!r} message={message!r}"
         )
@@ -1596,24 +1891,9 @@ class Handler(BaseHTTPRequestHandler):
                     discardable=False,
                     coalesce_key="wake_reply",
                 )
-                find_owner_command = make_command(
-                    "find_owner",
-                    {
-                        "rounds": 1,
-                        "reply": "",
-                        "preserve_speech": True,
-                        "wait_for_speech": False,
-                        "gain_x": self.server.find_owner_gain_x,
-                        "gain_y": self.server.find_owner_gain_y,
-                        "stop_pixels": self.server.find_owner_stop_pixels,
-                    },
-                    priority=85,
-                    interrupt=True,
-                )
                 self._enqueue_command(device_id, wake_reply_command)
-                self._enqueue_command(device_id, find_owner_command)
                 response["queued_command"] = wake_reply_command["cmd_id"]
-                response["queued_commands"] = [wake_reply_command["cmd_id"], find_owner_command["cmd_id"]]
+                response["queued_commands"] = [wake_reply_command["cmd_id"]]
                 response["wake_reply"] = {"name": wake_reply_name, "text": wake_reply_text}
                 if is_wake_only_text(text):
                     response["handled_as"] = "wake"
@@ -1623,8 +1903,8 @@ class Handler(BaseHTTPRequestHandler):
             elif not self._dialog_awake(device_id):
                 response["handled_as"] = "sleeping"
                 response["dialog_awake"] = False
-                self._log_info("ASR ignored while sleeping")
-                self._log_debug(f"ASR sleeping detail: device={device_id} text={text!r}")
+                self._log_info("ASR 在休眠状态下已忽略")
+                self._log_debug(f"ASR 休眠详情: device={device_id} text={text!r}")
                 self._send_json(response)
                 return
             else:
@@ -1640,8 +1920,8 @@ class Handler(BaseHTTPRequestHandler):
             response["handled_as"] = "openclaw_forwarded" if openclaw_result.get("openclaw_sent") else "openclaw_not_sent"
         else:
             response["handled_as"] = "empty"
-            self._log_info("ASR empty; OpenClaw skipped")
-            self._log_debug(f"ASR empty detail: device={device_id}")
+            self._log_info("ASR 为空，已跳过 OpenClaw")
+            self._log_debug(f"ASR 空结果详情: device={device_id}")
         self._send_json(response)
 
     def _handle_device_event(self, query: dict, posted: dict | None = None):
@@ -1691,8 +1971,8 @@ class Handler(BaseHTTPRequestHandler):
                     "queued_commands": [],
                 }
             )
-            self._log_info("Speech event empty; OpenClaw skipped")
-            self._log_debug(f"Speech event empty detail: device={device_id}")
+            self._log_info("语音事件为空，已跳过 OpenClaw")
+            self._log_debug(f"语音事件空结果详情: device={device_id}")
             return
 
         result = self._send_openclaw_event(device_id, str(event_type), details)
@@ -1935,9 +2215,9 @@ class Handler(BaseHTTPRequestHandler):
             if command.get("type") == "face" and isinstance(command.get("payload"), dict):
                 detail = f" expression={command['payload'].get('expression', '')}"
             if sent:
-                self._log_info(f"Realtime command sent: {command['type']}{detail} priority={command.get('priority')}")
+                self._log_info(f"实时命令已发送: type={command['type']}{detail} priority={command.get('priority')}")
                 self._log_debug(
-                    f"Realtime command detail: device={device_id} cmd_id={command['cmd_id']} "
+                    f"实时命令详情: device={device_id} cmd_id={command['cmd_id']} "
                     f"type={command['type']}{detail}"
                 )
                 with self.server.device_lock:
@@ -1948,7 +2228,7 @@ class Handler(BaseHTTPRequestHandler):
                         "ts": time.time(),
                     }
                 return True
-            self._log_info(f"Realtime command fallback to queue: {command['type']}{detail}")
+            self._log_info(f"实时命令回退到 HTTP 队列: type={command['type']}{detail}")
 
         return self._enqueue_http_command(device_id, command)
 
@@ -1960,21 +2240,36 @@ class Handler(BaseHTTPRequestHandler):
         if command.get("type") == "face" and isinstance(command.get("payload"), dict):
             detail = f" expression={command['payload'].get('expression', '')}"
         if stats.get("queued"):
-            self._log_info(f"Command queued: {command['type']}{detail} priority={command.get('priority')}")
+            self._log_info(f"命令已入队: type={command['type']}{detail} priority={command.get('priority')}")
         else:
-            self._log_info(f"Command dropped: {command['type']}{detail} priority={command.get('priority')}")
+            self._log_info(f"命令已丢弃: type={command['type']}{detail} priority={command.get('priority')}")
         self._log_debug(
-            f"Command queue detail: device={device_id} cmd_id={command['cmd_id']} "
+            f"命令队列详情: device={device_id} cmd_id={command['cmd_id']} "
             f"type={command['type']}{detail} stats={stats}"
         )
         return bool(stats.get("queued"))
 
     def _mark_device_seen(self, device_id: str) -> None:
         device_id = safe_device_id(device_id)
+        now = time.time()
+        first_seen = False
         with self.server.device_lock:
             if device_id not in self.server.device_order:
                 self.server.device_order.append(device_id)
-            self.server.last_seen[device_id] = time.time()
+                first_seen = True
+            self.server.last_seen[device_id] = now
+        if first_seen:
+            event = {
+                "type": "connected",
+                "source": "server",
+                "device_id": device_id,
+                "server_ts": now,
+                "message": "服务端首次看到设备",
+            }
+            try:
+                reset_device_log_file(self.server, device_id, event)
+            except OSError as exc:
+                self._log_error(f"设备日志文件重置失败: device={device_id} error={exc}")
 
     def _dialog_awake(self, device_id: str) -> bool:
         device_id = safe_device_id(device_id)
@@ -1996,16 +2291,16 @@ class Handler(BaseHTTPRequestHandler):
         device_id = safe_device_id(device_id)
         with self.server.device_lock:
             self.server.dialog_awake_until[device_id] = time.time() + DIALOG_AWAKE_SECONDS
-        self._log_info("Dialog awake")
-        self._log_debug(f"Dialog awake detail: device={device_id} ttl={DIALOG_AWAKE_SECONDS}s reason={reason!r}")
+        self._log_info("对话已唤醒")
+        self._log_debug(f"对话唤醒详情: device={device_id} ttl={DIALOG_AWAKE_SECONDS}s reason={reason!r}")
 
     def _sleep_dialog(self, device_id: str, reason: str = "") -> None:
         device_id = safe_device_id(device_id)
         with self.server.device_lock:
             self.server.dialog_awake_until[device_id] = 0
         self._send_device_state_command(device_id, "sleep", reason=reason)
-        self._log_info("Dialog sleep")
-        self._log_debug(f"Dialog sleep detail: device={device_id} reason={reason!r}")
+        self._log_info("对话已休眠")
+        self._log_debug(f"对话休眠详情: device={device_id} reason={reason!r}")
 
     def _openclaw_enabled(self) -> bool:
         return bool(self.server.openclaw_base_url and self.server.openclaw_token)
@@ -2027,8 +2322,8 @@ class Handler(BaseHTTPRequestHandler):
         if not http_device_online(self.server, device_id):
             manager = getattr(self.server, "realtime_manager", None)
             if manager and manager.has_device(device_id) and manager.set_device_state(device_id, state):
-                self._log_info(f"Realtime device state sent: {state}")
-                self._log_debug(f"Realtime device state detail: device={device_id} state={state} reason={reason!r}")
+                self._log_info(f"实时设备状态已发送: state={state}")
+                self._log_debug(f"实时设备状态详情: device={device_id} state={state} reason={reason!r}")
                 return []
 
         if self._enqueue_command(device_id, command):
@@ -2060,11 +2355,11 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self._call_openclaw(device_id, event_type, details)
             except Exception as exc:
-                self._log_error(f"OpenClaw event failed: {exc}")
-                self._log_debug(f"OpenClaw event failed detail: device={device_id} event={event_type} error={exc}")
+                self._log_error(f"OpenClaw 事件发送失败: {exc}")
+                self._log_debug(f"OpenClaw 事件失败详情: device={device_id} event={event_type} error={exc}")
 
         self.server.openclaw_executor.submit(run_event)
-        self._log_info(f"OpenClaw event submitted: {event_type}")
+        self._log_info(f"OpenClaw 事件已提交: event={event_type}")
         return {
             "openclaw_enabled": True,
             "openclaw_sent": True,
@@ -2107,9 +2402,9 @@ class Handler(BaseHTTPRequestHandler):
             detail = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"OpenClaw HTTP {exc.code}: {detail}") from exc
 
-        self._log_info(f"OpenClaw response: HTTP {status}")
+        self._log_info(f"OpenClaw 响应: HTTP {status}")
         self._log_debug(
-            "OpenClaw response detail: "
+            "OpenClaw 响应详情: "
             f"device={device_id} event={event_type} session_key={session_key} status={status} "
             f"body={truncate_log_text(response_text)!r}"
         )
@@ -2166,11 +2461,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             audio_parts = []
             for part in parts:
-                self._log_info(f"TTS debug synthesize: voice={options.voice} format={options.audio_format} text={part!r}")
+                self._log_info(f"TTS 调试合成: voice={options.voice} format={options.audio_format} text={part!r}")
                 audio_parts.append(self._aliyun_tts_pcm_with_retries(part, options))
             pcm = b"".join(audio_parts) + self._tts_tail_silence(options.sample_rate)
         except Exception as exc:
-            self._log_error(f"TTS debug failed: {exc}")
+            self._log_error(f"TTS 调试失败: {exc}")
             self._send_json({"type": "error", "message": str(exc)}, HTTPStatus.BAD_GATEWAY)
             return
 
@@ -2185,7 +2480,7 @@ class Handler(BaseHTTPRequestHandler):
 
         elapsed_ms = (time.perf_counter() - started) * 1000
         self._log_info(
-            f"TTS debug ok: voice={options.voice} format={options.audio_format} "
+            f"TTS 调试成功: voice={options.voice} format={options.audio_format} "
             f"sentences={len(parts)} bytes={len(audio)} elapsed_ms={elapsed_ms:.0f}"
         )
         self.send_response(HTTPStatus.OK)
@@ -2220,7 +2515,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             pcm_path, wav_path = ensure_event_audio_cache(self.server, name, logger=self._log_info)
         except Exception as exc:
-            self._log_error(f"Event audio TTS failed: {exc}")
+            self._log_error(f"事件音频 TTS 失败: {exc}")
             self._send_json({"type": "error", "message": str(exc)}, HTTPStatus.BAD_GATEWAY)
             return
 
@@ -2228,7 +2523,7 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             stat = os.stat(path)
-            self._log_info(f"Event audio served: name={name} format={audio_ext} bytes={stat.st_size}")
+            self._log_info(f"事件音频已发送: name={name} format={audio_ext} bytes={stat.st_size}")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "audio/wav" if audio_ext == "wav" else "application/octet-stream")
             self.send_header("Content-Length", str(stat.st_size))
@@ -2246,7 +2541,7 @@ class Handler(BaseHTTPRequestHandler):
                         break
                     self.wfile.write(chunk)
         except (BrokenPipeError, ConnectionResetError):
-            self._log_info(f"Event audio client disconnected: {name}")
+            self._log_info(f"事件音频客户端已断开: name={name}")
 
     def _handle_upload_image(self, body: bytes):
         if not body:
@@ -2356,12 +2651,12 @@ class Handler(BaseHTTPRequestHandler):
         else:
             tracking_command = {"status": "suppressed"}
         self._log_info(
-            "Image upload processed: "
+            "图片上传已处理: "
             f"{width}x{height}, faces={len(face_result.get('faces', []))}, "
             f"tracking={tracking_command.get('status', 'none')}"
         )
         self._log_debug(
-            f"Image upload detail: bytes={len(body)} type={content_type} format={image_format} "
+            f"图片上传详情: bytes={len(body)} type={content_type} format={image_format} "
             f"size={width}x{height} raw={raw_path} bmp={bmp_path} png={png_path} "
             f"face_visual={face_visual_path} tracking={compact_log_json(tracking_command)}"
         )
@@ -2514,7 +2809,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.BAD_REQUEST, "missing text")
             return
         if speech_text_is_temporarily_suppressed(text):
-            self._log_info("TTS suppressed by temporary fallback silence guard")
+            self._log_info("TTS 已被临时静默保护抑制")
             self.send_response(HTTPStatus.NO_CONTENT)
             self.send_header("Connection", "close")
             self.end_headers()
@@ -2531,17 +2826,17 @@ class Handler(BaseHTTPRequestHandler):
         prefetch_futures = []
         try:
             self._log_info(
-                f"TTS prepare live stream: voice={options.voice} sentences={len(parts)} text={text!r}"
+                f"TTS 准备实时流: voice={options.voice} sentences={len(parts)} text={text!r}"
             )
             first_response = self._open_aliyun_tts_stream_with_retries(parts[0], options)
         except Exception as exc:
-            self._log_error(f"TTS failed before response started: {exc}")
+            self._log_error(f"TTS 在响应开始前失败: {exc}")
             self._send_json({"type": "error", "message": str(exc)}, HTTPStatus.BAD_GATEWAY)
             return
 
         ready_ms = (time.perf_counter() - stream_started) * 1000
         self._log_info(
-            f"TTS live stream ready: voice={options.voice} sentences={len(parts)} "
+            f"TTS 实时流已就绪: voice={options.voice} sentences={len(parts)} "
             f"ready_ms={ready_ms:.0f}, text={text!r}"
         )
         self.send_response(HTTPStatus.OK)
@@ -2572,7 +2867,7 @@ class Handler(BaseHTTPRequestHandler):
             chunk_size = max(512, int(getattr(self.server, "chunk_size", 4096) or 4096))
             first_bytes = self._copy_pcm_stream_to_client(first_response, chunk_size)
             total_bytes += first_bytes
-            self._log_info(f"TTS streamed first sentence: bytes={first_bytes} text={parts[0]!r}")
+            self._log_info(f"TTS 已发送首句: bytes={first_bytes} text={parts[0]!r}")
 
             future_timeout = self.server.tts_request_timeout * (self.server.tts_retries + 1) + 5
             for part, future in prefetch_futures:
@@ -2583,7 +2878,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(audio)
                     self.wfile.flush()
                     total_bytes += len(audio)
-                self._log_info(f"TTS streamed prefetched sentence: bytes={len(audio)} wait_ms={wait_ms:.0f} text={part!r}")
+                self._log_info(f"TTS 已发送预取句子: bytes={len(audio)} wait_ms={wait_ms:.0f} text={part!r}")
 
             tail_silence = self._tts_tail_silence(options.sample_rate)
             if tail_silence:
@@ -2591,11 +2886,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.flush()
                 total_bytes += len(tail_silence)
             total_ms = (time.perf_counter() - stream_started) * 1000
-            self._log_info(f"TTS live stream done: bytes={total_bytes} first_bytes={first_bytes} total_ms={total_ms:.0f}")
+            self._log_info(f"TTS 实时流完成: bytes={total_bytes} first_bytes={first_bytes} total_ms={total_ms:.0f}")
         except (BrokenPipeError, ConnectionResetError):
-            self._log_info("TTS client disconnected")
+            self._log_info("TTS 客户端已断开")
         except Exception as exc:
-            self._log_error(f"TTS failed after stream started: {exc}")
+            self._log_error(f"TTS 在流开始后失败: {exc}")
         finally:
             try:
                 first_response.close()
@@ -2622,7 +2917,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._aliyun_tts_pcm(text, options)
             except Exception as exc:
                 last_error = exc
-                self._log_error(f"TTS attempt {attempt} failed for {text!r}: {exc}")
+                self._log_error(f"TTS 第 {attempt} 次尝试失败: text={text!r} error={exc}")
         raise RuntimeError(f"Aliyun TTS failed after {self.server.tts_retries + 1} attempt(s): {last_error}")
 
     def _tts_tail_silence(self, sample_rate: int | None = None) -> bytes:
@@ -2657,7 +2952,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._open_aliyun_tts_stream(text, options)
             except Exception as exc:
                 last_error = exc
-                self._log_error(f"TTS stream open attempt {attempt} failed for {text!r}: {exc}")
+                self._log_error(f"TTS 打开流第 {attempt} 次尝试失败: text={text!r} error={exc}")
         raise RuntimeError(f"Aliyun TTS stream failed after {self.server.tts_retries + 1} attempt(s): {last_error}")
 
     def _open_aliyun_tts_stream(self, text: str, options: TtsRequestOptions | None = None):
@@ -2671,7 +2966,7 @@ class Handler(BaseHTTPRequestHandler):
                 resp.close()
                 raise RuntimeError(detail)
             elapsed_ms = (time.perf_counter() - started) * 1000
-            self._log_info(f"Aliyun TTS stream open: chars={len(text)} elapsed_ms={elapsed_ms:.0f}")
+            self._log_info(f"阿里云 TTS 流已打开: chars={len(text)} elapsed_ms={elapsed_ms:.0f}")
             return resp
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
@@ -2687,7 +2982,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise RuntimeError(resp.read().decode("utf-8", errors="replace"))
                 audio = resp.read()
                 elapsed_ms = (time.perf_counter() - started) * 1000
-                self._log_info(f"Aliyun TTS ok: chars={len(text)} bytes={len(audio)} elapsed_ms={elapsed_ms:.0f}")
+                self._log_info(f"阿里云 TTS 成功: chars={len(text)} bytes={len(audio)} elapsed_ms={elapsed_ms:.0f}")
                 return audio
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
@@ -2714,29 +3009,29 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self._debug_enabled():
             self._log_debug(
-                "API result detail: "
+                "API 结果详情: "
                 f"method={self.command} path={self.path!r} status={int(status)} "
                 f"body={compact_log_json(body)}"
             )
             return
         if path in ("/device/ack",):
             ack = body.get("ack") if isinstance(body.get("ack"), dict) else {}
-            self._log_info(f"API ack: {ack.get('status', 'unknown')}")
+            self._log_info(f"API 确认: status={ack.get('status', 'unknown')}")
             return
         if path == "/command" or path.startswith("/command/"):
             command = body.get("command") if isinstance(body.get("command"), dict) else {}
-            self._log_info(f"API command response: {body.get('type', 'response')} {command.get('type', '')}".rstrip())
+            self._log_info(f"API 命令响应: {body.get('type', 'response')} {command.get('type', '')}".rstrip())
             return
-        self._log_info(f"API response: {path} -> {int(status)}")
+        self._log_info(f"API 响应: {path} -> {int(status)}")
 
     def log_message(self, fmt, *args):
         if self._debug_enabled():
-            self._log_debug(f"{self.client_address[0]} - {fmt % args}")
+            self._log_debug(f"HTTP 请求: client={self.client_address[0]} raw={fmt % args}")
             return
         parsed = urllib.parse.urlparse(getattr(self, "path", ""))
         code = args[1] if len(args) > 1 else ""
         suffix = f" -> {code}" if code else ""
-        self._log_info(f"HTTP {getattr(self, 'command', '')} {parsed.path}{suffix}")
+        self._log_info(f"HTTP 请求: method={getattr(self, 'command', '')} path={parsed.path}{suffix}")
 
 
 def required_env(name: str) -> str:
@@ -2759,6 +3054,153 @@ def compact_log_json(value) -> str:
     except (TypeError, ValueError):
         text = repr(value)
     return truncate_log_text(text)
+
+
+def device_log_file_path(device_log_dir: str, device_id: str) -> str:
+    safe_device = re.sub(r"[^A-Za-z0-9_.-]+", "_", safe_device_id(device_id))[:64] or "default"
+    return os.path.join(str(device_log_dir), f"{safe_device}.log")
+
+
+def _device_log_timestamp(value) -> str:
+    try:
+        ts = float(value)
+    except (TypeError, ValueError):
+        ts = time.time()
+    return _dt.datetime.fromtimestamp(ts).isoformat(timespec="milliseconds")
+
+
+DEVICE_LOG_TOKEN_LABELS = {
+    "log": "日志",
+    "connected": "连接",
+    "state": "状态",
+    "state_change": "状态变化",
+    "server": "服务端",
+    "esp-log": "设备日志",
+    "xiaopai-state": "小派状态",
+    "expression-state": "表情状态",
+    "realtime-listen": "实时收音",
+    "http-upload": "HTTP 上传",
+    "idle": "空闲",
+    "listening": "监听中",
+    "waiting": "等待中",
+    "speaking": "播放中",
+    "sleep": "休眠",
+    "sleeping": "休眠中",
+    "calm": "平静",
+    "calm_blink": "平静眨眼",
+    "sleep_dark": "休眠黑屏",
+    "shy": "害羞",
+    "thinking": "思考中",
+    "relaxed": "放松",
+}
+
+
+def device_log_token_label(value) -> str:
+    text = str(value or "").strip()
+    return DEVICE_LOG_TOKEN_LABELS.get(text, text)
+
+
+def _device_log_value(value) -> str:
+    return compact_log_json(str(value))
+
+
+def format_device_log_line(event: dict) -> str:
+    item = dict(event or {})
+    event_type = str(item.get("type") or item.get("event_type") or "log")
+    parts = [
+        f"[{_device_log_timestamp(item.get('server_ts'))}]",
+        f"类型={device_log_token_label(event_type)}",
+    ]
+    device_id = str(item.get("device_id") or "").strip()
+    if device_id:
+        parts.append(f"设备={safe_device_id(device_id)}")
+    source = str(item.get("source") or item.get("state_machine") or "").strip()
+    if source:
+        parts.append(f"来源={device_log_token_label(source)}")
+    if item.get("device_ms") not in (None, ""):
+        parts.append(f"设备毫秒={item.get('device_ms')}")
+
+    if event_type in ("state", "state_change"):
+        old = item.get("from") or item.get("old") or ""
+        new = item.get("to") or item.get("new") or item.get("state") or ""
+        if old or new:
+            parts.append(f"状态={device_log_token_label(old)}->{device_log_token_label(new)}")
+        if item.get("reason"):
+            parts.append(f"原因={_device_log_value(item.get('reason'))}")
+
+    message = item.get("line")
+    if message in (None, ""):
+        message = item.get("message")
+    if message in (None, ""):
+        message = item.get("text")
+    if message not in (None, ""):
+        parts.append(f"消息={_device_log_value(message)}")
+
+    known = {
+        "type",
+        "event_type",
+        "device_id",
+        "server_ts",
+        "source",
+        "state_machine",
+        "device_ms",
+        "line",
+        "message",
+        "text",
+        "from",
+        "old",
+        "to",
+        "new",
+        "state",
+        "reason",
+    }
+    extra = {key: item[key] for key in sorted(item) if key not in known and item[key] not in (None, "")}
+    if extra:
+        parts.append(f"额外={compact_log_json(extra)}")
+    return " ".join(parts)
+
+
+def append_device_log_file(server, device_id: str, event: dict) -> None:
+    device_log_dir = str(getattr(server, "device_log_dir", "") or "")
+    if not device_log_dir:
+        return
+    os.makedirs(device_log_dir, exist_ok=True)
+    path = device_log_file_path(device_log_dir, device_id)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(format_device_log_line(event).rstrip("\n") + "\n")
+
+
+def reset_device_log_file(server, device_id: str, event: dict) -> None:
+    device_log_dir = str(getattr(server, "device_log_dir", "") or "")
+    if not device_log_dir:
+        return
+    os.makedirs(device_log_dir, exist_ok=True)
+    path = device_log_file_path(device_log_dir, device_id)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(format_device_log_line(event).rstrip("\n") + "\n")
+
+
+def reset_device_logs_for_reconnect(server, device_id: str, *, reason: str = "实时 WebSocket 已连接") -> None:
+    device_id = safe_device_id(device_id)
+    if is_placeholder_device_id(device_id):
+        return
+    now = time.time()
+    event = {
+        "type": "connected",
+        "source": "server",
+        "device_id": device_id,
+        "server_ts": now,
+        "message": reason,
+    }
+    with server.device_lock:
+        if device_id not in server.device_order:
+            server.device_order.append(device_id)
+        server.last_seen[device_id] = now
+        server.device_logs[device_id] = [event]
+    try:
+        reset_device_log_file(server, device_id, event)
+    except OSError as exc:
+        log_print(f"设备日志重置失败: device={device_id} error={exc}")
 
 
 def build_openclaw_event_text(device_id: str, event_type: str, details: dict) -> str:
@@ -2895,7 +3337,7 @@ def aliyun_tts_pcm_for_server(server: AliyunVoiceServer, text: str) -> bytes:
                 raise RuntimeError(resp.read().decode("utf-8", errors="replace"))
             audio = resp.read()
             elapsed_ms = (time.perf_counter() - started) * 1000
-            log_print(f"Aliyun TTS ok: chars={len(text)} bytes={len(audio)} elapsed_ms={elapsed_ms:.0f}")
+            log_print(f"阿里云 TTS 成功: chars={len(text)} bytes={len(audio)} elapsed_ms={elapsed_ms:.0f}")
             return audio
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
@@ -2909,7 +3351,7 @@ def aliyun_tts_pcm_with_retries_for_server(server: AliyunVoiceServer, text: str)
             return aliyun_tts_pcm_for_server(server, text)
         except Exception as exc:
             last_error = exc
-            log_print(f"TTS attempt {attempt} failed for {text!r}: {exc}", file=sys.stderr)
+            log_print(f"TTS 第 {attempt} 次尝试失败: text={text!r} error={exc}", file=sys.stderr)
     raise RuntimeError(f"Aliyun TTS failed after {server.tts_retries + 1} attempt(s): {last_error}")
 
 
@@ -2996,7 +3438,7 @@ def prewarm_event_audio_cache(server: AliyunVoiceServer, names: tuple[str, ...] 
         try:
             ensure_event_audio_cache(server, name)
         except Exception as exc:
-            log_print(f"Event audio prewarm failed: {name}: {exc}", file=sys.stderr)
+            log_print(f"事件音频预热失败: name={name} error={exc}", file=sys.stderr)
 
 
 def safe_device_id(device_id: str) -> str:
@@ -3089,37 +3531,40 @@ def connected_device_ids(server) -> list[str]:
     return device_ids
 
 
-def enqueue_server_command(server, device_id: str, command: dict) -> bool:
+def enqueue_server_command(server, device_id: str, command: dict, *, realtime_fallback: bool = True) -> bool:
     device_id = safe_device_id(device_id)
     if is_placeholder_device_id(device_id):
         return False
 
+    command_type = str(command.get("type") or "")
+    payload = command.get("payload")
+    normalize_command_speech_payload(command_type, payload)
     with server.device_lock:
         queue = server.device_queues.get(device_id)
         if queue is None:
             queue = DeviceCommandQueue(server.command_queue_max_size)
             server.device_queues[device_id] = queue
-    if not http_device_online(server, device_id):
+    if realtime_fallback and not http_device_online(server, device_id):
         manager = getattr(server, "realtime_manager", None)
         if manager and manager.has_device(device_id) and manager.enqueue_command(device_id, command):
-            log_print(f"Periodic command sent realtime: {command.get('type')} device={device_id}")
+            log_print(f"周期命令已通过实时通道发送: type={command.get('type')} device={device_id}")
             return True
 
     stats = queue.put(command)
     if stats.get("queued"):
-        log_print(f"Periodic command queued: {command.get('type')} device={device_id}")
+        log_print(f"周期命令已入队: type={command.get('type')} device={device_id}")
         return True
-    log_print(f"Periodic command dropped: {command.get('type')} device={device_id} stats={stats}")
+    log_print(f"周期命令已丢弃: type={command.get('type')} device={device_id} stats={stats}")
     return False
 
 
 def run_periodic_ota_check_loop(server) -> None:
     interval = int(getattr(server, "ota_check_interval_seconds", DEFAULT_OTA_CHECK_INTERVAL_SECONDS) or 0)
     if interval <= 0:
-        log_print("Periodic OTA check commands disabled")
+        log_print("周期 OTA 检查命令已禁用")
         return
 
-    log_print(f"Periodic OTA check commands enabled: every {interval}s")
+    log_print(f"周期 OTA 检查命令已启用: 间隔={interval}s")
     while True:
         time.sleep(interval)
         firmware = find_latest_ota_firmware(server.ota_firmware_file, server.ota_firmware_dir)
@@ -3415,6 +3860,9 @@ def detect_and_visualize_faces(image_path: str, output_path: str) -> tuple[str, 
 
 def main():
     load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
+    save_recording_default = parse_bool(
+        os.environ.get("STACKCHAN_SAVE_RECORDING", os.environ.get("STACKCHAN_SAVE_AUDIO_UPLOADS", "true"))
+    )
 
     parser = argparse.ArgumentParser(description="Local Xiaopai bridge for Aliyun ASR and PCM streaming TTS.")
     parser.add_argument("--debug", action="store_true", default=parse_bool(os.environ.get("STACKCHAN_DEBUG", "false")))
@@ -3442,10 +3890,51 @@ def main():
         help="Image upload persistence: none, raw, or debug (raw + converted images + face visualizations).",
     )
     parser.add_argument(
-        "--save-audio-uploads",
+        "--save-recording",
+        dest="save_recording",
         action=argparse.BooleanOptionalAction,
-        default=parse_bool(os.environ.get("STACKCHAN_SAVE_AUDIO_UPLOADS", "true")),
-        help="Save uploaded ASR audio under <capture-dir>/audio for debugging.",
+        default=save_recording_default,
+        help="Save Xiaopai listened audio under <capture-dir>/audio for debugging.",
+    )
+    parser.add_argument(
+        "--save-audio-uploads",
+        dest="save_recording",
+        action=argparse.BooleanOptionalAction,
+        default=argparse.SUPPRESS,
+        help="Alias for --save-recording.",
+    )
+    parser.add_argument(
+        "--wifi-logs",
+        action=argparse.BooleanOptionalAction,
+        default=parse_bool(os.environ.get("STACKCHAN_WIFI_LOGS", "true")),
+        help="Accept Wi-Fi log uploads from Xiaopai firmware.",
+    )
+    parser.add_argument(
+        "--usb-serial",
+        action=argparse.BooleanOptionalAction,
+        default=parse_bool(os.environ.get("STACKCHAN_USB_SERIAL", "true")),
+        help="Tell firmware whether to keep local USB/serial console output enabled.",
+    )
+    parser.add_argument(
+        "--state-events",
+        action=argparse.BooleanOptionalAction,
+        default=parse_bool(os.environ.get("STACKCHAN_STATE_EVENTS", "true")),
+        help="Tell firmware whether to upload xiaopai-state/expression-state events.",
+    )
+    parser.add_argument(
+        "--device-config-poll-ms",
+        type=int,
+        default=int(os.environ.get("STACKCHAN_DEVICE_CONFIG_POLL_MS", "5000")),
+    )
+    parser.add_argument(
+        "--device-log-post-interval-ms",
+        type=int,
+        default=int(os.environ.get("STACKCHAN_DEVICE_LOG_POST_INTERVAL_MS", "1000")),
+    )
+    parser.add_argument(
+        "--device-log-dir",
+        default=os.environ.get("STACKCHAN_DEVICE_LOG_DIR", ""),
+        help="Directory for readable per-device log files. Defaults to <capture-dir>/device-logs.",
     )
     parser.add_argument("--static-dir", default=os.environ.get("STACKCHAN_STATIC_DIR", "static"))
     parser.add_argument(
@@ -3534,13 +4023,13 @@ def main():
         "--find-owner-gain-x",
         type=float,
         default=1.0,
-        help="Horizontal multiplier for wake-up owner finding.",
+        help="Horizontal multiplier for explicit find_owner commands.",
     )
     parser.add_argument(
         "--find-owner-gain-y",
         type=float,
         default=0.8,
-        help="Vertical multiplier for wake-up owner finding.",
+        help="Vertical multiplier for explicit find_owner commands.",
     )
     parser.add_argument(
         "--find-owner-stop-pixels",
@@ -3643,10 +4132,11 @@ def main():
     httpd.tts_tail_silence_ms = args.tts_tail_silence_ms
     httpd.command_queue_max_size = args.command_queue_max_size
     httpd.capture_save_mode = args.capture_save_mode
-    httpd.save_audio_uploads = args.save_audio_uploads
+    httpd.save_audio_uploads = args.save_recording
     httpd.debug_log = args.debug
     httpd.capture_dir = args.capture_dir
     httpd.audio_capture_dir = os.path.join(args.capture_dir, "audio")
+    httpd.device_log_dir = args.device_log_dir or os.path.join(args.capture_dir, "device-logs")
     httpd.static_dir = args.static_dir
     httpd.face_detector_backend = args.face_detector
     httpd.face_detector = None
@@ -3696,6 +4186,28 @@ def main():
     httpd.last_seen = {}
     httpd.device_order = []
     httpd.dialog_awake_until = {}
+    httpd.debug_config_lock = threading.Lock()
+    httpd.wifi_log_enabled = args.wifi_logs
+    httpd.usb_serial_enabled = args.usb_serial
+    httpd.state_events_enabled = args.state_events
+    httpd.device_config_poll_ms = max(1000, args.device_config_poll_ms)
+    httpd.device_log_post_interval_ms = max(250, args.device_log_post_interval_ms)
+    httpd.device_logs = {}
+    httpd.recording_cache = []
+
+    def record_realtime_capture(metadata: dict) -> None:
+        item = dict(metadata or {})
+        item.setdefault("ts", time.time())
+        with httpd.device_lock:
+            httpd.recording_cache.append(item)
+            if len(httpd.recording_cache) > DEVICE_RECORDING_MAX_ITEMS:
+                del httpd.recording_cache[: len(httpd.recording_cache) - DEVICE_RECORDING_MAX_ITEMS]
+
+    def enqueue_realtime_http_command(device_id: str, command: dict) -> bool:
+        return enqueue_server_command(httpd, device_id, command, realtime_fallback=False)
+
+    def record_realtime_device_connected(device_id: str) -> None:
+        reset_device_logs_for_reconnect(httpd, device_id)
 
     prewarm_event_audio_cache(httpd, PREWARM_EVENT_AUDIO_NAMES)
 
@@ -3723,11 +4235,11 @@ def main():
             openclaw_timeout=args.openclaw_timeout,
             openclaw_session_prefix=args.openclaw_session_prefix,
             openclaw_max_completion_tokens=args.openclaw_max_completion_tokens,
-            find_owner_gain_x=args.find_owner_gain_x,
-            find_owner_gain_y=args.find_owner_gain_y,
-            find_owner_stop_pixels=args.find_owner_stop_pixels,
             audio_capture_dir=httpd.audio_capture_dir,
             save_audio_uploads=httpd.save_audio_uploads,
+            recording_callback=record_realtime_capture,
+            command_callback=enqueue_realtime_http_command,
+            device_connected_callback=record_realtime_device_connected,
             debug=args.debug,
         )
         httpd.realtime_manager = RealtimeManager(realtime_config, logger=log_print)
@@ -3735,70 +4247,77 @@ def main():
             httpd.realtime_manager.start()
         except Exception as exc:
             httpd.realtime_manager = None
-            log_print(f"Realtime server failed to start: {exc}", file=sys.stderr)
+            log_print(f"实时语音服务启动失败: {exc}", file=sys.stderr)
 
     threading.Thread(target=run_periodic_ota_check_loop, args=(httpd,), name="ota-check", daemon=True).start()
 
-    log_print("Xiaopai server ready")
-    log_print(f"  face detector: {args.face_detector}")
-    log_print(f"  capture save mode: {args.capture_save_mode}")
+    log_print("小派服务已就绪")
+    log_print(f"  人脸检测: {args.face_detector}")
+    log_print(f"  截图保存模式: {args.capture_save_mode}")
     log_print(
-        "  audio capture: "
-        + (httpd.audio_capture_dir if httpd.save_audio_uploads else "disabled")
+        "  音频保存: "
+        + (httpd.audio_capture_dir if httpd.save_audio_uploads else "禁用")
     )
-    log_print(f"  visual tracking: {'enabled' if args.visual_tracking_enabled else 'disabled'}")
-    log_print(f"  command queue: max_size={args.command_queue_max_size}")
-    log_print(f"  OpenClaw: {'enabled' if httpd.openclaw_base_url and httpd.openclaw_token else 'disabled'}")
+    log_print(
+        "  设备调试: "
+        f"wifi_logs={'启用' if httpd.wifi_log_enabled else '禁用'} "
+        f"usb_serial={'启用' if httpd.usb_serial_enabled else '禁用'} "
+        f"state_events={'启用' if httpd.state_events_enabled else '禁用'}"
+    )
+    log_print(f"  设备日志文件: {httpd.device_log_dir}")
+    log_print(f"  视觉跟踪: {'启用' if args.visual_tracking_enabled else '禁用'}")
+    log_print(f"  命令队列: max_size={args.command_queue_max_size}")
+    log_print(f"  OpenClaw: {'启用' if httpd.openclaw_base_url and httpd.openclaw_token else '禁用'}")
     ota_firmware = find_latest_ota_firmware(httpd.ota_firmware_file, httpd.ota_firmware_dir)
     log_print(
-        "  OTA firmware: "
+        "  OTA 固件: "
         + (
             f"{ota_firmware.version} {ota_firmware.path}"
             if ota_firmware is not None
-            else "disabled (no valid app .bin found)"
+            else "禁用（未找到有效 app .bin）"
         )
     )
     log_print(
-        "  OTA check commands: "
-        + (f"every {args.ota_check_interval_seconds}s" if args.ota_check_interval_seconds > 0 else "disabled")
+        "  OTA 检查命令: "
+        + (f"每 {args.ota_check_interval_seconds}s" if args.ota_check_interval_seconds > 0 else "禁用")
     )
     log_print(
-        "  Realtime: "
+        "  实时语音: "
         + (
-            f"enabled ws://{args.host}:{httpd.xiaozhi_ws_port}{args.xiaozhi_ws_path}"
+            f"启用 ws://{args.host}:{httpd.xiaozhi_ws_port}{args.xiaozhi_ws_path}"
             if httpd.realtime_manager and httpd.realtime_manager.enabled
-            else "disabled"
+            else "禁用"
         )
     )
     if args.debug:
-        log_print("  debug: enabled")
-        log_print(f"  health: http://127.0.0.1:{args.port}/health")
+        log_print("  调试: 启用")
+        log_print(f"  健康检查: http://127.0.0.1:{args.port}/health")
         log_print(f"  ASR:    http://{args.host}:{args.port}/upload")
         log_print(f"  TTS:    http://{args.host}:{args.port}/stream-speak?text=...")
-        log_print(f"  Events: http://{args.host}:{args.port}/head-touch-events -> {args.static_dir}/event-audio")
-        log_print(f"  Image:  http://{args.host}:{args.port}/upload-image -> {args.capture_dir}")
+        log_print(f"  事件音频: http://{args.host}:{args.port}/head-touch-events -> {args.static_dir}/event-audio")
+        log_print(f"  图片上传: http://{args.host}:{args.port}/upload-image -> {args.capture_dir}")
         log_print(f"  OTA:    http://{args.host}:{args.port}/xiaozhi/ota")
-        log_print(f"  Face detector detail: {args.face_detector}{' ' + args.yunet_model if args.face_detector == 'yunet' else ''}")
+        log_print(f"  人脸检测详情: {args.face_detector}{' ' + args.yunet_model if args.face_detector == 'yunet' else ''}")
         log_print(
-            f"  Visual tracking detail: deadzone={args.visual_tracking_deadzone_px}px "
+            f"  视觉跟踪详情: deadzone={args.visual_tracking_deadzone_px}px "
             f"gain_x={args.visual_tracking_gain_x} gain_y={args.visual_tracking_gain_y} "
             f"max_step={args.visual_tracking_max_degree}deg "
             f"invert_x={args.visual_tracking_invert_x} invert_y={args.visual_tracking_invert_y}"
         )
         log_print(
-            f"  Find-owner detail: gain_x={args.find_owner_gain_x} gain_y={args.find_owner_gain_y} "
+            f"  找人详情: gain_x={args.find_owner_gain_x} gain_y={args.find_owner_gain_y} "
             f"stop={args.find_owner_stop_pixels}px"
         )
-        log_print(f"  OpenClaw detail: {httpd.openclaw_base_url or ''}")
-        log_print(f"  OpenClaw workers: {args.openclaw_workers}")
+        log_print(f"  OpenClaw 详情: {httpd.openclaw_base_url or ''}")
+        log_print(f"  OpenClaw 工作线程: {args.openclaw_workers}")
         if httpd.realtime_manager and httpd.realtime_manager.enabled:
-            log_print(f"  Xiaozhi OTA: http://{args.host}:{args.port}/xiaozhi/ota")
-            log_print(f"  Xiaozhi WS:  ws://{args.host}:{httpd.xiaozhi_ws_port}{args.xiaozhi_ws_path}")
-        log_print(f"  TTS tail silence: {args.tts_tail_silence_ms}ms")
-        log_print(f"  Command push via HTTP long poll:")
-        log_print(f"          device: GET http://{args.host}:{args.port}/device/next-command?device_id=...")
-        log_print(f"          send:   GET http://{args.host}:{args.port}/command/speak?device_id=...&text=...")
-        log_print(f"  voice:  {args.voice}, pcm_s16le {args.sample_rate}Hz mono")
+            log_print(f"  小智 OTA: http://{args.host}:{args.port}/xiaozhi/ota")
+            log_print(f"  小智 WS:  ws://{args.host}:{httpd.xiaozhi_ws_port}{args.xiaozhi_ws_path}")
+        log_print(f"  TTS 尾部静音: {args.tts_tail_silence_ms}ms")
+        log_print("  通过 HTTP 长轮询推送命令:")
+        log_print(f"          设备拉取: GET http://{args.host}:{args.port}/device/next-command?device_id=...")
+        log_print(f"          发送命令: GET http://{args.host}:{args.port}/command/speak?device_id=...&text=...")
+        log_print(f"  语音:  {args.voice}, pcm_s16le {args.sample_rate}Hz mono")
     try:
         httpd.serve_forever()
     finally:

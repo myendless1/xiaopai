@@ -38,6 +38,8 @@ from server import (
     command_payload_from_query,
     event_audio_cache_meta,
     has_dialog_sleep_word,
+    has_dialog_wake_word,
+    is_wake_only_text,
     sleep_reply_event_for_text,
     tts_request_options_from_params,
 )
@@ -247,7 +249,17 @@ class RealtimeMappingTest(unittest.TestCase):
     def test_realtime_wake_only_text(self):
         self.assertTrue(has_realtime_wake_word("你好，小派。"))
         self.assertTrue(is_realtime_wake_only_text("你好，小派。"))
+        self.assertTrue(has_realtime_wake_word("小蔡同学。"))
+        self.assertTrue(is_realtime_wake_only_text("小蔡同学。"))
+        self.assertTrue(has_realtime_wake_word("小的同学。"))
+        self.assertTrue(is_realtime_wake_only_text("小的同学。"))
         self.assertFalse(is_realtime_wake_only_text("小派，今天深圳天气怎么样"))
+
+    def test_http_wake_only_text_accepts_asr_aliases(self):
+        self.assertTrue(has_dialog_wake_word("小蔡同学。"))
+        self.assertTrue(is_wake_only_text("小蔡同学。"))
+        self.assertTrue(has_dialog_wake_word("小的同学。"))
+        self.assertTrue(is_wake_only_text("小的同学。"))
 
     def test_realtime_hello_updates_registered_device_id(self):
         manager = RealtimeManager(RealtimeConfig(), logger=lambda _msg: None)
@@ -300,6 +312,138 @@ class RealtimeMappingTest(unittest.TestCase):
         self.assertTrue(registered[0].dialog_awake)
         self.assertTrue(any('"type":"device_state"' in payload and '"state":"listening"' in payload for payload in websocket.sent))
         self.assertFalse(any('"type":"device_state"' in payload and '"state":"idle"' in payload for payload in websocket.sent))
+
+    def test_realtime_binary_without_listen_start_is_ignored(self):
+        manager = RealtimeManager(RealtimeConfig(), logger=lambda _msg: None)
+        started = []
+
+        class FakeWebSocket:
+            request_headers = {}
+
+            def __init__(self):
+                self.sent = []
+                self.frames = [b"orphan-opus"]
+
+            async def send(self, payload):
+                self.sent.append(payload)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not self.frames:
+                    raise StopAsyncIteration
+                return self.frames.pop(0)
+
+            async def close(self, code=None, reason=None):
+                pass
+
+        manager._start_asr = lambda session: started.append(session.device_id)
+
+        websocket = FakeWebSocket()
+        asyncio.run(manager._dispatch(websocket, "/xiaozhi/ws"))
+
+        self.assertEqual(started, [])
+
+    def test_realtime_listen_start_lazily_starts_asr_on_first_audio(self):
+        manager = RealtimeManager(RealtimeConfig(), logger=lambda _msg: None)
+        started = []
+        pushed = []
+
+        class FakeBridge:
+            active = True
+
+            def push_opus(self, payload):
+                pushed.append(payload)
+
+            def stop(self, *, graceful=True):
+                pass
+
+        class FakeWebSocket:
+            request_headers = {}
+
+            def __init__(self):
+                self.sent = []
+                self.frames = ['{"type":"listen","state":"start"}', b"opus"]
+
+            async def send(self, payload):
+                self.sent.append(payload)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not self.frames:
+                    raise StopAsyncIteration
+                return self.frames.pop(0)
+
+            async def close(self, code=None, reason=None):
+                pass
+
+        def fake_start_asr(session):
+            started.append(session.device_id)
+            session.asr_bridge = FakeBridge()
+
+        manager._start_asr = fake_start_asr
+
+        websocket = FakeWebSocket()
+        asyncio.run(manager._dispatch(websocket, "/xiaozhi/ws"))
+
+        self.assertEqual(started, ["default"])
+        self.assertEqual(pushed, [b"opus"])
+
+    def test_realtime_reconnect_retires_existing_session(self):
+        manager = RealtimeManager(RealtimeConfig(), logger=lambda _msg: None)
+
+        class FakeBridge:
+            def __init__(self):
+                self.stopped = []
+
+            def stop(self, *, graceful=True):
+                self.stopped.append(graceful)
+
+        class FakeWebSocket:
+            def __init__(self):
+                self.closed = []
+
+            async def close(self, code=None, reason=None):
+                self.closed.append((code, reason))
+
+        async def run_case():
+            old_ws = FakeWebSocket()
+            bridge = FakeBridge()
+            old_session = RealtimeDeviceSession(device_id="dev1", websocket=old_ws, session_id="old")
+            old_session.asr_bridge = bridge
+            manager._register_session(old_session)
+
+            new_session = RealtimeDeviceSession(device_id="dev1", websocket=FakeWebSocket(), session_id="new")
+            manager._register_session(new_session)
+            await asyncio.sleep(0)
+            return bridge.stopped, old_ws.closed, manager._sessions.get("dev1")
+
+        stopped, closed, current = asyncio.run(run_case())
+
+        self.assertEqual(stopped, [False])
+        self.assertTrue(closed)
+        self.assertIsNotNone(current)
+        self.assertEqual(current.session_id, "new")
+
+    def test_realtime_asr_bridge_finished_clears_current_session(self):
+        manager = RealtimeManager(RealtimeConfig(), logger=lambda _msg: None)
+
+        async def run_case():
+            bridge = types.SimpleNamespace()
+            session = RealtimeDeviceSession(device_id="dev1", websocket=types.SimpleNamespace(), session_id="sess1")
+            session.asr_bridge = bridge
+            session.listen_active = True
+            manager._register_session(session)
+
+            await manager._handle_asr_bridge_finished("dev1", "sess1", bridge)
+            return session.asr_bridge, session.listen_active
+
+        bridge, listen_active = asyncio.run(run_case())
+        self.assertIsNone(bridge)
+        self.assertFalse(listen_active)
 
     def test_realtime_sleep_text(self):
         self.assertTrue(has_realtime_sleep_word("小派，先休息吧"))
@@ -378,7 +522,7 @@ class RealtimeMappingTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "speech_rate"):
             tts_request_options_from_params(FakeServer, {"speech_rate": "999"})
 
-    def test_openclaw_realtime_reply_is_not_spoken_twice(self):
+    def test_openclaw_realtime_reply_is_queued_for_http_speech(self):
         class FakeOpenClaw:
             enabled = True
 
@@ -393,26 +537,49 @@ class RealtimeMappingTest(unittest.TestCase):
                 self.sent.append(payload)
 
         async def run_case():
-            manager = RealtimeManager(RealtimeConfig(openclaw_base_url="http://openclaw", openclaw_token="token"), logger=lambda _msg: None)
+            queued = []
+
+            def command_callback(device_id, command):
+                queued.append((device_id, command))
+                return True
+
+            manager = RealtimeManager(
+                RealtimeConfig(
+                    openclaw_base_url="http://openclaw",
+                    openclaw_token="token",
+                    command_callback=command_callback,
+                ),
+                logger=lambda _msg: None,
+            )
             manager._openclaw = FakeOpenClaw()
-            spoken = []
-
-            async def fake_speak(_session, text):
-                spoken.append(text)
-
-            manager._speak = fake_speak
             websocket = FakeWebSocket()
             session = RealtimeDeviceSession(device_id="dev1", websocket=websocket, session_id="sess1")
             session.dialog_awake = True
             await manager._handle_final_text(session, "今天有什么安排")
-            return spoken, websocket.sent
+            return queued, websocket.sent
 
-        spoken, sent = asyncio.run(run_case())
-        self.assertEqual(spoken, [])
+        queued, sent = asyncio.run(run_case())
+        self.assertEqual(len(queued), 1)
+        self.assertEqual(queued[0][0], "dev1")
+        self.assertEqual(queued[0][1]["type"], "speak")
+        self.assertEqual(queued[0][1]["payload"]["text"], "你好，有什么我能帮到你的？")
         self.assertTrue(any('"type":"device_state"' in payload and '"state":"waiting"' in payload for payload in sent))
         self.assertTrue(any('"type":"llm"' in payload for payload in sent))
 
-    def test_realtime_wake_from_sleep_sends_find_owner_directly(self):
+    def test_realtime_device_connected_callback_runs_on_register_and_id_update(self):
+        connected = []
+        manager = RealtimeManager(
+            RealtimeConfig(device_connected_callback=lambda device_id: connected.append(device_id)),
+            logger=lambda _msg: None,
+        )
+
+        session = RealtimeDeviceSession(device_id="default", websocket=types.SimpleNamespace(), session_id="sess1")
+        manager._register_session(session)
+        manager._update_session_device_id(session, "dev-1")
+
+        self.assertEqual(connected, ["default", "dev-1"])
+
+    def test_realtime_wake_from_sleep_does_not_send_find_owner(self):
         class FakeOpenClaw:
             enabled = True
 
@@ -428,9 +595,6 @@ class RealtimeMappingTest(unittest.TestCase):
                 RealtimeConfig(
                     openclaw_base_url="http://openclaw",
                     openclaw_token="token",
-                    find_owner_gain_x=1.3,
-                    find_owner_gain_y=0.7,
-                    find_owner_stop_pixels=28,
                 ),
                 logger=lambda _msg: None,
             )
@@ -457,21 +621,8 @@ class RealtimeMappingTest(unittest.TestCase):
         awake, spoken, commands, repeated_wake_commands = asyncio.run(run_case())
         self.assertTrue(awake)
         self.assertEqual(len(spoken), 2)
-        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands, [])
         self.assertEqual(repeated_wake_commands, [])
-        self.assertEqual(commands[0]["type"], "find_owner")
-        self.assertEqual(
-            commands[0]["payload"],
-            {
-                "rounds": 1,
-                "reply": "",
-                "preserve_speech": True,
-                "wait_for_speech": False,
-                "gain_x": 1.3,
-                "gain_y": 0.7,
-                "stop_pixels": 28,
-            },
-        )
 
     def test_realtime_sleep_sends_cached_reply_before_sleep(self):
         class FakeOpenClaw:

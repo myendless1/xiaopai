@@ -14,7 +14,6 @@ struct LocalVoiceStateHooks {
     void (*set_listening)();
     void (*set_waiting)();
     void (*set_speaking)();
-    void (*on_idle_to_listening)(const char* reason);
 };
 
 void local_voice_state_init(const LocalVoiceStateHooks& hooks);

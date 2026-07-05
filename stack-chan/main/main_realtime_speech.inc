@@ -394,6 +394,23 @@ static bool send_opus_frame(esp_transport_handle_t ws, void* encoder, const int1
     return true;
 }
 
+static AudioInputStatus current_audio_input_status()
+{
+    return audio_service_get_input_status();
+}
+
+static void format_listening_level_line(char* out, size_t out_size, int32_t level)
+{
+    if (out == nullptr || out_size == 0) {
+        return;
+    }
+    AudioInputStatus input = current_audio_input_status();
+    snprintf(out, out_size, "level=%ld threshold=%d source=%s source_label=%s",
+             static_cast<long>(level), kVoiceStartThreshold,
+             audio_input_source_name(input.active_source),
+             audio_input_source_label(input.active_source));
+}
+
 class VoiceRecordingGuard {
 public:
     VoiceRecordingGuard()
@@ -432,8 +449,12 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
         return false;
     }
 
+    AudioInputStatus input = current_audio_input_status();
+    ESP_LOGI(TAG, "开始语音识别: source=%s source_label=%s",
+             audio_input_source_name(input.active_source),
+             audio_input_source_label(input.active_source));
     VoiceRecordingGuard recording_guard;
-    set_app1_status("Recording", "Voice threshold hit", "Sending Opus to Xiaozhi", "");
+    set_app1_status("Recording", audio_input_source_label(input.active_source), "Sending Opus to Xiaozhi", "");
     update_listening_light_level(first_samples, first_count);
     std::vector<int16_t> frame(encoder_frame_samples);
     int frame_pos = 0;
@@ -442,11 +463,11 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     int32_t stop_smooth_level = average_abs_level(first_samples, first_count);
     bool got_hello = true;
     std::string stt_text;
-    uint32_t state_generation = local_voice_generation();
+    uint32_t state_generation = xiaopai_state_get().generation;
 
     auto append_and_send = [&](const int16_t* samples, int count) -> bool {
         int offset = 0;
-        while (offset < count && local_voice_generation() == state_generation && !local_voice_is_speaking()) {
+        while (offset < count && xiaopai_state_get().generation == state_generation && !xiaopai_state_get().is_speaking) {
             int n = std::min(count - offset, encoder_frame_samples - frame_pos);
             memcpy(frame.data() + frame_pos, samples + offset, n * sizeof(int16_t));
             frame_pos += n;
@@ -470,8 +491,8 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     }
 
     std::vector<int16_t> chunk(kVoiceProbeSamples);
-    while (!app1_stop_requested && !voice_listener_paused && local_voice_generation() == state_generation &&
-           !local_voice_is_speaking() && elapsed_ms < kRecordMaxMs) {
+    while (!app1_stop_requested && !voice_listener_paused && xiaopai_state_get().generation == state_generation &&
+           !xiaopai_state_get().is_speaking && elapsed_ms < kRecordMaxMs) {
         if (!mic_record_blocking(chunk.data(), chunk.size(), kAudioSampleRate)) {
             ESP_LOGW(TAG, "Mic record returned false while recording");
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -493,7 +514,7 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
         }
     }
 
-    bool interrupted = voice_listener_paused || local_voice_generation() != state_generation || local_voice_is_speaking();
+    bool interrupted = voice_listener_paused || xiaopai_state_get().generation != state_generation || xiaopai_state_get().is_speaking;
 
     if (!interrupted && frame_pos > 0) {
         memset(frame.data() + frame_pos, 0, (encoder_frame_samples - frame_pos) * sizeof(int16_t));
@@ -511,8 +532,8 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
 
     if (interrupted) {
         ESP_LOGI(TAG, "Recognition interrupted by local state: paused=%d state=%s gen=%u->%u",
-                 voice_listener_paused, local_voice_state_name(local_voice_current_state()),
-                 static_cast<unsigned>(state_generation), static_cast<unsigned>(local_voice_generation()));
+                 voice_listener_paused, xiaopai_state_name(xiaopai_state_get().state),
+                 static_cast<unsigned>(state_generation), static_cast<unsigned>(xiaopai_state_get().generation));
         set_app1_status("Interrupted", "Local speech or command", "Listening resumes soon", "", true, false);
         return true;
     }
@@ -908,7 +929,7 @@ static void run_xiaozhi_speech_loop()
     auto reconnect_ws = [&](const char* reason) -> bool {
         ESP_LOGW(TAG, "Realtime WebSocket reconnect requested: %s", reason != nullptr ? reason : "");
         close_ws();
-        local_voice_request_state(LocalVoiceState::Waiting, reason != nullptr ? reason : "websocket reconnect");
+        xiaopai_state_set(LocalVoiceState::Waiting, reason != nullptr ? reason : "websocket reconnect");
         set_app1_status("WS Reconnect", "Waiting for server", "Voice resumes automatically", "", true, false);
 
         int retry_delay_ms = 1000;
@@ -926,7 +947,7 @@ static void run_xiaozhi_speech_loop()
             }
             ws = open_xiaozhi_websocket(parent);
             if (ws != nullptr) {
-                local_voice_request_state(LocalVoiceState::Listening, "websocket connected");
+                xiaopai_state_set(LocalVoiceState::Listening, "websocket connected");
                 set_app1_status("Listening", "WebSocket connected", "Ready for voice", "", true, false);
                 set_light_strip_listening();
                 return true;
@@ -942,11 +963,11 @@ static void run_xiaozhi_speech_loop()
     if (!reconnect_ws("speech loop start")) {
         close_ws();
         esp_opus_enc_close(encoder);
-        local_voice_request_state(LocalVoiceState::Idle, "websocket open failed");
+        xiaopai_state_set(LocalVoiceState::Idle, "websocket open failed");
         return;
     }
 
-    local_voice_request_state(LocalVoiceState::Listening, "speech loop start");
+    xiaopai_state_set(LocalVoiceState::Listening, "speech loop start");
     set_app1_status("Listening", "Ready for voice", "Speak to recognize", "", true, false);
     set_light_strip_listening();
     std::vector<int16_t> probe(kVoiceProbeSamples);
@@ -954,15 +975,13 @@ static void run_xiaozhi_speech_loop()
     bool got_hello = true;
     std::string stt_text;
     while (!app1_stop_requested) {
-        handle_pending_wake_find_owner();
-
         if (!receive_ws_once(ws, 0, got_hello, stt_text) &&
             !reconnect_ws("websocket read failed before mic poll")) {
             break;
         }
 
-        if (voice_listener_paused || !local_voice_can_sample_mic()) {
-            LocalVoiceState paused_state = local_voice_current_state();
+        if (voice_listener_paused || !xiaopai_state_get().can_sample_mic) {
+            LocalVoiceState paused_state = xiaopai_state_get().state;
             if (paused_state == LocalVoiceState::Speaking) {
                 set_app1_status("Speaking", "Local speech output", "ASR is gated", "", true, false);
             } else if (paused_state == LocalVoiceState::Waiting) {
@@ -970,7 +989,7 @@ static void run_xiaozhi_speech_loop()
             } else {
                 set_app1_status("Paused", "Shared peripheral", "Listening resumes soon", "", true, false);
             }
-            while ((voice_listener_paused || !local_voice_can_sample_mic()) && !app1_stop_requested) {
+            while ((voice_listener_paused || !xiaopai_state_get().can_sample_mic) && !app1_stop_requested) {
                 if (!receive_ws_once(ws, 50, got_hello, stt_text) &&
                     !reconnect_ws("websocket read failed while paused")) {
                     break;
@@ -980,13 +999,13 @@ static void run_xiaozhi_speech_loop()
             if (app1_stop_requested) {
                 break;
             }
-            if (!local_voice_can_sample_mic()) {
+            if (!xiaopai_state_get().can_sample_mic) {
                 continue;
             }
             last_status_ms = 0;
             stt_text.clear();
-            local_voice_apply_outputs(local_voice_current_state());
-            if (local_voice_current_state() == LocalVoiceState::Idle) {
+            xiaopai_state_apply_outputs(xiaopai_state_get().state);
+            if (xiaopai_state_get().state == LocalVoiceState::Idle) {
                 set_app1_status("Wake Listen", "Resumed", "Say 小派同学", "", true, false);
                 set_light_strip_listening();
             } else {
@@ -1007,9 +1026,9 @@ static void run_xiaozhi_speech_loop()
         update_listening_light_level(probe.data(), probe.size());
         uint32_t now = M5.millis();
         if (now - last_status_ms > 700) {
-            char level_line[64];
-            snprintf(level_line, sizeof(level_line), "level=%ld threshold=%d", static_cast<long>(level), kVoiceStartThreshold);
-            if (local_voice_current_state() == LocalVoiceState::Idle) {
+            char level_line[128];
+            format_listening_level_line(level_line, sizeof(level_line), level);
+            if (xiaopai_state_get().state == LocalVoiceState::Idle) {
                 set_app1_status("Wake Listen", level_line, "Say 小派同学", "", true, false);
             } else {
                 set_app1_status("Listening", level_line, "Speak to recognize", "", true, false);
@@ -1023,20 +1042,26 @@ static void run_xiaozhi_speech_loop()
         }
         if (post_speech_echo_guard_active()) {
             if (level >= kVoiceStartThreshold) {
-                ESP_LOGI(TAG, "Voice threshold ignored during post-speech echo guard: level=%ld threshold=%d",
-                         static_cast<long>(level), kVoiceStartThreshold);
+                AudioInputStatus input = current_audio_input_status();
+                ESP_LOGI(TAG, "语音阈值已忽略: reason=post_speech_echo_guard level=%ld threshold=%d source=%s source_label=%s",
+                         static_cast<long>(level), kVoiceStartThreshold,
+                         audio_input_source_name(input.active_source),
+                         audio_input_source_label(input.active_source));
             }
             continue;
         }
-        if (local_voice_can_sample_mic() && level >= kVoiceStartThreshold) {
-            ESP_LOGI(TAG, "Voice threshold triggered: level=%ld threshold=%d state=%s",
-                     static_cast<long>(level), kVoiceStartThreshold, local_voice_state_name(local_voice_current_state()));
+        if (xiaopai_state_get().can_sample_mic && level >= kVoiceStartThreshold) {
+            AudioInputStatus input = current_audio_input_status();
+            ESP_LOGI(TAG, "语音阈值触发: level=%ld threshold=%d state=%s source=%s source_label=%s",
+                     static_cast<long>(level), kVoiceStartThreshold, xiaopai_state_name(xiaopai_state_get().state),
+                     audio_input_source_name(input.active_source),
+                     audio_input_source_label(input.active_source));
             mark_user_interaction("voice activity");
             if (!run_one_speech_recognition(ws, encoder, encoder_frame_samples, encoder_outbuf_size, probe.data(),
                                             probe.size())) {
                 ESP_LOGW(TAG, "Speech recognition round failed; reconnecting WebSocket");
                 if (!reconnect_ws("speech recognition round failed")) {
-                    local_voice_request_state(LocalVoiceState::Idle, "websocket reconnect failed");
+                    xiaopai_state_set(LocalVoiceState::Idle, "websocket reconnect failed");
                     break;
                 }
                 set_app1_status("Listening", "Reconnected", "Speak to recognize", "", true, false);
@@ -1047,7 +1072,7 @@ static void run_xiaozhi_speech_loop()
     }
 
     set_app1_status("Stopped", "Voice stopped", "", "", false, false);
-    local_voice_request_state(LocalVoiceState::Idle, "speech loop stopped");
+    xiaopai_state_set(LocalVoiceState::Idle, "speech loop stopped");
     close_ws();
     esp_opus_enc_close(encoder);
 }

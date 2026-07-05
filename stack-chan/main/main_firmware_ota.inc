@@ -107,7 +107,7 @@ static void show_firmware_ota_progress(const FirmwareOtaInfo& info, int percent,
     set_app1_status("OTA Update", "New version detected", downloaded_line, "Will reboot automatically", true, success);
 
     M5Lock lock;
-    mark_expression_screen_dirty();
+    expression_state_mark_dirty();
     auto& display = M5.Display;
     display.fillScreen(TFT_BLACK);
     display.setTextDatum(middle_center);

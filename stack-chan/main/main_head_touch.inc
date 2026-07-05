@@ -42,29 +42,29 @@ static void run_head_touch_audio_loop()
         HeadTouchEvent event = HeadTouchEvent::Press;
         if (xQueueReceive(head_touch_event_queue, &event, portMAX_DELAY) == pdTRUE) {
             mark_user_interaction("screen touch");
-            LocalVoiceState state = local_voice_current_state();
+            LocalVoiceState state = xiaopai_state_get().state;
             if (state == LocalVoiceState::Waiting) {
                 ESP_LOGI(TAG, "Screen touch ignored while waiting: %s", head_touch_event_name(event));
                 continue;
             }
-            if (sleep_dark_is_visible()) {
+            if (expression_state_get().sleep_dark) {
                 ESP_LOGI(TAG, "Screen touch wakes sleep-dark display: %s", head_touch_event_name(event));
-                show_expression(kDefaultExpression);
-                local_voice_request_state(LocalVoiceState::Listening, "screen touch wake");
+                expression_state_set(kDefaultExpression);
+                xiaopai_state_set(LocalVoiceState::Listening, "screen touch wake");
                 continue;
             }
             if (state == LocalVoiceState::Idle) {
                 const char* reply = screen_touch_wake_reply_text();
                 ESP_LOGI(TAG, "Screen touch wakes local voice: %s -> %s", head_touch_event_name(event), reply);
-                show_expression(kDefaultExpression);
-                local_voice_request_state(LocalVoiceState::Listening, "screen touch wake");
+                expression_state_set(kDefaultExpression);
+                xiaopai_state_set(LocalVoiceState::Listening, "screen touch wake");
                 if (!enqueue_speak_command("", reply, screen_touch_wake_reply_cache_name(reply), true)) {
                     execute_speak_command_internal(reply, true, screen_touch_wake_reply_cache_name(reply));
                 }
                 continue;
             }
             ESP_LOGI(TAG, "Screen touch local expression: %s -> shy", head_touch_event_name(event));
-            show_temporary_expression("shy", kHeadTouchShyExpressionMs);
+            expression_state_set_temporary("shy", kHeadTouchShyExpressionMs);
         }
     }
 }

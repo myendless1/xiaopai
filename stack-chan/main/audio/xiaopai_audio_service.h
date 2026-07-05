@@ -11,6 +11,24 @@ enum class AudioVadState {
     kSpeech,
 };
 
+enum class AudioInputSource {
+    kInternalMic = 0,
+    kDjiMicReceiver,
+};
+
+struct AudioInputStatus {
+    AudioInputSource active_source = AudioInputSource::kInternalMic;
+    bool dji_receiver_detected = false;
+    bool dji_receiver_streaming = false;
+    bool dji_receiver_identity_confirmed = false;
+    const char* dji_receiver_manufacturer = "";
+    const char* dji_receiver_product = "";
+    const char* detail = "";
+};
+
+const char* audio_input_source_name(AudioInputSource source);
+const char* audio_input_source_label(AudioInputSource source);
+
 struct AudioPlayOptions {
     bool wait = false;
     bool drop_oldest = true;
@@ -25,6 +43,7 @@ bool audio_service_play_pcm_16k(const int16_t* samples, size_t count,
 bool audio_service_play_opus_frame_16k(const uint8_t* data, size_t len);
 size_t audio_service_read_clean_16k(int16_t* out, size_t samples, TickType_t timeout);
 AudioVadState audio_service_get_vad_state();
+AudioInputStatus audio_service_get_input_status();
 void audio_service_abort_playback();
 void audio_service_dump_state();
 bool audio_service_test_tone(int sample_rate, int tone_hz, int duration_ms, int volume_percent);

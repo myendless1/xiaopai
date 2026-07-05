@@ -275,7 +275,7 @@ static bool select_server_base(const std::string& requested_base, bool persist, 
             if (show_success_expression) {
                 current_app = AppId::VoiceDemo;
                 voice_status_screen_suppressed = true;
-                show_expression("calm");
+                expression_state_set("calm");
             }
             schedule_stop_provisioning_portal();
             return true;

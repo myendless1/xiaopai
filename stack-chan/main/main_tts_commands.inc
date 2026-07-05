@@ -457,7 +457,7 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
         return true;
     }
 
-    local_voice_begin_speaking("speak command");
+    xiaopai_state_begin_speaking("speak command");
     bool should_pause_listener = pause_voice_listener || xiaozhi_task_handle != nullptr;
     VoiceListenerPauseGuard* voice_pause =
         should_pause_listener ? new VoiceListenerPauseGuard("speak command") : nullptr;
@@ -471,25 +471,25 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
             xSemaphoreGive(audio_mutex);
         }
         delete voice_pause;
-        local_voice_end_speaking("speak begin failed");
+        xiaopai_state_end_speaking("speak begin failed");
         return false;
     }
     apply_speaker_volume();
     app2_stop_requested = false;
     speech_playback_active = true;
-    start_speech_visual_feedback();
+    expression_state_start_speech_visual_feedback();
     const char* selected_cache_name = cache_name != nullptr && cache_name[0] != '\0' ? cache_name : "";
     bool ok = selected_cache_name[0] != '\0' ? stream_cached_reply_pcm(selected_cache_name, text)
                                              : stream_tts_pcm_for_text(text, voice, sample_rate, volume, speech_rate,
                                                                        pitch_rate);
-    stop_speech_visual_feedback();
+    expression_state_stop_speech_visual_feedback();
     codec_audio_output_end();
     speech_playback_active = false;
     if (audio_mutex != nullptr) {
         xSemaphoreGive(audio_mutex);
     }
     delete voice_pause;
-    local_voice_end_speaking("speak command finished");
+    xiaopai_state_end_speaking("speak command finished");
     return ok;
 }
 

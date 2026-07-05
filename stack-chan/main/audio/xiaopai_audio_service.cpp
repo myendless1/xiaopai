@@ -2,11 +2,13 @@
 
 #include <M5Unified.h>
 
+#include "dji_mic_receiver_input.h"
 #include "audio_codec_ctrl_if.h"
 #include "audio_codec_data_if.h"
 #include "audio_codec_gpio_if.h"
 #include "audio_codec_if.h"
 #include "aw88298_dac.h"
+#include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
 #include "driver/i2s_tdm.h"
 #include "es7210_adc.h"
@@ -14,6 +16,7 @@
 #include "esp_audio_types.h"
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
+#include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_opus_dec.h"
@@ -40,7 +43,7 @@
 #define CONFIG_STACKCHAN_AUDIO_DEVICE_AEC 0
 #endif
 #ifndef CONFIG_STACKCHAN_AUDIO_HW_SAMPLE_RATE
-#define CONFIG_STACKCHAN_AUDIO_HW_SAMPLE_RATE 24000
+#define CONFIG_STACKCHAN_AUDIO_HW_SAMPLE_RATE 16000
 #endif
 #ifndef CONFIG_STACKCHAN_AUDIO_PROTOCOL_SAMPLE_RATE
 #define CONFIG_STACKCHAN_AUDIO_PROTOCOL_SAMPLE_RATE 16000
@@ -72,6 +75,9 @@ static constexpr uint8_t kAw9523Addr = 0x58;
 static constexpr uint8_t kAw88298Addr = AW88298_CODEC_DEFAULT_ADDR;
 static constexpr uint8_t kEs7210Addr = ES7210_CODEC_DEFAULT_ADDR;
 static constexpr uint32_t kInternalI2cFreq = 400000;
+static constexpr i2c_port_t kCoreS3InternalI2cPort = I2C_NUM_1;
+static constexpr int kCoreS3InternalI2cSda = 12;
+static constexpr int kCoreS3InternalI2cScl = 11;
 static constexpr int kHwSampleRate = CONFIG_STACKCHAN_AUDIO_HW_SAMPLE_RATE;
 static constexpr int kProtocolSampleRate = CONFIG_STACKCHAN_AUDIO_PROTOCOL_SAMPLE_RATE;
 static constexpr int kOpusFrameDurationMs = 60;
@@ -91,6 +97,8 @@ static constexpr int kDmaFrameNum = 240;
 static constexpr int kPlayQueueDepth = 8;
 static constexpr int kCleanQueueDepth = 32;
 static constexpr TickType_t kCleanQueueConsumerGraceTicks = pdMS_TO_TICKS(300);
+static constexpr int kDjiPriorityWaitLogIntervalMs = 3000;
+static constexpr int kInputUnavailableLogIntervalMs = 3000;
 static constexpr int kToneChunkSamples = 512;
 static constexpr int kTailDrainMs = 80;
 static constexpr float kTwoPi = 6.28318530717958647692f;
@@ -107,6 +115,46 @@ struct M5I2cCodecCtrl {
     bool open = false;
     uint8_t addr = 0;
 };
+
+struct AudioI2cPresence {
+    bool aw9523 = false;
+    bool aw88298 = false;
+    bool es7210 = false;
+    bool axp2101 = false;
+
+    bool any() const
+    {
+        return aw9523 || aw88298 || es7210 || axp2101;
+    }
+};
+
+static bool ensure_core_s3_internal_i2c_ready(bool force_rebuild)
+{
+    if (!force_rebuild) {
+        i2c_master_bus_handle_t bus_handle = nullptr;
+        esp_err_t err = i2c_master_get_bus_handle(kCoreS3InternalI2cPort, &bus_handle);
+        if (err == ESP_OK && bus_handle != nullptr) {
+            return true;
+        }
+        ESP_LOGW(TAG, "CoreS3 internal I2C bus missing before audio init: %s; rebuilding",
+                 esp_err_to_name(err));
+    } else {
+        ESP_LOGW(TAG, "CoreS3 internal I2C scan returned no devices; rebuilding bus");
+    }
+
+    if (!M5.In_I2C.begin(kCoreS3InternalI2cPort, kCoreS3InternalI2cSda, kCoreS3InternalI2cScl)) {
+        ESP_LOGE(TAG, "M5.In_I2C.begin failed before audio init");
+        return false;
+    }
+
+    i2c_master_bus_handle_t bus_handle = nullptr;
+    esp_err_t err = i2c_master_get_bus_handle(kCoreS3InternalI2cPort, &bus_handle);
+    if (err != ESP_OK || bus_handle == nullptr) {
+        ESP_LOGE(TAG, "CoreS3 internal I2C unavailable after audio rebuild: %s", esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
 
 static int clamp_volume_percent(int percent)
 {
@@ -217,6 +265,33 @@ static int16_t apply_mic_magnification(int16_t sample)
     return static_cast<int16_t>(std::max<int32_t>(-32768, std::min<int32_t>(32767, amplified)));
 }
 
+static const char* audio_input_source_name_impl(AudioInputSource source)
+{
+    switch (source) {
+        case AudioInputSource::kDjiMicReceiver:
+            return "dji_mic_receiver";
+        case AudioInputSource::kInternalMic:
+        default:
+            return "internal_mic";
+    }
+}
+
+static const char* audio_input_source_label_impl(AudioInputSource source)
+{
+    switch (source) {
+        case AudioInputSource::kDjiMicReceiver:
+            return "DJI Mic接收器";
+        case AudioInputSource::kInternalMic:
+        default:
+            return "内置麦克风";
+    }
+}
+
+static bool dji_receiver_protocol_ready(const DjiMicReceiverStatus& dji)
+{
+    return dji.detected && dji.audio_streaming && dji.capture_ready;
+}
+
 static void restore_aw88298_playback_registers(int sample_rate)
 {
     write_aw88298_reg_direct(0x61, 0x0673, "AW88298 restore boost");
@@ -225,16 +300,38 @@ static void restore_aw88298_playback_registers(int sample_rate)
     write_aw88298_reg_direct(0x06, aw88298_i2sctrl_for_sample_rate(sample_rate), "AW88298 restore i2sctrl");
 }
 
+static AudioI2cPresence scan_core_s3_audio_i2c()
+{
+    AudioI2cPresence presence;
+    presence.aw9523 = M5.In_I2C.scanID(kAw9523Addr, kInternalI2cFreq);
+    presence.aw88298 = M5.In_I2C.scanID(kAw88298Addr >> 1, kInternalI2cFreq);
+    presence.es7210 = M5.In_I2C.scanID(kEs7210Addr >> 1, kInternalI2cFreq);
+    presence.axp2101 = M5.In_I2C.scanID(kAxp2101Addr, kInternalI2cFreq);
+    ESP_LOGI(TAG, "Audio I2C scan: AW9523=%d AW88298=%d ES7210=%d AXP2101=%d",
+             presence.aw9523, presence.aw88298, presence.es7210, presence.axp2101);
+    return presence;
+}
+
+static AudioI2cPresence scan_core_s3_audio_i2c_with_recovery()
+{
+    ensure_core_s3_internal_i2c_ready(false);
+    AudioI2cPresence presence = scan_core_s3_audio_i2c();
+    if (presence.any()) {
+        return presence;
+    }
+
+    if (ensure_core_s3_internal_i2c_ready(true)) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        presence = scan_core_s3_audio_i2c();
+    }
+    return presence;
+}
+
 static void configure_core_s3_audio_power()
 {
-    bool aw9523_present = M5.In_I2C.scanID(kAw9523Addr, kInternalI2cFreq);
-    bool aw88298_present = M5.In_I2C.scanID(kAw88298Addr >> 1, kInternalI2cFreq);
-    bool es7210_present = M5.In_I2C.scanID(kEs7210Addr >> 1, kInternalI2cFreq);
-    bool axp2101_present = M5.In_I2C.scanID(kAxp2101Addr, kInternalI2cFreq);
-    ESP_LOGI(TAG, "Audio I2C scan: AW9523=%d AW88298=%d ES7210=%d AXP2101=%d",
-             aw9523_present, aw88298_present, es7210_present, axp2101_present);
+    AudioI2cPresence presence = scan_core_s3_audio_i2c_with_recovery();
 
-    if (axp2101_present) {
+    if (presence.axp2101) {
         write_i2c_reg8(kAxp2101Addr, 0x69, 0b00110101, "AXP2101 charge/power");
         write_i2c_reg8(kAxp2101Addr, 0x30, 0b00111111, "AXP2101 power path");
         write_i2c_reg8(kAxp2101Addr, 0x90, 0xBF, "AXP2101 LDOS");
@@ -252,7 +349,7 @@ static void configure_core_s3_audio_power()
         read_i2c_reg8(kAxp2101Addr, 0x97, "AXP2101 BLDO2");
     }
 
-    if (aw9523_present) {
+    if (presence.aw9523) {
         write_i2c_reg8(kAw9523Addr, 0x04, 0b00011000, "AW9523 P0 config");
         write_i2c_reg8(kAw9523Addr, 0x05, 0b00001100, "AW9523 P1 config");
         write_i2c_reg8(kAw9523Addr, 0x11, 0b00010000, "AW9523 GCR");
@@ -268,8 +365,12 @@ static void configure_core_s3_audio_power()
 static void reset_core_s3_aw88298()
 {
     if (!M5.In_I2C.scanID(kAw9523Addr, kInternalI2cFreq)) {
-        ESP_LOGW(TAG, "AW9523 not found; skip AW88298 reset");
-        return;
+        ensure_core_s3_internal_i2c_ready(true);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        if (!M5.In_I2C.scanID(kAw9523Addr, kInternalI2cFreq)) {
+            ESP_LOGW(TAG, "AW9523 not found; skip AW88298 reset");
+            return;
+        }
     }
     M5.In_I2C.bitOff(kAw9523Addr, 0x02, kAw9523SpeakerPowerMask, kInternalI2cFreq);
     vTaskDelay(pdMS_TO_TICKS(10));
@@ -359,6 +460,10 @@ static void resample_linear_mono(const int16_t* in, size_t in_samples, int src_r
         out.clear();
         return;
     }
+    if (src_rate == dst_rate) {
+        out.assign(in, in + in_samples);
+        return;
+    }
     const size_t out_samples = static_cast<size_t>((static_cast<uint64_t>(in_samples) * dst_rate + src_rate - 1) / src_rate);
     out.resize(out_samples);
     for (size_t i = 0; i < out_samples; ++i) {
@@ -381,6 +486,10 @@ static void resample_linear_interleaved(const int16_t* in, size_t in_frames, int
 {
     if (in == nullptr || in_frames == 0 || channels <= 0 || src_rate <= 0 || dst_rate <= 0) {
         out.clear();
+        return;
+    }
+    if (src_rate == dst_rate) {
+        out.assign(in, in + in_frames * channels);
         return;
     }
     const size_t out_frames = static_cast<size_t>((static_cast<uint64_t>(in_frames) * dst_rate + src_rate - 1) / src_rate);
@@ -772,7 +881,15 @@ public:
         }
         if (!codec_.init()) {
             ESP_LOGE(TAG, "codec init failed");
-            return false;
+            ESP_LOGW(TAG, "内部音频codec不可用: 将继续运行DJI USB输入；内置麦克风和扬声器暂不可用");
+        } else {
+            codec_initialized_ = true;
+        }
+        if (!dji_mic_receiver_input_start()) {
+            ESP_LOGI(TAG, "DJI Mic接收器自动输入未启动: %s",
+                     dji_mic_receiver_input_status().detail);
+        } else {
+            ESP_LOGI(TAG, "DJI Mic接收器自动输入已启用: 插入后将自动切换语音输入源");
         }
         if (!init_opus_decoder()) {
             ESP_LOGW(TAG, "Opus decoder unavailable; binary TTS playback will fail");
@@ -786,9 +903,13 @@ public:
         if (!init()) {
             return false;
         }
-        if (!codec_.start()) {
-            ESP_LOGE(TAG, "codec start failed");
-            return false;
+        if (codec_initialized_.load() && !codec_started_.load()) {
+            if (!codec_.start()) {
+                ESP_LOGE(TAG, "codec start failed");
+                ESP_LOGW(TAG, "内部音频codec启动失败: 将继续运行DJI USB输入；内置麦克风和扬声器暂不可用");
+            } else {
+                codec_started_ = true;
+            }
         }
         if (running_) {
             return true;
@@ -858,6 +979,10 @@ public:
             return true;
         }
         if (!start() || play_queue_ == nullptr) {
+            return false;
+        }
+        if (!codec_started_.load()) {
+            ESP_LOGW(TAG, "播放请求已拒绝: 内部音频codec不可用");
             return false;
         }
         AudioBlock* block = allocate_block(count);
@@ -1003,6 +1128,20 @@ public:
         return static_cast<AudioVadState>(vad_state_.load());
     }
 
+    AudioInputStatus input_status() const
+    {
+        DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
+        AudioInputStatus status;
+        status.active_source = static_cast<AudioInputSource>(active_input_source_.load());
+        status.dji_receiver_detected = dji.detected;
+        status.dji_receiver_streaming = dji.audio_streaming;
+        status.dji_receiver_identity_confirmed = dji.identity_confirmed;
+        status.dji_receiver_manufacturer = dji.manufacturer;
+        status.dji_receiver_product = dji.product;
+        status.detail = dji.detail;
+        return status;
+    }
+
     void abort_playback()
     {
         abort_generation_++;
@@ -1025,13 +1164,24 @@ public:
     void dump_state()
     {
         codec_.dump_state();
-        ESP_LOGI(TAG, "service: initialized=%d running=%d playing=%d play_q=%u clean_q=%u clean_readers=%u vad=%d afe=%d selected_ch=%d",
-                 static_cast<int>(initialized_), static_cast<int>(running_.load()),
+        DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
+        ESP_LOGI(TAG, "service: initialized=%d codec_init=%d codec_started=%d running=%d playing=%d play_q=%u clean_q=%u clean_readers=%u vad=%d afe=%d selected_ch=%d input=%d dji_detected=%d dji_streaming=%d dji_capture=%d identity=%d %04x:%04x rate=%d ch=%d manufacturer=%s product=%s detail=%s",
+                 static_cast<int>(initialized_.load()),
+                 static_cast<int>(codec_initialized_.load()), static_cast<int>(codec_started_.load()),
+                 static_cast<int>(running_.load()),
                  static_cast<int>(playing_.load()),
                  play_queue_ ? static_cast<unsigned>(uxQueueMessagesWaiting(play_queue_)) : 0,
                  clean_queue_ ? static_cast<unsigned>(uxQueueMessagesWaiting(clean_queue_)) : 0,
                  static_cast<unsigned>(clean_reader_count_.load()),
-                 vad_state_.load(), static_cast<int>(afe_ready_), selected_input_channel_.load());
+                 vad_state_.load(), static_cast<int>(afe_ready_), selected_input_channel_.load(),
+                 active_input_source_.load(), static_cast<int>(dji.detected),
+                 static_cast<int>(dji.audio_streaming), static_cast<int>(dji.capture_ready),
+                 static_cast<int>(dji.identity_confirmed),
+                 static_cast<unsigned>(dji.vendor_id), static_cast<unsigned>(dji.product_id),
+                 dji.sample_rate, dji.channels,
+                 dji.manufacturer != nullptr && dji.manufacturer[0] != '\0' ? dji.manufacturer : "-",
+                 dji.product != nullptr && dji.product[0] != '\0' ? dji.product : "-",
+                 dji.detail != nullptr ? dji.detail : "");
     }
 
     bool test_tone(int sample_rate, int tone_hz, int duration_ms, int volume_percent)
@@ -1069,7 +1219,7 @@ public:
 
     bool available() const
     {
-        return initialized_ && codec_.initialized();
+        return initialized_;
     }
 
     bool is_playing() const
@@ -1167,9 +1317,32 @@ private:
     {
         std::vector<int16_t> hw(kHwInputChunkSamples);
         std::vector<int16_t> in16;
+        std::vector<int16_t> usb16(kProtocolSampleRate / 100);
         in16.reserve((kProtocolSampleRate / 100) * kInputChannels + kInputChannels);
 
         while (running_) {
+            DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
+            log_dji_status_if_changed(dji);
+            if (dji_receiver_protocol_ready(dji)) {
+                set_active_input_source(AudioInputSource::kDjiMicReceiver, dji,
+                                        dji.capture_ready ? "DJI Mic接收器正在采集"
+                                                          : "DJI Mic接收器协议已匹配，等待音频数据");
+                size_t usb_read = try_read_dji_receiver(usb16, dji);
+                if (usb_read > 0) {
+                    push_clean_samples(usb16.data(), usb_read);
+                } else {
+                    log_dji_priority_wait_if_needed(dji);
+                    vTaskDelay(pdMS_TO_TICKS(5));
+                }
+                continue;
+            }
+            set_active_input_source(AudioInputSource::kInternalMic, dji,
+                                    dji.detected ? "DJI Mic接收器暂不可采集" : "未检测到DJI Mic接收器");
+            if (!codec_started_.load()) {
+                log_input_unavailable_if_needed(dji);
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
             if (!codec_.read(hw.data(), hw.size())) {
                 vTaskDelay(pdMS_TO_TICKS(10));
                 continue;
@@ -1187,6 +1360,116 @@ private:
         }
         input_task_ = nullptr;
         ESP_LOGW(TAG, "audio input task stopped");
+    }
+
+    size_t try_read_dji_receiver(std::vector<int16_t>& buffer, const DjiMicReceiverStatus& status)
+    {
+        if (!dji_receiver_protocol_ready(status) || buffer.empty()) {
+            return 0;
+        }
+        size_t read = dji_mic_receiver_input_read_16k(buffer.data(), buffer.size(), pdMS_TO_TICKS(2));
+        if (read == 0) {
+            return 0;
+        }
+        uint32_t counter = ++dji_input_log_counter_;
+        if ((counter % 100) == 1) {
+            ESP_LOGI(TAG, "监听输入源: source=%s source_label=%s samples=%u rate=%d ch=%d dev=%04x:%04x",
+                     audio_input_source_name_impl(AudioInputSource::kDjiMicReceiver),
+                     audio_input_source_label_impl(AudioInputSource::kDjiMicReceiver),
+                     static_cast<unsigned>(read), status.sample_rate, status.channels,
+                     static_cast<unsigned>(status.vendor_id), static_cast<unsigned>(status.product_id));
+        }
+        return read;
+    }
+
+    void set_active_input_source(AudioInputSource source, const DjiMicReceiverStatus& dji, const char* reason)
+    {
+        int source_value = static_cast<int>(source);
+        int previous_value = active_input_source_.exchange(source_value);
+        if (previous_value == source_value) {
+            return;
+        }
+        AudioInputSource previous = static_cast<AudioInputSource>(previous_value);
+        ESP_LOGI(TAG, "监听输入源切换: from=%s from_label=%s to=%s to_label=%s reason=%s dji_detected=%d dji_streaming=%d dji_capture=%d dji_identity=%d dev=%04x:%04x manufacturer=%s product=%s detail=%s",
+                 audio_input_source_name_impl(previous), audio_input_source_label_impl(previous),
+                 audio_input_source_name_impl(source), audio_input_source_label_impl(source),
+                 reason != nullptr ? reason : "-",
+                 static_cast<int>(dji.detected), static_cast<int>(dji.audio_streaming),
+                 static_cast<int>(dji.capture_ready), static_cast<int>(dji.identity_confirmed),
+                 static_cast<unsigned>(dji.vendor_id), static_cast<unsigned>(dji.product_id),
+                 dji.manufacturer != nullptr && dji.manufacturer[0] != '\0' ? dji.manufacturer : "-",
+                 dji.product != nullptr && dji.product[0] != '\0' ? dji.product : "-",
+                 dji.detail != nullptr ? dji.detail : "-");
+    }
+
+    void log_dji_priority_wait_if_needed(const DjiMicReceiverStatus& dji)
+    {
+        TickType_t now = xTaskGetTickCount();
+        if (last_dji_priority_wait_log_ticks_ != 0 &&
+            now - last_dji_priority_wait_log_ticks_ < pdMS_TO_TICKS(kDjiPriorityWaitLogIntervalMs)) {
+            return;
+        }
+        last_dji_priority_wait_log_ticks_ = now;
+        ESP_LOGI(TAG, "监听输入源保持: source=%s source_label=%s reason=DJI Mic优先级更高，USB音频协议已匹配，等待音频数据 capture=%d dev=%04x:%04x manufacturer=%s product=%s detail=%s",
+                 audio_input_source_name_impl(AudioInputSource::kDjiMicReceiver),
+                 audio_input_source_label_impl(AudioInputSource::kDjiMicReceiver),
+                 static_cast<int>(dji.capture_ready),
+                 static_cast<unsigned>(dji.vendor_id), static_cast<unsigned>(dji.product_id),
+                 dji.manufacturer != nullptr && dji.manufacturer[0] != '\0' ? dji.manufacturer : "-",
+                 dji.product != nullptr && dji.product[0] != '\0' ? dji.product : "-",
+                 dji.detail != nullptr ? dji.detail : "-");
+    }
+
+    void log_input_unavailable_if_needed(const DjiMicReceiverStatus& dji)
+    {
+        TickType_t now = xTaskGetTickCount();
+        if (last_input_unavailable_log_ticks_ != 0 &&
+            now - last_input_unavailable_log_ticks_ < pdMS_TO_TICKS(kInputUnavailableLogIntervalMs)) {
+            return;
+        }
+        last_input_unavailable_log_ticks_ = now;
+        ESP_LOGW(TAG, "监听输入不可用: 内部音频codec未启动，正在等待DJI Mic接收器 detected=%d streaming=%d capture=%d detail=%s",
+                 static_cast<int>(dji.detected), static_cast<int>(dji.audio_streaming),
+                 static_cast<int>(dji.capture_ready), dji.detail != nullptr ? dji.detail : "-");
+    }
+
+    void log_dji_status_if_changed(const DjiMicReceiverStatus& dji)
+    {
+        bool detail_changed = last_dji_detail_ != dji.detail;
+        bool changed = !last_dji_status_valid_ ||
+                       last_dji_detected_ != dji.detected ||
+                       last_dji_audio_streaming_ != dji.audio_streaming ||
+                       last_dji_capture_ready_ != dji.capture_ready ||
+                       last_dji_identity_confirmed_ != dji.identity_confirmed ||
+                       last_dji_vendor_id_ != dji.vendor_id ||
+                       last_dji_product_id_ != dji.product_id ||
+                       last_dji_sample_rate_ != dji.sample_rate ||
+                       last_dji_channels_ != dji.channels ||
+                       detail_changed;
+        if (!changed) {
+            return;
+        }
+        last_dji_status_valid_ = true;
+        last_dji_detected_ = dji.detected;
+        last_dji_audio_streaming_ = dji.audio_streaming;
+        last_dji_capture_ready_ = dji.capture_ready;
+        last_dji_identity_confirmed_ = dji.identity_confirmed;
+        last_dji_vendor_id_ = dji.vendor_id;
+        last_dji_product_id_ = dji.product_id;
+        last_dji_sample_rate_ = dji.sample_rate;
+        last_dji_channels_ = dji.channels;
+        last_dji_detail_ = dji.detail;
+        ESP_LOGI(TAG, "DJI Mic状态: detected=%d streaming=%d capture=%d identity=%d dev=%04x:%04x rate=%d ch=%d manufacturer=%s product=%s detail=%s",
+                 static_cast<int>(dji.detected),
+                 static_cast<int>(dji.audio_streaming),
+                 static_cast<int>(dji.capture_ready),
+                 static_cast<int>(dji.identity_confirmed),
+                 static_cast<unsigned>(dji.vendor_id),
+                 static_cast<unsigned>(dji.product_id),
+                 dji.sample_rate, dji.channels,
+                 dji.manufacturer != nullptr && dji.manufacturer[0] != '\0' ? dji.manufacturer : "-",
+                 dji.product != nullptr && dji.product[0] != '\0' ? dji.product : "-",
+                 dji.detail != nullptr ? dji.detail : "-");
     }
 
 #if CONFIG_STACKCHAN_AUDIO_DEVICE_AEC
@@ -1420,7 +1703,9 @@ private:
 
         uint32_t counter = ++input_level_log_counter_;
         if ((counter % 100) == 1) {
-            ESP_LOGI(TAG, "input levels avg: selected=%d best=%d mag=%d ch0=%u ch1=%u ch2=%u ch3=%u",
+            AudioInputSource source = static_cast<AudioInputSource>(active_input_source_.load());
+            ESP_LOGI(TAG, "输入电平均值: source=%s source_label=%s selected=%d best=%d mag=%d ch0=%u ch1=%u ch2=%u ch3=%u",
+                     audio_input_source_name_impl(source), audio_input_source_label_impl(source),
                      selected_channel, best_channel, CONFIG_STACKCHAN_MIC_MAGNIFICATION,
                      measured_channels > 0 ? static_cast<unsigned>(sums[0] / frames) : 0,
                      measured_channels > 1 ? static_cast<unsigned>(sums[1] / frames) : 0,
@@ -1481,8 +1766,24 @@ private:
     std::atomic<uint32_t> clean_drop_count_{0};
     std::atomic<uint32_t> clean_idle_drop_count_{0};
     std::atomic<uint32_t> input_level_log_counter_{0};
+    std::atomic<uint32_t> dji_input_log_counter_{0};
     std::atomic<uint32_t> playback_log_counter_{0};
+    TickType_t last_dji_priority_wait_log_ticks_ = 0;
+    TickType_t last_input_unavailable_log_ticks_ = 0;
     std::atomic<int> selected_input_channel_{0};
+    std::atomic<int> active_input_source_{static_cast<int>(AudioInputSource::kInternalMic)};
+    std::atomic<bool> codec_initialized_{false};
+    std::atomic<bool> codec_started_{false};
+    bool last_dji_status_valid_ = false;
+    bool last_dji_detected_ = false;
+    bool last_dji_audio_streaming_ = false;
+    bool last_dji_capture_ready_ = false;
+    bool last_dji_identity_confirmed_ = false;
+    uint16_t last_dji_vendor_id_ = 0;
+    uint16_t last_dji_product_id_ = 0;
+    int last_dji_sample_rate_ = 0;
+    int last_dji_channels_ = 0;
+    const char* last_dji_detail_ = nullptr;
     bool afe_init_attempted_ = false;
     bool afe_ready_ = false;
 
@@ -1498,6 +1799,16 @@ private:
 XiaopaiAudioService g_audio_service;
 
 }  // namespace
+
+const char* audio_input_source_name(AudioInputSource source)
+{
+    return audio_input_source_name_impl(source);
+}
+
+const char* audio_input_source_label(AudioInputSource source)
+{
+    return audio_input_source_label_impl(source);
+}
 
 bool audio_service_init()
 {
@@ -1537,6 +1848,11 @@ size_t audio_service_read_clean_16k(int16_t* out, size_t samples, TickType_t tim
 AudioVadState audio_service_get_vad_state()
 {
     return g_audio_service.vad_state();
+}
+
+AudioInputStatus audio_service_get_input_status()
+{
+    return g_audio_service.input_status();
 }
 
 void audio_service_abort_playback()

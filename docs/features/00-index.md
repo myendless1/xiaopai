@@ -2,11 +2,13 @@
 
 本目录按功能点拆分项目文档。每篇只记录功能逻辑、关键实现和主要入口，便于查代码和后续维护。
 
+## 核心状态机
+- [机器人与表情状态机](00-state-machines.md)
+
 ## 固件与设备侧
 - [固件启动与后台服务](01-firmware-boot-background-services.md)
 - [WiFi 配网与服务器选择](02-wifi-provisioning-server-selection.md)
-- [本地语音状态机](03-firmware-local-voice-state.md)
-- [CoreS3 音频服务](04-firmware-audio-service.md)
+- [CoreS3/DJI 音频服务](04-firmware-audio-service.md)
 - [实时语音 WebSocket](05-firmware-realtime-speech-websocket.md)
 - [本地录音上传 ASR](06-firmware-http-record-upload.md)
 - [TTS 播放与播报队列](07-firmware-tts-playback-speech-queue.md)
@@ -23,6 +25,7 @@
 - [Xiaozhi 实时桥接](16-server-realtime-xiaozhi-bridge.md)
 - [OpenClaw 事件路由](17-server-openclaw-routing.md)
 - [图像转换、人脸检测与跟踪命令](18-server-image-face-tracking.md)
+- [设备 Wi-Fi 日志与录音缓存](30-device-debug-wifi-logs.md)
 
 ## OpenClaw 插件与业务能力
 - [Xiaopai 控制插件](19-openclaw-xiaopai-control-plugin.md)

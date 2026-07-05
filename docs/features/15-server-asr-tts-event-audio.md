@@ -8,6 +8,7 @@
 2. WAV 自动读取采样率，裸 PCM 使用默认采样率。
 3. 调用 Aliyun NLS ASR，返回识别文本。
 4. 根据文本处理音量、唤醒、休眠或转发 OpenClaw。
+5. `save-recording` 开启时保存 listen 音频到 `<capture-dir>/audio`，关闭时 HTTP 和实时 listen 都不落盘。
 
 ## TTS 逻辑
 1. `/stream-speak` 接收文本和 voice/volume/rate 参数。

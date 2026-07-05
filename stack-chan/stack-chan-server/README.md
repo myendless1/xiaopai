@@ -110,6 +110,14 @@ Lists devices that have checked in through the HTTP command channel. `default_de
 curl 'http://127.0.0.1:8091/devices'
 ```
 
+`GET /device/logs?device_id=...&limit=100`
+
+Returns the in-memory debug log cache as JSON. The server also appends readable per-device log files under `captures/device-logs/` by default. Override the directory with `STACKCHAN_DEVICE_LOG_DIR` or `--device-log-dir`; each event is written as one line, for example `captures/device-logs/44_1b_f6_df_5d_b8.log`.
+
+```bash
+tail -f captures/device-logs/44_1b_f6_df_5d_b8.log
+```
+
 `GET /device/next-command?device_id=...&timeout=25`
 
 Device long-poll endpoint. Xiaopai keeps one blocking HTTP request open and receives a JSON command when the server has one queued. A timeout returns `{"type":"noop"}`.
@@ -324,13 +332,13 @@ arguments:
 Increase `--visual-tracking-gain-x` if left/right motion is too small, and increase
 `--visual-tracking-gain-y` if up/down motion is too small.
 
-Wake-up owner finding (`find_owner`) suppresses server-side auto-tracking. Tune that path with:
+Explicit owner finding (`find_owner`) suppresses server-side auto-tracking. Tune that command path with:
 
 ```bash
 ./start.sh --find-owner-gain-x 1.0 --find-owner-gain-y 0.8
 ```
 
-`--find-owner-gain-x` is the horizontal movement multiplier used after the wake word. Direction is still a
+`--find-owner-gain-x` is the horizontal movement multiplier used by explicit `find_owner` commands. Direction is still a
 firmware mounting constant: if Xiaopai moves left when the face is on the right, flip `kFindOwnerYawDirection`
 between `1.0f` and `-1.0f` in `main/main.cpp`. If up/down is reversed, flip `kFindOwnerPitchDirection`.
 Find-owner horizontal and vertical movement no longer has a per-step degree cap; only the final servo angle range

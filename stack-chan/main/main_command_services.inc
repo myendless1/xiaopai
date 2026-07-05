@@ -144,9 +144,9 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
     if (type == "face" || type == "expression" || type == "action") {
         std::string expression = command_expression_value(payload);
         if (expression == "thinking") {
-            local_voice_request_state(LocalVoiceState::Waiting, "thinking expression command");
+            xiaopai_state_set(LocalVoiceState::Waiting, "thinking expression command");
         }
-        show_expression(expression.empty() ? kDefaultExpression : expression.c_str());
+        expression_state_set(expression.empty() ? kDefaultExpression : expression.c_str());
         return true;
     }
     if (type == "check_ota" || type == "ota_check" || type == "firmware_ota") {
@@ -159,15 +159,15 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
             state = type;
         }
         if (state == "wait" || state == "waiting" || state == "thinking") {
-            local_voice_request_state(LocalVoiceState::Waiting, "state command");
+            xiaopai_state_set(LocalVoiceState::Waiting, "state command");
             if (state == "thinking") {
-                show_expression("thinking");
+                expression_state_set("thinking");
             }
             return true;
         }
         if (state == "wake" || state == "awake" || state == "listen" || state == "listening") {
             mark_user_interaction("wake state command");
-            local_voice_request_state(LocalVoiceState::Listening, "state command");
+            xiaopai_state_set(LocalVoiceState::Listening, "state command");
             return true;
         }
         if (state == "sleep" || state == "sleeping" || state == "idle") {
@@ -175,7 +175,7 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
             return true;
         }
         if (state == "speak" || state == "speaking") {
-            local_voice_request_state(LocalVoiceState::Speaking, "state command");
+            xiaopai_state_set(LocalVoiceState::Speaking, "state command");
             return true;
         }
         ESP_LOGW(TAG, "Unknown state command: %s", state.c_str());
@@ -216,17 +216,6 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
         return true;
     }
     if (type == "find_owner" || type == "locate_owner") {
-        uint32_t now = M5.millis();
-        if (wake_find_owner_pending &&
-            static_cast<uint32_t>(now - wake_find_owner_requested_ms) < kWakeFindOwnerPendingMaxMs) {
-            ESP_LOGI(TAG, "Server find-owner consumes wake pending request");
-            wake_find_owner_pending = false;
-            wake_find_owner_last_run_ms = now;
-        } else if (wake_find_owner_last_run_ms != 0 &&
-                   static_cast<uint32_t>(now - wake_find_owner_last_run_ms) < kWakeFindOwnerDuplicateGuardMs) {
-            ESP_LOGI(TAG, "Skipping duplicate wake find-owner command");
-            return true;
-        }
         int rounds = static_cast<int>(json_number_value(payload, "rounds", kFindOwnerMaxRounds));
         float gain_x = static_cast<float>(json_number_value(payload, "gain_x", kFindOwnerYawGain));
         float gain_y = static_cast<float>(json_number_value(payload, "gain_y", kFindOwnerPitchGain));
@@ -308,15 +297,15 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
         }
         end_sequence_expression_hold(restore_expression);
         if (restore_expression && !*sleep_or_stop_executed && !in_sequence) {
-            show_expression(kDefaultExpression);
+            expression_state_set(kDefaultExpression);
         }
         return ok;
     }
     if (type == "stop") {
         app2_stop_requested = true;
         codec_audio_output_stop();
-        show_expression("stopped");
-        local_voice_request_state(LocalVoiceState::Idle, "stop command");
+        expression_state_set("stopped");
+        xiaopai_state_set(LocalVoiceState::Idle, "stop command");
         return true;
     }
     if (type == "sleep") {
@@ -327,8 +316,8 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
     }
     if (type == "wake" || type == "listen" || type == "listening") {
         mark_user_interaction("wake command");
-        show_expression(kDefaultExpression);
-        local_voice_request_state(LocalVoiceState::Listening, "command");
+        expression_state_set(kDefaultExpression);
+        xiaopai_state_set(LocalVoiceState::Listening, "command");
         return true;
     }
     if (type == "play_audio") {
@@ -413,7 +402,7 @@ static void run_command_http_loop()
         vTaskDelay(pdMS_TO_TICKS(500));
     }
     ESP_LOGI(TAG, "HTTP command long-poll started");
-    show_expression(kDefaultExpression);
+    expression_state_set(kDefaultExpression);
 
     while (true) {
         std::string url = make_server_url("/device/next-command");
@@ -475,6 +464,7 @@ static void log_memory_snapshot(const char* reason)
     log_task_stack_watermark("boot", boot_task_handle);
     log_task_stack_watermark("bg_voice", xiaozhi_task_handle);
     log_task_stack_watermark("bg_command", command_task_handle);
+    log_task_stack_watermark("wifi_debug", wifi_debug_task_handle);
     log_task_stack_watermark("speak_cmd", speak_command_task_handle);
     log_task_stack_watermark("screen_touch", head_touch_task_handle);
     log_task_stack_watermark("touch_audio", head_touch_audio_task_handle);
@@ -528,7 +518,7 @@ static void start_background_services()
 
         current_app = AppId::VoiceDemo;
         voice_status_screen_suppressed = true;
-        show_expression(kDefaultExpression);
+        expression_state_set(kDefaultExpression);
         enable_servo_power();
         log_memory_snapshot("before camera preinit");
         if (init_camera_once()) {
@@ -541,6 +531,7 @@ static void start_background_services()
 
         start_head_touch_services();
         start_speak_command_service();
+        start_wifi_debug_service();
         // Temporarily disabled: periodic sedentary find-owner checks.
         // start_sedentary_find_owner_service();
         log_memory_snapshot("after helper tasks");
