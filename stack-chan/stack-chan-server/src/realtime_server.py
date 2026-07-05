@@ -80,10 +80,17 @@ REALTIME_SLEEP_REPLY_REST_EVENTS = (
     ("sleep_reply_bye", "拜拜"),
     ("sleep_reply_obey", "遵命"),
 )
+SUPPRESSED_FALLBACK_SPEECH_NORMALIZED = {
+    "\u6211\u6ca1\u542c\u6e05\u53ef\u4ee5\u518d\u8bf4\u4e00\u904d\u5417",
+}
 
 
 def normalize_realtime_command_text(text: str) -> str:
     return re.sub(r"[\s,_\-，。.!！?？/（）()]+", "", str(text or "").strip().lower())
+
+
+def speech_text_is_temporarily_suppressed(text: str) -> bool:
+    return normalize_realtime_command_text(text) in SUPPRESSED_FALLBACK_SPEECH_NORMALIZED
 
 
 def safe_realtime_device_id(device_id: str) -> str:
@@ -816,7 +823,7 @@ class RealtimeManager:
             await self._send_device_state(session, "sleep")
             return
         if not self._openclaw.enabled:
-            await self._speak(session, "我没听清，可以再说一遍吗")
+            # Temporarily disabled: stay silent instead of fallback speech.
             return
         loop = asyncio.get_running_loop()
         try:
@@ -827,9 +834,12 @@ class RealtimeManager:
         except Exception as exc:
             self.logger(f"OpenClaw realtime chat failed: {exc}")
             reply = ""
-            await self._speak(session, "我没听清，可以再说一遍吗")
+            # Temporarily disabled: stay silent instead of fallback speech.
             return
         if reply:
+            if speech_text_is_temporarily_suppressed(reply):
+                self.logger("Realtime OpenClaw reply suppressed by temporary fallback silence guard")
+                return
             await session.websocket.send(json_dumps(build_llm(reply, session_id=session.session_id)))
             self.logger("Realtime OpenClaw reply left to command playback")
 
@@ -864,6 +874,9 @@ class RealtimeManager:
     ) -> None:
         text = str(text or "").strip()
         if not text:
+            return
+        if speech_text_is_temporarily_suppressed(text):
+            self.logger("Realtime speak suppressed by temporary fallback silence guard")
             return
         await self._abort_session_tts(session)
         self._mark(session, "device_tts_start")
@@ -902,6 +915,9 @@ class RealtimeManager:
         session.tts_task = None
 
     async def _run_tts(self, session: RealtimeDeviceSession, text: str) -> None:
+        if speech_text_is_temporarily_suppressed(text):
+            self.logger("Realtime TTS suppressed by temporary fallback silence guard")
+            return
         await session.websocket.send(json_dumps(build_llm(text, session_id=session.session_id)))
         await session.websocket.send(json_dumps(build_tts_state("start", session_id=session.session_id)))
         try:

@@ -28,7 +28,7 @@ static constexpr int kRecordMaxMs = CONFIG_STACKCHAN_RECORD_MAX_MS;
 static constexpr int kSilenceStopMs = CONFIG_STACKCHAN_SILENCE_STOP_MS;
 static constexpr int kRealtimeSttDrainTimeoutMs = 1800;
 static constexpr int kTtsStreamSampleRate = 16000;
-static constexpr size_t kTtsStreamBufferSamples = 4096;
+static constexpr size_t kTtsStreamBufferSamples = 1024;
 static constexpr int kSpeakerDmaTailDrainMs = 384;
 static constexpr int kPostSpeechEchoGuardMs = 0;
 static constexpr int kWakeFindOwnerServerGraceMs = 1200;
@@ -170,6 +170,7 @@ volatile bool speaking_light_running = false;
 volatile uint8_t speaking_light_level = 0;
 volatile uint32_t speaking_light_level_ms = 0;
 volatile bool speak_command_active = false;
+volatile int sequence_expression_hold_depth = 0;
 volatile uint32_t speech_output_finished_ms = 0;
 volatile uint32_t last_user_interaction_ms = 0;
 volatile bool wake_find_owner_pending = false;
@@ -273,6 +274,25 @@ static bool speech_output_is_busy()
 static void mark_speech_output_finished()
 {
     speech_output_finished_ms = M5.millis();
+}
+
+static bool sequence_expression_hold_active()
+{
+    return sequence_expression_hold_depth > 0;
+}
+
+static void begin_sequence_expression_hold(bool enabled)
+{
+    if (enabled) {
+        sequence_expression_hold_depth = sequence_expression_hold_depth + 1;
+    }
+}
+
+static void end_sequence_expression_hold(bool enabled)
+{
+    if (enabled && sequence_expression_hold_depth > 0) {
+        sequence_expression_hold_depth = sequence_expression_hold_depth - 1;
+    }
 }
 
 static bool post_speech_echo_guard_active()

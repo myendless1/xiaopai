@@ -80,9 +80,9 @@ Add `device_id` only when targeting a specific Xiaopai. If omitted, the plugin m
 
 ## Supported Values
 
-Expressions: `calm`, `sleep_dark`, `screen_off`, `shy`, `thinking`, `relaxed`, `smile_blink`, `speak1`, `speak2`, `blink_half`, `blink_closed`, `wink_half`, `wink_closed`, `heart_small`, `heart`, `nod_soft`, `nod_down`, `happy_squint`, `happy_squint_soft`.
+Expressions: `calm`, `sleep_dark`, `screen_off`, `shy`, `thinking`, `relaxed`, `smile_blink`, `blink_half`, `blink_closed`, `wink_half`, `wink_closed`, `heart_small`, `heart`, `nod_soft`, `nod_down`, `happy_squint`, `happy_squint_soft`.
 
-Actions: `blink`, `wink`, `heart_action`, `hearting`, `nod`, `nodding`, `speak`, `speaking`, `happy_dynamic`, `happy_squint_dynamic`, `node_head`, `nod_head`.
+Actions: `blink`, `wink`, `heart_action`, `hearting`, `nod`, `nodding`, `happy_dynamic`, `happy_squint_dynamic`, `node_head`, `nod_head`.
 
 Move directions: `left`, `right`, `up`, `down`, `center`.
 

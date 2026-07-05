@@ -92,6 +92,9 @@ DIALOG_SLEEP_REST_WORDS = (
 )
 DIALOG_SLEEP_WORDS = DIALOG_SLEEP_REST_WORDS + DIALOG_SLEEP_BYE_WORDS
 DIALOG_WAKE_ONLY_FILLERS = ("你好", "您好", "在吗", "在嗎", "醒醒", "hello", "hi", "嗨", "哈喽", "哈囉")
+SUPPRESSED_FALLBACK_SPEECH_NORMALIZED = {
+    "\u6211\u6ca1\u542c\u6e05\u53ef\u4ee5\u518d\u8bf4\u4e00\u904d\u5417",
+}
 
 AVAILABLE_EXPRESSIONS = (
     "calm",
@@ -196,7 +199,13 @@ SEDENTARY_REMINDER_EVENTS = (
     ("sedentary_reminder_move", "小派观察到你一直在忙，站起来活动两分钟吧。"),
     ("sedentary_reminder_walk", "眼睛和肩颈都需要休息一下，起身走一走吧。"),
 )
-PREWARM_EVENT_AUDIO_NAMES = tuple(name for name, _text in WAKE_REPLY_EVENTS + SLEEP_REPLY_EVENTS + SEDENTARY_REMINDER_EVENTS)
+TRAVEL_REMINDER_EVENTS = (
+    ("travel_packing_reminder", "记得增添外套，带好雨具。同时提醒您记得携带身份证、充电器、出差办公资料~"),
+    ("travel_formalwear_reminder", "查询到日程备注栏写着建议着正装，建议您带上一套，祝您一路平安！回来后见~"),
+)
+PREWARM_EVENT_AUDIO_NAMES = tuple(
+    name for name, _text in WAKE_REPLY_EVENTS + SLEEP_REPLY_EVENTS + SEDENTARY_REMINDER_EVENTS + TRAVEL_REMINDER_EVENTS
+)
 EVENT_AUDIO_CACHE_META_VERSION = 2
 ESP_APP_DESC_MAGIC_WORD = 0xABCD5432
 ESP_IMAGE_HEADER_SIZE = 24
@@ -217,6 +226,8 @@ HEAD_TOUCH_EVENT_TEXT.update(
 )
 EVENT_AUDIO_TEXT = dict(HEAD_TOUCH_EVENT_TEXT)
 EVENT_AUDIO_TEXT.update({name: text for name, text in SEDENTARY_REMINDER_EVENTS})
+EVENT_AUDIO_TEXT.update({name: text for name, text in TRAVEL_REMINDER_EVENTS})
+AUTO_SPEECH_CACHE_BY_TEXT = {text: name for name, text in TRAVEL_REMINDER_EVENTS}
 
 ALIYUN_TTS_VOICE_DOC_URL = "https://help.aliyun.com/zh/isi/developer-reference/overview-of-speech-synthesis"
 ALIYUN_TTS_DEBUG_VOICES = (
@@ -302,43 +313,6 @@ EXPRESSION_ALIASES = {
     "头部点头": "node_head",
     "node_head": "node_head",
     "nod_head": "nod_head",
-}
-
-MOUTH_ALIASES = {
-    "closed": "closed",
-    "close": "closed",
-    "closed_mouth": "closed",
-    "闭嘴": "closed",
-    "合嘴": "closed",
-    "small": "small",
-    "small_open": "small",
-    "small_mouth": "small",
-    "speak1": "small",
-    "小嘴": "small",
-    "big": "big",
-    "big_open": "big",
-    "big_mouth": "big",
-    "large": "big",
-    "open": "big",
-    "speak2": "big",
-    "大嘴": "big",
-    "wry": "wry",
-    "skew": "wry",
-    "crooked": "wry",
-    "crooked_mouth": "wry",
-    "thinking_mouth": "wry",
-    "歪嘴": "wry",
-    "small_heart": "small_heart",
-    "heart_small": "small_heart",
-    "small-heart": "small_heart",
-    "kiss": "small_heart",
-    "小心": "small_heart",
-    "小爱心": "small_heart",
-    "big_heart": "big_heart",
-    "heart_big": "big_heart",
-    "big-heart": "big_heart",
-    "大心": "big_heart",
-    "大爱心": "big_heart",
 }
 
 MOTION_DIRECTION_ALIASES = {
@@ -608,6 +582,10 @@ def parse_voice_motion_command(text: str) -> dict | None:
 
 def normalize_voice_command_text(text: str) -> str:
     return re.sub(r"[\s,_\-，。.!！?？/（）()]+", "", text.strip().lower())
+
+
+def speech_text_is_temporarily_suppressed(text: str) -> bool:
+    return normalize_voice_command_text(str(text or "")) in SUPPRESSED_FALLBACK_SPEECH_NORMALIZED
 
 
 SPEECH_ENDING_PUNCT_RE = re.compile(r"[。！？!?；;]$")
@@ -1030,12 +1008,22 @@ def command_contains_speech(command: dict) -> bool:
 
 def normalize_command_speech_payload(command_type: str, payload) -> None:
     if command_type == "speak" and isinstance(payload, dict):
-        payload["text"] = normalize_speech_text_for_voice(str(payload.get("text") or ""))
+        text = normalize_speech_text_for_voice(str(payload.get("text") or ""))
+        payload["text"] = "" if speech_text_is_temporarily_suppressed(text) else text
+        if text and not payload.get("cache_name"):
+            cache_name = AUTO_SPEECH_CACHE_BY_TEXT.get(text)
+            if cache_name:
+                payload["cache_name"] = cache_name
         return
     if command_type == "sequence" and isinstance(payload, list):
         for step in payload:
             if isinstance(step, dict) and step.get("type") == "speak":
-                step["text"] = normalize_speech_text_for_voice(str(step.get("text") or ""))
+                text = normalize_speech_text_for_voice(str(step.get("text") or ""))
+                step["text"] = "" if speech_text_is_temporarily_suppressed(text) else text
+                if text and not step.get("cache_name"):
+                    cache_name = AUTO_SPEECH_CACHE_BY_TEXT.get(text)
+                    if cache_name:
+                        step["cache_name"] = cache_name
 
 
 class DeviceCommandQueue:
@@ -1260,7 +1248,6 @@ class Handler(BaseHTTPRequestHandler):
                     "channels": 1,
                     "voice": self.server.voice,
                     "expressions": list(AVAILABLE_EXPRESSIONS),
-                    "mouths": list(AVAILABLE_MOUTHS),
                     "actions": list(AVAILABLE_ACTIONS),
                     "head_touch_events": HEAD_TOUCH_EVENT_TEXT,
                     "face_detector": self.server.face_detector.status()
@@ -1314,12 +1301,10 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "type": "expressions",
                     "expressions": list(AVAILABLE_EXPRESSIONS),
-                    "mouths": list(AVAILABLE_MOUTHS),
                     "actions": list(AVAILABLE_ACTIONS),
                     "aliases": EXPRESSION_ALIASES,
-                    "mouth_aliases": MOUTH_ALIASES,
                     "examples": {
-                        "expression": "/expression/shy?mouth=wry&device_id=...",
+                        "expression": "/expression/shy?device_id=...",
                         "action": "/action/blink?device_id=...",
                     },
                 }
@@ -1798,13 +1783,8 @@ class Handler(BaseHTTPRequestHandler):
             command_wire_type = "motion" if command_type == "move" else command_type
         if command_wire_type in ("state", "device_state") and isinstance(payload, dict):
             payload["state"] = normalize_device_state_name(payload.get("state") or payload.get("name") or "waiting")
-        elif command_wire_type == "mouth" and isinstance(payload, dict):
-            payload["mouth"] = normalize_mouth_name(payload.get("mouth") or payload.get("name") or payload.get("shape"))
         elif command_wire_type == "face" and isinstance(payload, dict):
             payload["expression"] = normalize_expression_name(payload.get("expression") or payload.get("face") or "calm")
-            if payload.get("mouth") or payload.get("mouth_shape"):
-                payload["mouth"] = normalize_mouth_name(payload.get("mouth") or payload.get("mouth_shape"))
-                payload.pop("mouth_shape", None)
         elif command_wire_type == "speak" and isinstance(payload, dict):
             payload.setdefault("pause_listener", True)
         elif command_wire_type == "sequence" and isinstance(payload, list):
@@ -1816,9 +1796,6 @@ class Handler(BaseHTTPRequestHandler):
                         step["type"] = expression
                     else:
                         step["expression"] = expression
-                        if step.get("mouth") or step.get("mouth_shape"):
-                            step["mouth"] = normalize_mouth_name(step.get("mouth") or step.get("mouth_shape"))
-                            step.pop("mouth_shape", None)
                 elif isinstance(step, dict) and step.get("type") == "action":
                     action = normalize_expression_name(step.get("action") or step.get("expression") or "calm")
                     if action in PHYSICAL_ACTIONS:
@@ -1827,11 +1804,6 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         step["type"] = "face"
                         step["expression"] = action
-                        if step.get("mouth") or step.get("mouth_shape"):
-                            step["mouth"] = normalize_mouth_name(step.get("mouth") or step.get("mouth_shape"))
-                            step.pop("mouth_shape", None)
-                elif isinstance(step, dict) and step.get("type") == "mouth":
-                    step["mouth"] = normalize_mouth_name(step.get("mouth") or step.get("name") or step.get("shape"))
                 elif isinstance(step, dict) and step.get("type") == "speak":
                     step.setdefault("pause_listener", True)
         normalize_command_speech_payload(command_wire_type, payload)
@@ -1865,7 +1837,6 @@ class Handler(BaseHTTPRequestHandler):
                     "type": "error",
                     "message": f"unknown expression or action: {expression}",
                     "expressions": list(AVAILABLE_EXPRESSIONS),
-                    "mouths": list(AVAILABLE_MOUTHS),
                     "actions": list(AVAILABLE_ACTIONS),
                 },
                 HTTPStatus.BAD_REQUEST,
@@ -1880,9 +1851,6 @@ class Handler(BaseHTTPRequestHandler):
             command = make_command(expression, {}, priority=priority, interrupt=interrupt)
         else:
             payload = {"expression": expression}
-            mouth = normalize_mouth_name(first_value(query, "mouth") or first_value(query, "mouth_shape"))
-            if mouth:
-                payload["mouth"] = mouth
             command = make_command("face", payload, priority=priority, interrupt=interrupt)
         queued = self._enqueue_command(device_id, command)
         self._send_json(
@@ -2260,10 +2228,13 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             stat = os.stat(path)
+            self._log_info(f"Event audio served: name={name} format={audio_ext} bytes={stat.st_size}")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "audio/wav" if audio_ext == "wav" else "application/octet-stream")
             self.send_header("Content-Length", str(stat.st_size))
             self.send_header("X-Audio-Format", "wav" if audio_ext == "wav" else "pcm_s16le")
+            self.send_header("X-Event-Audio-Name", name)
+            self.send_header("X-Event-Audio-Cache", "hit")
             self.send_header("X-Sample-Rate", str(self.server.sample_rate))
             self.send_header("X-Channels", "1")
             self.send_header("Cache-Control", "public, max-age=31536000, immutable")
@@ -2542,6 +2513,13 @@ class Handler(BaseHTTPRequestHandler):
         if not text:
             self.send_error(HTTPStatus.BAD_REQUEST, "missing text")
             return
+        if speech_text_is_temporarily_suppressed(text):
+            self._log_info("TTS suppressed by temporary fallback silence guard")
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            return
 
         parts = list(split_sentences(text, self.server.max_sentence_chars))
         if not parts:
@@ -2549,28 +2527,13 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         stream_started = time.perf_counter()
+        prefetch_pool: ThreadPoolExecutor | None = None
+        prefetch_futures = []
         try:
             self._log_info(
-                f"TTS prepare buffered stream: voice={options.voice} sentences={len(parts)} text={text!r}"
+                f"TTS prepare live stream: voice={options.voice} sentences={len(parts)} text={text!r}"
             )
-            audio_parts: list[bytes] = []
-            if len(parts) == 1:
-                audio = self._aliyun_tts_pcm_with_retries(parts[0], options)
-                audio_parts.append(audio)
-                self._log_info(f"TTS audio bytes: {len(audio)} for {parts[0]!r}")
-            else:
-                workers = max(1, min(self.server.tts_prefetch_workers, len(parts)))
-                future_timeout = self.server.tts_request_timeout * (self.server.tts_retries + 1) + 5
-                with ThreadPoolExecutor(max_workers=workers) as pool:
-                    futures = [pool.submit(self._aliyun_tts_pcm_with_retries, part, options) for part in parts]
-                    for part, future in zip(parts, futures):
-                        wait_started = time.perf_counter()
-                        audio = future.result(timeout=future_timeout)
-                        wait_ms = (time.perf_counter() - wait_started) * 1000
-                        audio_parts.append(audio)
-                        self._log_info(f"TTS audio bytes: {len(audio)} wait_ms={wait_ms:.0f} for {part!r}")
-            tail_silence = self._tts_tail_silence(options.sample_rate)
-            pcm = b"".join(audio_parts) + tail_silence
+            first_response = self._open_aliyun_tts_stream_with_retries(parts[0], options)
         except Exception as exc:
             self._log_error(f"TTS failed before response started: {exc}")
             self._send_json({"type": "error", "message": str(exc)}, HTTPStatus.BAD_GATEWAY)
@@ -2578,8 +2541,8 @@ class Handler(BaseHTTPRequestHandler):
 
         ready_ms = (time.perf_counter() - stream_started) * 1000
         self._log_info(
-            f"TTS stream ready: voice={options.voice} sentences={len(parts)} "
-            f"bytes={len(pcm)} ready_ms={ready_ms:.0f}, text={text!r}"
+            f"TTS live stream ready: voice={options.voice} sentences={len(parts)} "
+            f"ready_ms={ready_ms:.0f}, text={text!r}"
         )
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/octet-stream")
@@ -2590,21 +2553,67 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-TTS-Volume", str(options.volume))
         self.send_header("X-TTS-Speech-Rate", str(options.speech_rate))
         self.send_header("X-TTS-Pitch-Rate", str(options.pitch_rate))
-        self.send_header("Content-Length", str(len(pcm)))
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Connection", "close")
         self.end_headers()
         self.close_connection = True
 
+        total_bytes = 0
+        first_bytes = 0
         try:
-            if pcm:
-                self.wfile.write(pcm)
+            if len(parts) > 1:
+                workers = max(1, min(self.server.tts_prefetch_workers, len(parts) - 1))
+                prefetch_pool = ThreadPoolExecutor(max_workers=workers)
+                prefetch_futures = [
+                    (part, prefetch_pool.submit(self._aliyun_tts_pcm_with_retries, part, options))
+                    for part in parts[1:]
+                ]
+
+            chunk_size = max(512, int(getattr(self.server, "chunk_size", 4096) or 4096))
+            first_bytes = self._copy_pcm_stream_to_client(first_response, chunk_size)
+            total_bytes += first_bytes
+            self._log_info(f"TTS streamed first sentence: bytes={first_bytes} text={parts[0]!r}")
+
+            future_timeout = self.server.tts_request_timeout * (self.server.tts_retries + 1) + 5
+            for part, future in prefetch_futures:
+                wait_started = time.perf_counter()
+                audio = future.result(timeout=future_timeout)
+                wait_ms = (time.perf_counter() - wait_started) * 1000
+                if audio:
+                    self.wfile.write(audio)
+                    self.wfile.flush()
+                    total_bytes += len(audio)
+                self._log_info(f"TTS streamed prefetched sentence: bytes={len(audio)} wait_ms={wait_ms:.0f} text={part!r}")
+
+            tail_silence = self._tts_tail_silence(options.sample_rate)
+            if tail_silence:
+                self.wfile.write(tail_silence)
                 self.wfile.flush()
+                total_bytes += len(tail_silence)
             total_ms = (time.perf_counter() - stream_started) * 1000
-            self._log_info(f"TTS stream done: bytes={len(pcm)} total_ms={total_ms:.0f}")
+            self._log_info(f"TTS live stream done: bytes={total_bytes} first_bytes={first_bytes} total_ms={total_ms:.0f}")
         except (BrokenPipeError, ConnectionResetError):
             self._log_info("TTS client disconnected")
         except Exception as exc:
             self._log_error(f"TTS failed after stream started: {exc}")
+        finally:
+            try:
+                first_response.close()
+            except Exception:
+                pass
+            if prefetch_pool is not None:
+                prefetch_pool.shutdown(wait=False, cancel_futures=True)
+
+    def _copy_pcm_stream_to_client(self, response, chunk_size: int) -> int:
+        total_bytes = 0
+        while True:
+            chunk = response.read(chunk_size)
+            if not chunk:
+                break
+            self.wfile.write(chunk)
+            self.wfile.flush()
+            total_bytes += len(chunk)
+        return total_bytes
 
     def _aliyun_tts_pcm_with_retries(self, text: str, options: TtsRequestOptions | None = None) -> bytes:
         last_error: Exception | None = None
@@ -2621,8 +2630,7 @@ class Handler(BaseHTTPRequestHandler):
         samples = int(sample_rate or self.server.sample_rate) * ms // 1000
         return b"\x00\x00" * samples
 
-    def _aliyun_tts_pcm(self, text: str, options: TtsRequestOptions | None = None) -> bytes:
-        started = time.perf_counter()
+    def _aliyun_tts_request(self, text: str, options: TtsRequestOptions | None = None):
         voice = options.voice if options is not None else self.server.voice
         sample_rate = options.sample_rate if options is not None else self.server.sample_rate
         volume = options.volume if options is not None else self.server.volume
@@ -2640,7 +2648,38 @@ class Handler(BaseHTTPRequestHandler):
             "pitch_rate": pitch_rate,
         }
         url = self.server.tts_url + "?" + urllib.parse.urlencode(params)
-        req = urllib.request.Request(url, method="GET")
+        return urllib.request.Request(url, method="GET")
+
+    def _open_aliyun_tts_stream_with_retries(self, text: str, options: TtsRequestOptions | None = None):
+        last_error: Exception | None = None
+        for attempt in range(1, self.server.tts_retries + 2):
+            try:
+                return self._open_aliyun_tts_stream(text, options)
+            except Exception as exc:
+                last_error = exc
+                self._log_error(f"TTS stream open attempt {attempt} failed for {text!r}: {exc}")
+        raise RuntimeError(f"Aliyun TTS stream failed after {self.server.tts_retries + 1} attempt(s): {last_error}")
+
+    def _open_aliyun_tts_stream(self, text: str, options: TtsRequestOptions | None = None):
+        started = time.perf_counter()
+        req = self._aliyun_tts_request(text, options)
+        try:
+            resp = urllib.request.urlopen(req, timeout=self.server.tts_request_timeout)
+            content_type = resp.headers.get("Content-Type", "")
+            if "json" in content_type:
+                detail = resp.read().decode("utf-8", errors="replace")
+                resp.close()
+                raise RuntimeError(detail)
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            self._log_info(f"Aliyun TTS stream open: chars={len(text)} elapsed_ms={elapsed_ms:.0f}")
+            return resp
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Aliyun TTS HTTP {exc.code}: {detail}") from exc
+
+    def _aliyun_tts_pcm(self, text: str, options: TtsRequestOptions | None = None) -> bytes:
+        started = time.perf_counter()
+        req = self._aliyun_tts_request(text, options)
         try:
             with urllib.request.urlopen(req, timeout=self.server.tts_request_timeout) as resp:
                 content_type = resp.headers.get("Content-Type", "")
@@ -2977,13 +3016,6 @@ def normalize_expression_name(expression: str) -> str:
     return EXPRESSION_ALIASES.get(value, value)
 
 
-def normalize_mouth_name(mouth: str) -> str:
-    value = str(mouth or "").strip()
-    if not value:
-        return ""
-    return MOUTH_ALIASES.get(value, value)
-
-
 DEVICE_STATE_ALIASES = {
     "wait": "waiting",
     "think": "waiting",
@@ -3144,33 +3176,16 @@ def command_payload_from_query(command_type: str, query: dict):
         return {
             "state": normalize_device_state_name(first_value(query, "state") or first_value(query, "name") or "waiting")
         }
-    if command_type == "mouth":
-        return {
-            "mouth": normalize_mouth_name(
-                first_value(query, "mouth") or first_value(query, "name") or first_value(query, "shape")
-            )
-        }
     if command_type in ("face", "expression", "action"):
         expression = first_value(query, "expression") or first_value(query, "face") or "calm"
         if command_type in ("expression", "action"):
             expression = first_value(query, "name") or first_value(query, "action") or expression
-        payload = {"expression": normalize_expression_name(expression)}
-        mouth = normalize_mouth_name(first_value(query, "mouth") or first_value(query, "mouth_shape"))
-        if mouth:
-            payload["mouth"] = mouth
-        return payload
+        return {"expression": normalize_expression_name(expression)}
     if command_type == "speak":
         payload = {"text": first_value(query, "text") or "你好呀"}
         voice = first_value(query, "voice")
         if voice:
             payload["voice"] = voice
-        animate_mouth = (
-            first_value(query, "animate_mouth")
-            or first_value(query, "mouth_animation")
-            or first_value(query, "lip_sync")
-        )
-        if animate_mouth != "":
-            payload["animate_mouth"] = parse_bool(animate_mouth)
         for key in ("sample_rate", "volume", "speech_rate", "pitch_rate"):
             value = first_value(query, key)
             if value != "":
@@ -3233,22 +3248,12 @@ def command_payload_from_query(command_type: str, query: dict):
         text = first_value(query, "text")
         expression = normalize_expression_name(first_value(query, "expression") or "calm")
         face_step = {"type": "face", "expression": expression}
-        mouth = normalize_mouth_name(first_value(query, "mouth") or first_value(query, "mouth_shape"))
-        if mouth:
-            face_step["mouth"] = mouth
         steps = [face_step]
         if text:
             speak_step = {"type": "speak", "text": text, "pause_listener": True}
             voice = first_value(query, "voice")
             if voice:
                 speak_step["voice"] = voice
-            animate_mouth = (
-                first_value(query, "animate_mouth")
-                or first_value(query, "mouth_animation")
-                or first_value(query, "lip_sync")
-            )
-            if animate_mouth != "":
-                speak_step["animate_mouth"] = parse_bool(animate_mouth)
             for key in ("sample_rate", "volume", "speech_rate", "pitch_rate"):
                 value = first_value(query, key)
                 if value != "":

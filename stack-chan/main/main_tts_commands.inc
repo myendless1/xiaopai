@@ -449,6 +449,13 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
     if (text == nullptr || text[0] == '\0') {
         return true;
     }
+    static constexpr const char* kTemporarilySuppressedFallbackSpeech =
+        "\xE6\x88\x91\xE6\xB2\xA1\xE5\x90\xAC\xE6\xB8\x85\xEF\xBC\x8C\xE5\x8F\xAF\xE4\xBB\xA5"
+        "\xE5\x86\x8D\xE8\xAF\xB4\xE4\xB8\x80\xE9\x81\x8D\xE5\x90\x97";
+    if (strcmp(text, kTemporarilySuppressedFallbackSpeech) == 0) {
+        ESP_LOGI(TAG, "Speak suppressed by temporary fallback silence guard");
+        return true;
+    }
 
     local_voice_begin_speaking("speak command");
     bool should_pause_listener = pause_voice_listener || xiaozhi_task_handle != nullptr;

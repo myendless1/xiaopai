@@ -58,8 +58,8 @@ Alternative considered: expose separate Gateway methods for every command type. 
 
 The plugin should define TypeScript types and runtime validators for command input, using fixed allowlists from the stack-chan API document:
 
-- Expressions: `calm`, `shy`, `thinking`, `speak1`, `speak2`, `blink_half`, `blink_closed`, `wink_half`, `wink_closed`, `heart_small`, `heart`, `nod_soft`, `nod_down`, `happy_squint`, `happy_squint_soft`
-- Actions: `blink`, `wink`, `heart_action`, `hearting`, `nod`, `nodding`, `speak`, `speaking`, `happy_dynamic`, `happy_squint_dynamic`
+- Expressions: `calm`, `shy`, `thinking`, `blink_half`, `blink_closed`, `wink_half`, `wink_closed`, `heart_small`, `heart`, `nod_soft`, `nod_down`, `happy_squint`, `happy_squint_soft`
+- Actions: `blink`, `wink`, `heart_action`, `hearting`, `nod`, `nodding`, `happy_dynamic`, `happy_squint_dynamic`
 - Move directions: `left`, `right`, `up`, `down`, `center`
 
 Validation should reject empty speech text, unknown command names, invalid sequence steps, and unsafe numeric bounds before calling the HTTP adapter. `center` should not require a degree value.

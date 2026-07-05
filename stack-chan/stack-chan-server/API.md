@@ -33,17 +33,14 @@ Returns online devices, pending command counts, and last acknowledgements. OpenC
 Queue a TTS speech command.
 
 ```http
-GET /command/speak?text=<text>&animate_mouth=false&device_id=<optional>
+GET /command/speak?text=<text>&device_id=<optional>
 ```
-
-`animate_mouth=false` keeps the current expression static while audio plays. It defaults to `true`.
 
 Example:
 
 ```bash
 curl -G 'http://127.0.0.1:8091/command/speak' \
-  --data-urlencode 'text=你好，我是小派同学。' \
-  --data-urlencode 'animate_mouth=false'
+  --data-urlencode 'text=你好，我是小派同学。'
 ```
 
 ## Expression And Animation
@@ -51,8 +48,8 @@ curl -G 'http://127.0.0.1:8091/command/speak' \
 Queue a face expression or face animation.
 
 ```http
-GET /command/face?expression=<name>&mouth=<optional>&device_id=<optional>
-GET /expression/<name>?mouth=<optional>&device_id=<optional>
+GET /command/face?expression=<name>&device_id=<optional>
+GET /expression/<name>?device_id=<optional>
 GET /action/<name>?device_id=<optional>
 ```
 
@@ -62,12 +59,6 @@ Expressions:
 calm, sleep_dark, screen_off, shy, thinking, relaxed, smile_blink,
 blink_half, blink_closed, wink_half, wink_closed,
 heart_small, heart, nod_soft, nod_down, happy_squint, happy_squint_soft
-```
-
-Mouths:
-
-```text
-closed, small, big, wry, small_heart, big_heart
 ```
 
 Actions / animations:
@@ -184,7 +175,7 @@ The payload is a JSON array. Supported step types:
   {"type": "move", "action": "left", "degree": 15, "duration_ms": 500},
   {"type": "find_owner", "rounds": 1, "reply": "我在"},
   {"type": "volume", "direction": "up", "step": 10},
-  {"type": "speak", "text": "我往左看一下。", "animate_mouth": false},
+  {"type": "speak", "text": "我往左看一下。"},
   {"type": "face", "expression": "happy_squint"}
 ]
 ```
@@ -214,7 +205,7 @@ Speak:
 ```json
 {
   "type": "speak",
-  "payload": {"text": "你好呀", "animate_mouth": false},
+  "payload": {"text": "你好呀"},
   "interrupt": true
 }
 ```

@@ -713,7 +713,9 @@ static void set_light_strip_listening()
 static void set_listening_outputs()
 {
     set_light_strip_listening();
-    show_expression(kDefaultExpression);
+    if (!sequence_expression_hold_active()) {
+        show_expression(kDefaultExpression);
+    }
 }
 
 static void set_light_strip_speaking()
@@ -1376,6 +1378,11 @@ static void run_sedentary_find_owner_loop()
             vTaskDelay(pdMS_TO_TICKS(std::min<uint32_t>(remaining, 1000)));
         }
         next_find_ms += kSedentaryFindOwnerIntervalMs;
+
+        if (!sleep_dark_is_visible()) {
+            ESP_LOGI(TAG, "Sedentary owner check skipped: active mode");
+            continue;
+        }
 
         tracking_stop_requested = false;
         FindOwnerResult result = run_find_owner_detection(kFindOwnerMaxRounds, kFindOwnerYawGain, kFindOwnerPitchGain,

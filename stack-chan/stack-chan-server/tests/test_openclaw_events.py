@@ -83,25 +83,24 @@ class CommandPayloadTest(unittest.TestCase):
         self.assertEqual(payload["speech_rate"], -80)
         self.assertEqual(payload["pitch_rate"], 20)
 
-    def test_speak_query_can_disable_mouth_animation(self):
+    def test_speak_query_payload_has_only_speech_fields(self):
         payload = server.command_payload_from_query(
             "speak",
-            {"text": ["保持静态表情说话。"], "animate_mouth": ["false"]},
+            {"text": ["保持静态表情说话。"]},
         )
 
-        self.assertEqual(payload["text"], "保持静态表情说话。")
-        self.assertIs(payload["animate_mouth"], False)
+        self.assertEqual(payload, {"text": "保持静态表情说话。"})
 
-    def test_sequence_query_can_disable_mouth_animation(self):
+    def test_sequence_query_speak_step_has_only_speech_fields(self):
         payload = server.command_payload_from_query(
             "sequence",
-            {"expression": ["thinking"], "text": ["我想一下。"], "mouth_animation": ["false"]},
+            {"expression": ["thinking"], "text": ["我想一下。"]},
         )
 
         self.assertEqual(payload[0], {"type": "face", "expression": "thinking"})
         self.assertEqual(
             payload[1],
-            {"type": "speak", "text": "我想一下。", "pause_listener": True, "animate_mouth": False},
+            {"type": "speak", "text": "我想一下。", "pause_listener": True},
         )
 
     def test_speech_text_normalizes_inline_markdown_table(self):

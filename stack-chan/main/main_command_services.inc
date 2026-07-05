@@ -191,13 +191,9 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
         int pitch_rate = json_int_value(payload, "pitch_rate", 0);
         bool pause_listener = json_bool_value(payload, "pause_listener", false) ||
                               json_bool_value(payload, "pause_voice_listener", false);
-        if (voice_recording_active) {
+        if (voice_recording_active && !in_sequence) {
             bool queued = enqueue_speak_command("", text.c_str(), cache_name.c_str(), pause_listener, voice.c_str(),
                                                 sample_rate, volume, speech_rate, pitch_rate);
-            if (in_sequence) {
-                ESP_LOGI(TAG, "Sequence speak queued until current recording finishes: queued=%d",
-                         static_cast<int>(queued));
-            }
             return queued;
         }
         if (in_sequence) {
@@ -291,6 +287,7 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
         }
         const int count = cJSON_GetArraySize(payload);
         const bool restore_expression = sequence_step_sets_temporary_expression(command);
+        begin_sequence_expression_hold(restore_expression);
         bool local_sleep_or_stop_executed = false;
         bool* sleep_or_stop_executed = sequence_sleep_or_stop_executed != nullptr
             ? sequence_sleep_or_stop_executed
@@ -309,6 +306,7 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
                 break;
             }
         }
+        end_sequence_expression_hold(restore_expression);
         if (restore_expression && !*sleep_or_stop_executed && !in_sequence) {
             show_expression(kDefaultExpression);
         }
@@ -543,7 +541,8 @@ static void start_background_services()
 
         start_head_touch_services();
         start_speak_command_service();
-        start_sedentary_find_owner_service();
+        // Temporarily disabled: periodic sedentary find-owner checks.
+        // start_sedentary_find_owner_service();
         log_memory_snapshot("after helper tasks");
 
         if (xiaozhi_task_handle == nullptr) {

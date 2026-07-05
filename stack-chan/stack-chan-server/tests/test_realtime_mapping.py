@@ -38,7 +38,6 @@ from server import (
     command_payload_from_query,
     event_audio_cache_meta,
     has_dialog_sleep_word,
-    normalize_mouth_name,
     sleep_reply_event_for_text,
     tts_request_options_from_params,
 )
@@ -56,16 +55,33 @@ class RealtimeMappingTest(unittest.TestCase):
         self.assertEqual(calls[0].name, STACKCHAN_TOOL_FACE_SET)
         self.assertEqual(calls[0].arguments, {"expression": "thinking"})
 
-    def test_mouth_aliases_are_separate_from_static_expressions(self):
-        self.assertNotIn("speak1", AVAILABLE_EXPRESSIONS)
-        self.assertNotIn("speak2", AVAILABLE_EXPRESSIONS)
-        self.assertNotIn("speak", AVAILABLE_ACTIONS)
-        self.assertEqual(normalize_mouth_name("大嘴"), "big")
-        self.assertEqual(normalize_mouth_name("小心"), "small_heart")
+    def test_supported_face_values_are_expression_only(self):
+        self.assertEqual(
+            AVAILABLE_EXPRESSIONS,
+            (
+                "calm",
+                "sleep_dark",
+                "screen_off",
+                "shy",
+                "thinking",
+                "relaxed",
+                "smile_blink",
+                "blink_half",
+                "blink_closed",
+                "wink_half",
+                "wink_closed",
+                "heart_small",
+                "heart",
+                "nod_soft",
+                "nod_down",
+                "happy_squint",
+                "happy_squint_soft",
+            ),
+        )
 
-    def test_face_query_can_include_mouth_shape(self):
-        payload = command_payload_from_query("face", {"expression": ["thinking"], "mouth": ["歪嘴"]})
-        self.assertEqual(payload, {"expression": "thinking", "mouth": "wry"})
+    def test_face_query_contains_only_expression(self):
+        payload = command_payload_from_query("face", {"expression": ["thinking"]})
+        self.assertEqual(payload, {"expression": "thinking"})
 
     def test_motion_maps_to_head_move(self):
         calls = command_to_mcp_calls({"type": "motion", "payload": {"type": "left", "degree": 12, "duration_ms": 300}})
