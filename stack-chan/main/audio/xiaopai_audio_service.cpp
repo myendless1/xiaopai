@@ -60,6 +60,9 @@
 #ifndef CONFIG_STACKCHAN_MIC_MAGNIFICATION
 #define CONFIG_STACKCHAN_MIC_MAGNIFICATION 1
 #endif
+#ifndef CONFIG_STACKCHAN_DJI_MIC_USB_INPUT
+#define CONFIG_STACKCHAN_DJI_MIC_USB_INPUT 0
+#endif
 
 namespace {
 
@@ -289,7 +292,17 @@ static const char* audio_input_source_label_impl(AudioInputSource source)
 
 static bool dji_receiver_protocol_ready(const DjiMicReceiverStatus& dji)
 {
-    return dji.detected && dji.audio_streaming && dji.capture_ready;
+    return dji.detected && dji.audio_streaming && dji.identity_confirmed;
+}
+
+static bool dji_receiver_should_own_input(const DjiMicReceiverStatus& dji)
+{
+#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT
+    (void)dji;
+    return true;
+#else
+    return dji_receiver_protocol_ready(dji);
+#endif
 }
 
 static void restore_aw88298_playback_registers(int sample_rate)
@@ -879,18 +892,24 @@ public:
             ESP_LOGE(TAG, "failed to create audio queues");
             return false;
         }
+#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT
+        active_input_source_ = static_cast<int>(AudioInputSource::kDjiMicReceiver);
+        vad_state_ = static_cast<int>(AudioVadState::kUnknown);
+        ESP_LOGI(TAG, "DJI Mic USB输入为启动主输入: 内置mic capture/ASR/WS audio sender在UAC首帧前禁用");
+        if (!dji_mic_receiver_input_start()) {
+            ESP_LOGE(TAG, "DJI Mic接收器输入启动失败，内置麦克风仍保持禁用: %s",
+                     dji_mic_receiver_input_status().detail);
+        } else {
+            ESP_LOGI(TAG, "DJI Mic接收器输入门控已启用: 等待STREAM_CONNECTED和第一帧UAC PCM");
+        }
+#else
         if (!codec_.init()) {
             ESP_LOGE(TAG, "codec init failed");
             ESP_LOGW(TAG, "内部音频codec不可用: 将继续运行DJI USB输入；内置麦克风和扬声器暂不可用");
         } else {
             codec_initialized_ = true;
         }
-        if (!dji_mic_receiver_input_start()) {
-            ESP_LOGI(TAG, "DJI Mic接收器自动输入未启动: %s",
-                     dji_mic_receiver_input_status().detail);
-        } else {
-            ESP_LOGI(TAG, "DJI Mic接收器自动输入已启用: 插入后将自动切换语音输入源");
-        }
+#endif
         if (!init_opus_decoder()) {
             ESP_LOGW(TAG, "Opus decoder unavailable; binary TTS playback will fail");
         }
@@ -903,13 +922,12 @@ public:
         if (!init()) {
             return false;
         }
-        if (codec_initialized_.load() && !codec_started_.load()) {
-            if (!codec_.start()) {
-                ESP_LOGE(TAG, "codec start failed");
-                ESP_LOGW(TAG, "内部音频codec启动失败: 将继续运行DJI USB输入；内置麦克风和扬声器暂不可用");
-            } else {
-                codec_started_ = true;
-            }
+        DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
+        if (!dji_receiver_should_own_input(dji) || dji.capture_ready) {
+            ensure_codec_started("audio service start");
+        } else if (last_input_unavailable_log_ticks_ == 0) {
+            ESP_LOGI(TAG, "内部codec启动已延后: 等待DJI Mic首帧UAC PCM，避免USB枚举期间并行采集");
+            last_input_unavailable_log_ticks_ = xTaskGetTickCount();
         }
         if (running_) {
             return true;
@@ -918,7 +936,7 @@ public:
         abort_generation_++;
 
 #if CONFIG_STACKCHAN_AUDIO_DEVICE_AEC
-        if (!afe_init_attempted_) {
+        if (!dji_receiver_should_own_input(dji) && !afe_init_attempted_) {
             afe_init_attempted_ = true;
             afe_ready_ = init_afe();
         }
@@ -979,6 +997,10 @@ public:
             return true;
         }
         if (!start() || play_queue_ == nullptr) {
+            return false;
+        }
+        if (!ensure_codec_started("playback request")) {
+            ESP_LOGW(TAG, "播放请求已延后/拒绝: 内部codec尚未可用");
             return false;
         }
         if (!codec_started_.load()) {
@@ -1075,6 +1097,11 @@ public:
             return 0;
         }
 
+        if (dji_exclusive_waiting_for_audio()) {
+            drop_queued_clean_frames();
+            return 0;
+        }
+
         if (!clean_consumer_recent()) {
             drop_queued_clean_frames();
         }
@@ -1135,6 +1162,7 @@ public:
         status.active_source = static_cast<AudioInputSource>(active_input_source_.load());
         status.dji_receiver_detected = dji.detected;
         status.dji_receiver_streaming = dji.audio_streaming;
+        status.dji_receiver_capture_ready = dji.capture_ready;
         status.dji_receiver_identity_confirmed = dji.identity_confirmed;
         status.dji_receiver_manufacturer = dji.manufacturer;
         status.dji_receiver_product = dji.product;
@@ -1258,6 +1286,36 @@ private:
         return timeout - elapsed;
     }
 
+    bool ensure_codec_started(const char* reason)
+    {
+        if (codec_started_.load()) {
+            return true;
+        }
+        DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
+        if (dji_receiver_should_own_input(dji) && !dji.capture_ready) {
+            ESP_LOGI(TAG, "内部codec启动继续延后: reason=%s dji_capture=%d detail=%s",
+                     reason != nullptr ? reason : "-",
+                     static_cast<int>(dji.capture_ready),
+                     dji.detail != nullptr ? dji.detail : "-");
+            return false;
+        }
+        if (!codec_initialized_.load()) {
+            if (!codec_.init()) {
+                ESP_LOGE(TAG, "codec init failed: reason=%s", reason != nullptr ? reason : "-");
+                return false;
+            }
+            codec_initialized_ = true;
+        }
+        if (!codec_.start()) {
+            ESP_LOGE(TAG, "codec start failed: reason=%s", reason != nullptr ? reason : "-");
+            return false;
+        }
+        codec_started_ = true;
+        ESP_LOGI(TAG, "内部codec已启动: reason=%s dji_capture=%d",
+                 reason != nullptr ? reason : "-", static_cast<int>(dji.capture_ready));
+        return true;
+    }
+
     bool init_opus_decoder()
     {
         esp_opus_dec_cfg_t opus_cfg = {};
@@ -1323,16 +1381,22 @@ private:
         while (running_) {
             DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
             log_dji_status_if_changed(dji);
-            if (dji_receiver_protocol_ready(dji)) {
+            if (dji_receiver_should_own_input(dji)) {
                 set_active_input_source(AudioInputSource::kDjiMicReceiver, dji,
-                                        dji.capture_ready ? "DJI Mic接收器正在采集"
-                                                          : "DJI Mic接收器协议已匹配，等待音频数据");
-                size_t usb_read = try_read_dji_receiver(usb16, dji);
-                if (usb_read > 0) {
-                    push_clean_samples(usb16.data(), usb_read);
+                                        dji.capture_ready ? "DJI Mic接收器正在采集，内置麦克风停用"
+                                                          : (dji.detected ? "DJI Mic已接入，等待UAC音频，内置麦克风停用"
+                                                                          : "等待DJI Mic USB接收器，内置麦克风停用"));
+                if (dji_receiver_protocol_ready(dji)) {
+                    size_t usb_read = try_read_dji_receiver(usb16, dji);
+                    if (usb_read > 0) {
+                        push_clean_samples(usb16.data(), usb_read);
+                    } else {
+                        log_dji_priority_wait_if_needed(dji);
+                        vTaskDelay(pdMS_TO_TICKS(5));
+                    }
                 } else {
                     log_dji_priority_wait_if_needed(dji);
-                    vTaskDelay(pdMS_TO_TICKS(5));
+                    vTaskDelay(pdMS_TO_TICKS(20));
                 }
                 continue;
             }
@@ -1636,6 +1700,16 @@ private:
         }
         TickType_t last = last_clean_read_ticks_.load();
         return last != 0 && (xTaskGetTickCount() - last) <= kCleanQueueConsumerGraceTicks;
+    }
+
+    bool dji_exclusive_waiting_for_audio() const
+    {
+#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT
+        DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
+        return dji_mic_receiver_input_is_enabled() && !dji.capture_ready;
+#else
+        return false;
+#endif
     }
 
     void drop_queued_clean_frames()

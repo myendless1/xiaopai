@@ -8,7 +8,7 @@
 
 namespace {
 
-static constexpr UBaseType_t kDebugEventQueueDepth = 32;
+static constexpr UBaseType_t kDebugEventQueueDepth = 128;
 QueueHandle_t debug_event_queue = nullptr;
 
 void copy_field(char* dest, size_t dest_size, const char* value)

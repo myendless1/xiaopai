@@ -95,6 +95,44 @@ static void request_speak_preempt(const char* reason);
 static bool run_find_owner_command(int rounds, const char* reply, float gain_x, float gain_y, float stop_pixels,
                                    bool preserve_speech_playback, bool wait_for_speech);
 
+static const char* reset_reason_name(esp_reset_reason_t reason)
+{
+    switch (reason) {
+        case ESP_RST_POWERON:
+            return "poweron";
+        case ESP_RST_EXT:
+            return "external";
+        case ESP_RST_SW:
+            return "software";
+        case ESP_RST_PANIC:
+            return "panic";
+        case ESP_RST_INT_WDT:
+            return "interrupt_wdt";
+        case ESP_RST_TASK_WDT:
+            return "task_wdt";
+        case ESP_RST_WDT:
+            return "other_wdt";
+        case ESP_RST_DEEPSLEEP:
+            return "deepsleep";
+        case ESP_RST_BROWNOUT:
+            return "brownout";
+        case ESP_RST_SDIO:
+            return "sdio";
+        case ESP_RST_USB:
+            return "usb";
+        case ESP_RST_JTAG:
+            return "jtag";
+        case ESP_RST_EFUSE:
+            return "efuse";
+        case ESP_RST_PWR_GLITCH:
+            return "power_glitch";
+        case ESP_RST_CPU_LOCKUP:
+            return "cpu_lockup";
+        default:
+            return "unknown";
+    }
+}
+
 #include "main_app_state.inc"
 #include "main_platform.inc"
 #include "main_realtime_transport.inc"
@@ -233,6 +271,8 @@ extern "C" void app_main(void)
 {
     ESP_ERROR_CHECK(init_nvs_once());
     install_wifi_debug_log_sink();
+    esp_reset_reason_t reset_reason = esp_reset_reason();
+    ESP_LOGW(TAG, "Boot reset reason: %s (%d)", reset_reason_name(reset_reason), static_cast<int>(reset_reason));
     force_core_s3_display_board();
     m5_mutex = xSemaphoreCreateMutex();
     audio_mutex = xSemaphoreCreateMutex();

@@ -20,6 +20,7 @@ struct AudioInputStatus {
     AudioInputSource active_source = AudioInputSource::kInternalMic;
     bool dji_receiver_detected = false;
     bool dji_receiver_streaming = false;
+    bool dji_receiver_capture_ready = false;
     bool dji_receiver_identity_confirmed = false;
     const char* dji_receiver_manufacturer = "";
     const char* dji_receiver_product = "";

@@ -24,5 +24,6 @@ struct DjiMicReceiverStatus {
 };
 
 bool dji_mic_receiver_input_start();
+bool dji_mic_receiver_input_is_enabled();
 DjiMicReceiverStatus dji_mic_receiver_input_status();
 size_t dji_mic_receiver_input_read_16k(int16_t* out, size_t samples, TickType_t timeout);

@@ -399,6 +399,44 @@ static AudioInputStatus current_audio_input_status()
     return audio_service_get_input_status();
 }
 
+static bool wait_for_voice_input_ready_before_audio_sender(const char* owner)
+{
+#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT
+    uint32_t last_status_ms = 0;
+    while (!app1_stop_requested) {
+        AudioInputStatus input = current_audio_input_status();
+        if (input.active_source != AudioInputSource::kDjiMicReceiver || input.dji_receiver_capture_ready) {
+            ESP_LOGI(TAG, "语音输入已就绪: owner=%s source=%s source_label=%s dji_capture=%d detail=%s",
+                     owner != nullptr ? owner : "-",
+                     audio_input_source_name(input.active_source),
+                     audio_input_source_label(input.active_source),
+                     static_cast<int>(input.dji_receiver_capture_ready),
+                     input.detail != nullptr ? input.detail : "-");
+            return true;
+        }
+
+        uint32_t now = M5.millis();
+        if (now - last_status_ms > 1000) {
+            ESP_LOGI(TAG, "语音链路等待DJI首帧: owner=%s detected=%d streaming=%d capture=%d detail=%s",
+                     owner != nullptr ? owner : "-",
+                     static_cast<int>(input.dji_receiver_detected),
+                     static_cast<int>(input.dji_receiver_streaming),
+                     static_cast<int>(input.dji_receiver_capture_ready),
+                     input.detail != nullptr ? input.detail : "-");
+            set_app1_status("DJI Mic", "Waiting for UAC PCM",
+                            input.detail != nullptr ? input.detail : "",
+                            "ASR/WS audio gated", true, false);
+            last_status_ms = now;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    return false;
+#else
+    (void)owner;
+    return true;
+#endif
+}
+
 static void format_listening_level_line(char* out, size_t out_size, int32_t level)
 {
     if (out == nullptr || out_size == 0) {
@@ -779,6 +817,9 @@ static void run_local_record_upload_loop()
         ESP_LOGE(TAG, "audio_service_start failed");
         return;
     }
+    if (!wait_for_voice_input_ready_before_audio_sender("local upload loop")) {
+        return;
+    }
 
     set_app1_status("Ready", "Listening", make_server_url("/upload-audio").c_str(), "", false, true);
     set_light_strip_listening();
@@ -893,6 +934,9 @@ static void run_xiaozhi_speech_loop()
     if (!audio_service_start()) {
         set_app1_status("Audio Fail", "AudioService start failed", "", "", false, false);
         ESP_LOGE(TAG, "audio_service_start failed");
+        return;
+    }
+    if (!wait_for_voice_input_ready_before_audio_sender("realtime websocket")) {
         return;
     }
 

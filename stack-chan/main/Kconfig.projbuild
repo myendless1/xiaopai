@@ -114,7 +114,7 @@ menu "Xiaopai settings"
     config STACKCHAN_DJI_MIC_UAC_RECORD
         bool "Upload DJI Mic UAC microphone stream as WAV over Wi-Fi"
         depends on STACKCHAN_DJI_MIC_USB_INPUT && !STACKCHAN_DJI_MIC_ENUM_ONLY
-        default y
+        default n
 
     config STACKCHAN_DJI_MIC_UAC_RECORD_RATE
         int "DJI Mic UAC record sample rate"
