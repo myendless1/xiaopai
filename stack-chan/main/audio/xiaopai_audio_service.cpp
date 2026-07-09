@@ -1389,7 +1389,7 @@ private:
     {
         std::vector<int16_t> hw(kHwInputChunkSamples);
         std::vector<int16_t> in16;
-        std::vector<int16_t> usb16(kProtocolSampleRate / 100);
+        std::vector<int16_t> usb16(kProtocolSampleRate / 25);
         in16.reserve((kProtocolSampleRate / 100) * kInputChannels + kInputChannels);
 
         while (running_) {
@@ -1664,11 +1664,12 @@ private:
 
     void push_clean_samples(const int16_t* data, size_t samples)
     {
-        if (!clean_consumer_recent()) {
-            drop_queued_clean_frames();
-            ++clean_idle_drop_count_;
+        if (data == nullptr || samples == 0) {
             return;
         }
+
+        update_energy_vad(data, samples);
+
         AudioBlock* block = allocate_block(samples);
         if (block == nullptr) {
             return;
@@ -1676,7 +1677,7 @@ private:
         for (size_t i = 0; i < samples; ++i) {
             block->data[i] = apply_mic_magnification(data[i]);
         }
-        push_clean_block(block);
+        push_clean_block_keep_latest(block);
     }
 
     void push_clean_block(AudioBlock* block)
@@ -1688,6 +1689,28 @@ private:
         if (!clean_consumer_recent()) {
             drop_queued_clean_frames();
             ++clean_idle_drop_count_;
+            free_block(block);
+            return;
+        }
+        while (xQueueSend(clean_queue_, &block, 0) != pdTRUE) {
+            AudioBlock* old = nullptr;
+            if (xQueueReceive(clean_queue_, &old, 0) == pdTRUE) {
+                free_block(old);
+                uint32_t dropped = ++clean_drop_count_;
+                if ((dropped % 50) == 1) {
+                    ESP_LOGW(TAG, "clean queue full; dropped oldest clean frame count=%u",
+                             static_cast<unsigned>(dropped));
+                }
+                continue;
+            }
+            free_block(block);
+            return;
+        }
+    }
+
+    void push_clean_block_keep_latest(AudioBlock* block)
+    {
+        if (block == nullptr || clean_queue_ == nullptr) {
             free_block(block);
             return;
         }

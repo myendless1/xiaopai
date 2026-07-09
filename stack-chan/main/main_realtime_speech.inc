@@ -1072,6 +1072,12 @@ static void run_xiaozhi_speech_loop()
         if (now - last_status_ms > 700) {
             char level_line[128];
             format_listening_level_line(level_line, sizeof(level_line), level);
+            AudioInputStatus input = current_audio_input_status();
+            ESP_LOGI(TAG, "语音监听电平: level=%ld threshold=%d source=%s source_label=%s dji_capture=%d",
+                     static_cast<long>(level), kVoiceStartThreshold,
+                     audio_input_source_name(input.active_source),
+                     audio_input_source_label(input.active_source),
+                     static_cast<int>(input.dji_receiver_capture_ready));
             if (xiaopai_state_get().state == LocalVoiceState::Idle) {
                 set_app1_status("Wake Listen", level_line, "Say 小派同学", "", true, false);
             } else {
