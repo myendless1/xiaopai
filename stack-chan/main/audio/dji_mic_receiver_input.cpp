@@ -51,8 +51,9 @@ static constexpr uint16_t kDjiVid = 0x2ca3;
 static constexpr uint16_t kDjiPid = 0x4011;
 static constexpr uint32_t kOutputSampleRate = 16000;
 static constexpr size_t kCallbackOutChunkSamples = 512;
-static constexpr int kQuietBeforeVbusMs = 500;
-static constexpr int kVbusSettleBeforeStreamMs = 800;
+static constexpr int kVbusOffBeforeHostStartMs = 800;
+static constexpr int kHostListenBeforeVbusMs = 200;
+static constexpr int kVbusSettleAfterEnableMs = 1200;
 
 struct RawUacFrameHeader {
     uint32_t data_bytes = 0;
@@ -180,16 +181,10 @@ public:
         ESP_LOGI(TAG, "DJI Mic USB输入已启动: source=dji_mic_receiver; 收到UAC首帧后切换主输入");
 
 #if CONFIG_STACKCHAN_DJI_MIC_DRIVE_VBUS
+        set_detail("关闭CoreS3 USB VBUS，准备重新枚举DJI Mic");
+        ESP_LOGI(TAG, "DJI Mic USB bring-up: force VBUS off before starting host");
         M5.Power.setUsbOutput(false);
-        ESP_LOGI(TAG, "DJI Mic USB bring-up: quiet %dms before VBUS", kQuietBeforeVbusMs);
-        vTaskDelay(pdMS_TO_TICKS(kQuietBeforeVbusMs));
-
-        set_detail("打开CoreS3 USB VBUS输出");
-        ESP_LOGI(TAG, "打开CoreS3 USB VBUS输出，准备给DJI Mic接收器供电");
-        M5.Power.setUsbOutput(true);
-        ESP_LOGI(TAG, "DJI Mic USB bring-up: VBUS settle %dms before usb_streaming_start",
-                 kVbusSettleBeforeStreamMs);
-        vTaskDelay(pdMS_TO_TICKS(kVbusSettleBeforeStreamMs));
+        vTaskDelay(pdMS_TO_TICKS(kVbusOffBeforeHostStartMs));
 #else
         ESP_LOGW(TAG, "Skip CoreS3 USB VBUS drive; expect external host-power-safe wiring");
 #endif
@@ -198,11 +193,27 @@ public:
         err = usb_streaming_start();
         if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
             set_detail("usb_stream start failed: %s", esp_err_to_name(err));
+#if CONFIG_STACKCHAN_DJI_MIC_DRIVE_VBUS
+            M5.Power.setUsbOutput(false);
+#endif
             stop_decode_task();
             delete_ringbufs();
             ESP_LOGE(TAG, "%s", detail_);
             return false;
         }
+
+        vTaskDelay(pdMS_TO_TICKS(kHostListenBeforeVbusMs));
+
+#if CONFIG_STACKCHAN_DJI_MIC_DRIVE_VBUS
+        set_detail("打开CoreS3 USB VBUS输出，等待DJI Mic重新上电");
+        ESP_LOGI(TAG, "DJI Mic USB bring-up: host started, now enable VBUS");
+        M5.Power.setUsbOutput(true);
+        vTaskDelay(pdMS_TO_TICKS(kVbusSettleAfterEnableMs));
+
+        bool usb_output = M5.Power.getUsbOutput();
+        ESP_LOGI(TAG, "DJI Mic USB VBUS status after enable: %d", static_cast<int>(usb_output));
+        draw_vbus_status_screen(usb_output);
+#endif
 
         set_detail("等待DJI Mic USB接收器接入；首帧UAC PCM后切换输入");
         ESP_LOGI(TAG, "DJI Mic UAC输入已启动: requested=%uHz %u-bit %u ch, output=16000Hz mono",
@@ -289,6 +300,21 @@ private:
         }
         TickType_t elapsed = xTaskGetTickCount() - start_ticks;
         return elapsed >= timeout ? 0 : timeout - elapsed;
+    }
+
+    static void draw_vbus_status_screen(bool usb_output)
+    {
+#if CONFIG_STACKCHAN_DJI_MIC_DRIVE_VBUS
+        auto& display = M5.Display;
+        display.fillScreen(TFT_BLACK);
+        display.setTextDatum(top_left);
+        display.setTextColor(TFT_GREEN, TFT_BLACK);
+        display.setFont(&fonts::Font2);
+        display.drawString("DJI USB VBUS ON", 10, 20);
+        display.drawString(usb_output ? "usb_output=1" : "usb_output=0", 10, 45);
+#else
+        (void)usb_output;
+#endif
     }
 
     static void usb_state_cb(usb_stream_state_t state, void* arg)
@@ -433,15 +459,35 @@ private:
                      static_cast<unsigned>(data_bytes));
         }
 
+        uint32_t selected_ch = 0;
+        if (channels > 1) {
+            int64_t ch_energy[2] = {0, 0};
+            const uint32_t inspect_channels = std::min<uint32_t>(channels, 2);
+
+            for (uint32_t i = 0; i < frames; ++i) {
+                const uint8_t* frame_ptr = data + i * bytes_per_frame;
+                for (uint32_t ch = 0; ch < inspect_channels; ++ch) {
+                    const int32_t s = read_le_pcm_sample(frame_ptr + ch * bytes_per_sample, bits);
+                    ch_energy[ch] += s < 0 ? -static_cast<int64_t>(s) : static_cast<int64_t>(s);
+                }
+            }
+
+            selected_ch = ch_energy[1] > ch_energy[0] ? 1 : 0;
+
+            static uint32_t select_log_counter = 0;
+            if ((++select_log_counter % 100) == 1) {
+                ESP_LOGI(TAG, "DJI Mic channel select: ch=%u energy0=%lld energy1=%lld",
+                         static_cast<unsigned>(selected_ch),
+                         static_cast<long long>(ch_energy[0]),
+                         static_cast<long long>(ch_energy[1]));
+            }
+        }
+
         int16_t out[kCallbackOutChunkSamples];
         size_t out_count = 0;
         for (uint32_t i = 0; i < frames; ++i) {
             const uint8_t* frame_ptr = data + i * bytes_per_frame;
-            int64_t mono = 0;
-            for (uint32_t ch = 0; ch < channels; ++ch) {
-                mono += read_le_pcm_sample(frame_ptr + ch * bytes_per_sample, bits);
-            }
-            mono /= static_cast<int64_t>(channels);
+            const int32_t mono = read_le_pcm_sample(frame_ptr + selected_ch * bytes_per_sample, bits);
 
             resample_accum_ += kOutputSampleRate;
             if (resample_accum_ < input_rate) {
@@ -449,7 +495,7 @@ private:
             }
             resample_accum_ -= input_rate;
 
-            out[out_count++] = clamp_i16(static_cast<int32_t>(mono));
+            out[out_count++] = clamp_i16(mono);
             if (out_count >= kCallbackOutChunkSamples) {
                 push_output(out, out_count);
                 out_count = 0;
