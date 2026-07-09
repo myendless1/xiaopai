@@ -68,15 +68,16 @@ All command shortcuts support `GET`, so they can be called from a browser.
 
 ### Speak
 
-Queues a TTS command. Xiaopai will pause listening, stream TTS audio from `/stream-speak`, play it, then resume listening.
+Queues a TTS command. Xiaopai will pause listening, stream TTS audio from `/stream-speak`, play it, then resume listening. Add `animate_mouth=false` to keep the current expression static while audio plays; aliases `mouth_animation=false` and `lip_sync=false` are also accepted.
 
 ```http
-GET /command/speak?text=<text>
+GET /command/speak?text=<text>&animate_mouth=false
 ```
 
 ```bash
 curl -G 'http://127.0.0.1:8091/command/speak' \
-  --data-urlencode 'text=早上好，我已经收到你的问题啦。'
+  --data-urlencode 'text=早上好，我已经收到你的问题啦。' \
+  --data-urlencode 'animate_mouth=false'
 ```
 
 ### Face
@@ -245,7 +246,8 @@ GET /command/sequence?expression=<expression>&text=<text>
 ```bash
 curl -G 'http://127.0.0.1:8091/command/sequence' \
   --data-urlencode 'expression=thinking' \
-  --data-urlencode 'text=让我想一下这个问题。'
+  --data-urlencode 'text=让我想一下这个问题。' \
+  --data-urlencode 'animate_mouth=false'
 ```
 
 You can also pass full JSON steps in `payload`:
@@ -286,7 +288,7 @@ Low-priority speak/motion/face commands are discardable; repeated speak/face/mot
   "payload": [
     {"type": "face", "expression": "thinking"},
     {"type": "move", "action": "left", "degree": 15, "duration_ms": 400},
-    {"type": "speak", "text": "让我想一下这个问题。"}
+    {"type": "speak", "text": "让我想一下这个问题。", "animate_mouth": false}
   ]
 }
 ```

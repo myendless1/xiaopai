@@ -112,18 +112,9 @@ static int32_t average_abs_level(const int16_t* samples, size_t count)
 
 static bool mic_record_blocking(int16_t* samples, size_t count, uint32_t sample_rate)
 {
-    while (M5.Mic.isRecording()) {
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-
-    if (!M5.Mic.record(samples, count, sample_rate)) {
+    if (samples == nullptr || count == 0 || sample_rate != kAudioSampleRate) {
         return false;
     }
-
-    const uint32_t record_ms = static_cast<uint32_t>(count * 1000 / sample_rate) + 2;
-    vTaskDelay(pdMS_TO_TICKS(record_ms));
-    while (M5.Mic.isRecording()) {
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-    return true;
+    size_t read = audio_service_read_clean_16k(samples, count, pdMS_TO_TICKS(250));
+    return read == count;
 }

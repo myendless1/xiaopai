@@ -33,14 +33,17 @@ Returns online devices, pending command counts, and last acknowledgements. OpenC
 Queue a TTS speech command.
 
 ```http
-GET /command/speak?text=<text>&device_id=<optional>
+GET /command/speak?text=<text>&animate_mouth=false&device_id=<optional>
 ```
+
+`animate_mouth=false` keeps the current expression static while audio plays. It defaults to `true`.
 
 Example:
 
 ```bash
 curl -G 'http://127.0.0.1:8091/command/speak' \
-  --data-urlencode 'text=你好，我是小派同学。'
+  --data-urlencode 'text=你好，我是小派同学。' \
+  --data-urlencode 'animate_mouth=false'
 ```
 
 ## Expression And Animation
@@ -181,7 +184,7 @@ The payload is a JSON array. Supported step types:
   {"type": "move", "action": "left", "degree": 15, "duration_ms": 500},
   {"type": "find_owner", "rounds": 1, "reply": "我在"},
   {"type": "volume", "direction": "up", "step": 10},
-  {"type": "speak", "text": "我往左看一下。"},
+  {"type": "speak", "text": "我往左看一下。", "animate_mouth": false},
   {"type": "face", "expression": "happy_squint"}
 ]
 ```
@@ -211,7 +214,7 @@ Speak:
 ```json
 {
   "type": "speak",
-  "payload": {"text": "你好呀"},
+  "payload": {"text": "你好呀", "animate_mouth": false},
   "interrupt": true
 }
 ```

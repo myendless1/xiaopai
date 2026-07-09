@@ -1,6 +1,8 @@
 #include <M5Unified.h>
 #include <cstdlib>
 
+#include "audio/xiaopai_audio_service.h"
+#include "codec_audio_output.h"
 #include "expression_controller.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -12,6 +14,7 @@
 #include "esp_chip_info.h"
 #include "esp_crt_bundle.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -32,6 +35,7 @@
 #include "esp_opus_enc.h"
 #include "esp_opus_dec.h"
 #include "esp_audio_types.h"
+#include "driver/i2c_master.h"
 #include "driver/uart.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -40,6 +44,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cmath>
+#include <new>
 #include <stdio.h>
 #include <string.h>
 #include <string>
@@ -109,10 +114,11 @@ extern "C" void app_main(void)
         should_restore_listening_light_after_speech,
     });
     auto cfg = M5.config();
-    cfg.internal_mic = true;
-    cfg.internal_spk = true;
+    cfg.internal_mic = false;
+    cfg.internal_spk = false;
     M5.begin(cfg);
-    configure_speaker_for_tts();
+    audio_service_init();
+    audio_service_start();
 
     M5.Display.setBrightness(180);
     M5.Display.setRotation(1);
@@ -129,9 +135,8 @@ extern "C" void app_main(void)
                 M5.update();
             }
         }
-        if (current_app != AppId::WifiConnect && wifi_is_connected() && active_server_selected &&
-            local_voice_current_state() == LocalVoiceState::Idle && !speech_output_is_busy()) {
-            show_idle_sleep_dark_if_due(kIdleSleepDarkDelayMs);
+        if (auto_sleep_dark_due()) {
+            show_sleep_dark_listening("idle timeout");
         }
 
         vTaskDelay(pdMS_TO_TICKS(10));

@@ -50,6 +50,38 @@ menu "Xiaopai settings"
         int "Record sample rate"
         default 16000
 
+    config STACKCHAN_AUDIO_FULL_DUPLEX
+        bool "Enable full-duplex CoreS3 audio service"
+        default y
+
+    config STACKCHAN_AUDIO_DEVICE_AEC
+        bool "Enable device-side AEC with ESP-SR AFE"
+        default n
+
+    config STACKCHAN_AUDIO_HW_SAMPLE_RATE
+        int "Hardware codec sample rate"
+        default 24000
+        range 16000 48000
+
+    config STACKCHAN_AUDIO_PROTOCOL_SAMPLE_RATE
+        int "Protocol sample rate"
+        default 16000
+        range 8000 48000
+
+    config STACKCHAN_AUDIO_INPUT_REFERENCE
+        bool "Use ES7210 reference input"
+        default n
+
+    config STACKCHAN_AUDIO_INPUT_GAIN
+        int "ES7210 microphone input gain"
+        default 60
+        range 0 100
+
+    config STACKCHAN_AUDIO_OUTPUT_VOLUME_DEFAULT
+        int "Default output volume percent"
+        default 70
+        range 0 100
+
     config STACKCHAN_RECORD_CHUNK_MS
         int "Record chunk milliseconds"
         default 40
@@ -60,11 +92,11 @@ menu "Xiaopai settings"
 
     config STACKCHAN_VOICE_START_THRESHOLD
         int "Voice start threshold"
-        default 1400
+        default 5000
 
     config STACKCHAN_VOICE_STOP_THRESHOLD
         int "Voice stop threshold"
-        default 500
+        default 1800
 
     config STACKCHAN_MIC_MAGNIFICATION
         int "Microphone magnification"

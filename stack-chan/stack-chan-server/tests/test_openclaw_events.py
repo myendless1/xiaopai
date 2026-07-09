@@ -1,4 +1,6 @@
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -81,6 +83,27 @@ class CommandPayloadTest(unittest.TestCase):
         self.assertEqual(payload["speech_rate"], -80)
         self.assertEqual(payload["pitch_rate"], 20)
 
+    def test_speak_query_can_disable_mouth_animation(self):
+        payload = server.command_payload_from_query(
+            "speak",
+            {"text": ["保持静态表情说话。"], "animate_mouth": ["false"]},
+        )
+
+        self.assertEqual(payload["text"], "保持静态表情说话。")
+        self.assertIs(payload["animate_mouth"], False)
+
+    def test_sequence_query_can_disable_mouth_animation(self):
+        payload = server.command_payload_from_query(
+            "sequence",
+            {"expression": ["thinking"], "text": ["我想一下。"], "mouth_animation": ["false"]},
+        )
+
+        self.assertEqual(payload[0], {"type": "face", "expression": "thinking"})
+        self.assertEqual(
+            payload[1],
+            {"type": "speak", "text": "我想一下。", "pause_listener": True, "animate_mouth": False},
+        )
+
     def test_speech_text_normalizes_inline_markdown_table(self):
         text = (
             "你今天（2026年6月16日 周二）有 **2 个日程**： "
@@ -151,6 +174,78 @@ class OpenClawWaitingStateTest(unittest.TestCase):
         self.assertTrue(result["openclaw_sent"])
         self.assertEqual(result["queued_commands"], ["waiting:dev1:speech_recognition"])
         self.assertEqual(len(handler.server.openclaw_executor.submitted), 1)
+
+
+class CommandRoutingTest(unittest.TestCase):
+    def make_handler(self):
+        class FakeRealtimeManager:
+            def __init__(self):
+                self.sent = []
+
+            def first_device_id(self):
+                return "44:1b:f6:e4:83:8c"
+
+            def has_device(self, device_id):
+                return device_id == "44:1b:f6:e4:83:8c"
+
+            def enqueue_command(self, device_id, command):
+                self.sent.append((device_id, command))
+                return True
+
+            def set_device_state(self, device_id, state):
+                self.sent.append((device_id, {"type": "state", "payload": {"state": state}}))
+                return True
+
+        class FakeServer:
+            command_queue_max_size = 24
+
+            def __init__(self):
+                self.device_lock = threading.Lock()
+                self.device_order = ["44:1b:f6:e4:83:8c"]
+                self.last_seen = {}
+                self.last_ack = {}
+                self.device_queues = {}
+                self.realtime_manager = FakeRealtimeManager()
+
+        handler = object.__new__(server.Handler)
+        handler.server = FakeServer()
+        handler._log_info = lambda _msg: None
+        handler._log_debug = lambda _msg: None
+        return handler
+
+    def test_http_online_device_uses_http_command_queue_before_realtime(self):
+        handler = self.make_handler()
+        device_id = "44:1b:f6:e4:83:8c"
+        handler.server.last_seen[device_id] = time.time()
+        command = server.make_command("face", {"expression": "shy"})
+
+        self.assertTrue(handler._enqueue_command(device_id, command))
+
+        self.assertEqual(handler.server.realtime_manager.sent, [])
+        self.assertEqual(handler._queue_for(device_id).get_nowait()["cmd_id"], command["cmd_id"])
+
+    def test_realtime_device_is_used_when_http_poll_is_not_online(self):
+        handler = self.make_handler()
+        device_id = "44:1b:f6:e4:83:8c"
+        command = server.make_command("face", {"expression": "shy"})
+
+        self.assertTrue(handler._enqueue_command(device_id, command))
+
+        self.assertEqual(handler.server.realtime_manager.sent, [(device_id, command)])
+        self.assertEqual(handler._queue_for(device_id).qsize(), 0)
+
+    def test_http_online_device_state_uses_http_command_queue_before_realtime(self):
+        handler = self.make_handler()
+        device_id = "44:1b:f6:e4:83:8c"
+        handler.server.last_seen[device_id] = time.time()
+
+        queued = handler._send_device_state_command(device_id, "waiting", reason="test")
+
+        self.assertEqual(len(queued), 1)
+        self.assertEqual(handler.server.realtime_manager.sent, [])
+        command = handler._queue_for(device_id).get_nowait()
+        self.assertEqual(command["type"], "state")
+        self.assertEqual(command["payload"]["state"], "waiting")
 
 
 class DeviceEventForwardingTest(unittest.TestCase):

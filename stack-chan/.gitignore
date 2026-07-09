@@ -6,3 +6,4 @@ esp-idf/
 build/
 .env
 stack-chan-server/.env
+*.a

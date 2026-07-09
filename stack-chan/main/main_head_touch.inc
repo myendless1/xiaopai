@@ -41,9 +41,16 @@ static void run_head_touch_audio_loop()
     while (true) {
         HeadTouchEvent event = HeadTouchEvent::Press;
         if (xQueueReceive(head_touch_event_queue, &event, portMAX_DELAY) == pdTRUE) {
+            mark_user_interaction("screen touch");
             LocalVoiceState state = local_voice_current_state();
             if (state == LocalVoiceState::Waiting) {
                 ESP_LOGI(TAG, "Screen touch ignored while waiting: %s", head_touch_event_name(event));
+                continue;
+            }
+            if (sleep_dark_is_visible()) {
+                ESP_LOGI(TAG, "Screen touch wakes sleep-dark display: %s", head_touch_event_name(event));
+                show_expression(kDefaultExpression);
+                local_voice_request_state(LocalVoiceState::Listening, "screen touch wake");
                 continue;
             }
             if (state == LocalVoiceState::Idle) {
