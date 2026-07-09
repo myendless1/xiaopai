@@ -12,7 +12,7 @@ The plugin includes five domain handlers:
 
 It also includes an optional proactive calendar trigger scheduler. The scheduler is disabled by default; when explicitly enabled, it scans bounded future calendar windows through the configured calendar adapter, evaluates deterministic rules, persists trigger plans, and dispatches normalized `InputEvent` objects back through `workAssistant.handleEvent`. Scheduler scans never call an LLM or model to inspect the calendar.
 
-When `scheduler.agentDispatch.enabled` is configured, a due scheduler trigger first calls the internal assistant handler and obtains the canonical `StructuredResponse`. If that response has speech, the plugin then queues a one-shot OpenClaw agent turn through `api.session.workflow.scheduleSessionTurn`. The scheduled message is a pure `openclaw.stackchan.event.v1` JSON envelope with `render.target: "xiaopai"` and includes both the original scheduler `InputEvent` and the generated `StructuredResponse`. Queueing that agent turn is the scheduler success boundary; Xiaopai speech execution happens later when the agent turn calls `xiaopaiControl.execute` or the Xiaopai fallback hook queues speech.
+When `scheduler.agentDispatch.enabled` is configured, a due scheduler trigger first calls the internal assistant handler and obtains the canonical `StructuredResponse`. If that response has speech, the plugin then queues a one-shot OpenClaw agent turn through `api.session.workflow.scheduleSessionTurn`. The scheduled message is a plain natural-language execution prompt, not a stack-chan JSON envelope. It includes the original scheduler facts, the generated `StructuredResponse`, the desired speech style for the task, and explicit Xiaopai face/action values. Queueing that agent turn is the scheduler success boundary; Xiaopai speech execution happens later when the agent turn explicitly calls `xiaopaiControl.execute`.
 
 The companion skill under `skills/work-assistant` is guidance only; it is not the execution layer.
 
@@ -291,14 +291,19 @@ Follow-up companionship requests use the same method:
 
 The follow-up response contains one bounded deterministic joke, relaxation prompt, or light companionship message, positive presentation hints, and a `wellbeing.companion.generate` action. It does not call a model to generate humor.
 
-## Lark Runtime
+## Lark And Feishu Runtime
 
-The default adapters use `lark-cli` with fixed argv arrays and JSON output:
+The default contact and calendar adapters use `lark-cli` with fixed argv arrays and JSON output:
 
 - `lark-cli contact +search-user --queries <names> --as user --format json`
 - `lark-cli calendar +create --summary <title> --start <iso> --end <iso> --attendee-ids <ids> --as user --format json`
 - `lark-cli calendar +agenda --start <iso> --end <iso> --calendar-id <id> --as user --format json`
-- `lark-cli im +messages-send --chat-id <oc_xxx> --text <text> --as user --format json`
+
+Late-arrival meeting notifications default to OpenClaw's configured Feishu channel:
+
+- `openclaw message send --channel feishu --target chat:<oc_xxx> --message <text> --json`
+
+Set plugin config `imProvider: "lark-cli"` to use the legacy `lark-cli im +messages-send` path instead.
 
 Required Lark scopes:
 
@@ -307,7 +312,8 @@ Required Lark scopes:
 - `calendar:calendar.event:create`
 - `calendar:calendar.event:update`
 - `calendar:calendar.free_busy:read` only if a deployment adds free/busy or meeting-time suggestion flows
-- `im:message.send_as_user` and `im:message` for user-identity meeting notifications, or `im:message:send_as_bot` for bot-identity sends where the bot has access to the target chat
+
+OpenClaw Feishu channel message sends use the OpenClaw `channels.feishu` app/bot configuration and require that the bot can access the target chat. The `im:message.send_as_user` / `im:message` user-token scopes are only needed for the legacy `imProvider: "lark-cli"` path.
 
 For the default user-identity runtime, both the app backend and the local user token must have the needed scopes. Check the current user authorization with:
 
@@ -316,13 +322,13 @@ lark-cli auth status --verify
 lark-cli auth check --scope "contact:user:search calendar:calendar.event:read calendar:calendar.event:create calendar:calendar.event:update"
 ```
 
-Authorize missing optional flows incrementally, for example:
+Authorize missing optional calendar flows incrementally, for example:
 
 ```bash
-lark-cli auth login --scope "calendar:calendar.free_busy:read im:message.send_as_user im:message"
+lark-cli auth login --scope "calendar:calendar.free_busy:read"
 ```
 
-The default identity is `user`, because `contact +search-user` is user-only. The plugin config supports `larkIdentity`, `larkCliPath`, `timeoutMs`, `dryRun`, optional travel settings, optional wellbeing settings, and optional scheduler settings:
+The default identity is `user`, because `contact +search-user` is user-only. The plugin config supports `larkIdentity`, `larkCliPath`, `imProvider`, `openclawCliPath`, `openclawFeishuChannel`, `openclawFeishuAccount`, `timeoutMs`, `dryRun`, optional travel settings, optional wellbeing settings, and optional scheduler settings:
 
 ```json
 {
@@ -387,13 +393,13 @@ Scheduler example:
 
 Only `dailyBriefing` is enabled by default once the scheduler itself is enabled. `meetingStartingSoon`, `outdoorEvent`, and `businessTripTomorrow` stay disabled unless explicitly configured; enable proactive rules only for deployments ready for robot speech. For travel reminders, configure `travel.originAddress` or use dry-run profile defaults if route-aware outdoor departure times are expected.
 
-`agentDispatch` is also opt-in. Use a Xiaopai/stack-chan session key when the proactive reminder should be handled by the OpenClaw agent/LLM layer and rendered by `xiaopai-control`. For a single actively connected robot, prefer `sessionKeyMode: "online_xiaopai"` with a `{device_id}` session key template; the scheduler reads the stack-chan `/devices` endpoint, selects the current online realtime device, and uses the same device id for both the OpenClaw session key and Xiaopai render envelope. If no online Xiaopai device can be resolved, the scheduler dispatch fails instead of falling back to a stale session. The default `deliveryMode` is `none`, so the scheduled agent turn can render voice without also posting a normal chat announcement; set `announce` only when a channel-visible cron reply is desired.
+`agentDispatch` is also opt-in. Use a Xiaopai/stack-chan session key when the proactive reminder should be handled by the OpenClaw agent/LLM layer and rendered by `xiaopai-control`. For a single actively connected robot, prefer `sessionKeyMode: "online_xiaopai"` with a `{device_id}` session key template; the scheduler reads the stack-chan `/devices` endpoint, selects the current online realtime device, and writes the same device id into the agent prompt so `xiaopaiControl.execute` can target it. If no online Xiaopai device can be resolved, the scheduler dispatch fails instead of falling back to a stale session. The default `deliveryMode` is `none`, so the scheduled agent turn can render voice without also posting a normal chat announcement; set `announce` only when a channel-visible cron reply is desired.
 
 Scheduler-produced events keep the existing `InputEvent` envelope. Their payload includes `payload.trigger` with rule id, scheduled time, fired time, trigger key, calendar id, and source metadata; calendar-derived events also include `payload.calendar_event` with source event id, title, start, end, optional location or description, and optional notification target metadata.
 
 ## Dry Run
 
-Set plugin config `dryRun: true` to use mocked contact, calendar, IM, route, weather, and user-profile adapters. Dry run returns deterministic resource IDs, agenda events, recap events, wellbeing calendar context, message ids, travel route/weather/profile data, and scheduler scan fixtures for briefing, meeting, outdoor, and trip plans. It does not call `lark-cli`, map providers, or weather providers.
+Set plugin config `dryRun: true` to use mocked contact, calendar, IM, route, weather, and user-profile adapters. Dry run returns deterministic resource IDs, agenda events, recap events, wellbeing calendar context, message ids, travel route/weather/profile data, and scheduler scan fixtures for briefing, meeting, outdoor, and trip plans. It does not call `lark-cli`, OpenClaw message channels, map providers, or weather providers.
 
 ## Scheduler Watch Script
 

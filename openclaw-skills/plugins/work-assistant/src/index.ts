@@ -4,7 +4,9 @@ import { CalendarAssistant } from "./calendar/assistant.js";
 import { createWorkAssistantHandler } from "./handler.js";
 import { DryRunCalendarAdapter, DryRunContactAdapter, DryRunIMAdapter } from "./lark/dry-run.js";
 import { LarkCliCalendarAdapter, LarkCliContactAdapter, LarkCliIMAdapter } from "./lark/lark-cli.js";
+import { OpenClawFeishuIMAdapter } from "./lark/openclaw-feishu.js";
 import { MeetingReminderAssistant } from "./meeting/assistant.js";
+import type { MeetingNotificationTarget } from "./contracts.js";
 import {
   dispatchSchedulerResponseToAgent,
   JsonFileTriggerPlanStore,
@@ -15,7 +17,15 @@ import {
   type ProactiveCalendarSchedulerConfig
 } from "./scheduler/index.js";
 import { TravelPlannerAssistant } from "./travel/assistant.js";
-import type { QWeatherAuthMode, QWeatherForecastDays, QWeatherUnit, RouteMode, TravelPlannerConfig } from "./travel/adapters.js";
+import { AmapRouteAdapter } from "./travel/amap-route.js";
+import type {
+  AmapRouteConfig,
+  QWeatherAuthMode,
+  QWeatherForecastDays,
+  QWeatherUnit,
+  RouteMode,
+  TravelPlannerConfig
+} from "./travel/adapters.js";
 import {
   ConfiguredUserProfileAdapter,
   createDryRunUserProfileAdapter,
@@ -31,6 +41,11 @@ type PluginConfig = {
   dryRun?: boolean;
   larkCliPath?: string;
   larkIdentity?: "user" | "bot";
+  imProvider: "openclaw" | "lark-cli";
+  openclawCliPath?: string;
+  openclawFeishuChannel?: string;
+  openclawFeishuAccount?: string;
+  defaultMeetingNotificationChatId?: string;
   timeoutMs?: number;
   travel?: TravelPlannerConfig;
   wellbeing?: WellbeingCompanionConfig;
@@ -54,9 +69,16 @@ function readPluginConfig(api: { pluginConfig?: unknown }): PluginConfig {
   const config: PluginConfig = {
     dryRun: raw.dryRun === true,
     larkIdentity: raw.larkIdentity === "bot" ? "bot" : "user",
+    imProvider: raw.imProvider === "lark-cli" ? "lark-cli" : "openclaw",
     scheduler: readSchedulerConfig(raw.scheduler)
   };
   if (typeof raw.larkCliPath === "string") config.larkCliPath = raw.larkCliPath;
+  if (typeof raw.openclawCliPath === "string") config.openclawCliPath = raw.openclawCliPath;
+  if (typeof raw.openclawFeishuChannel === "string") config.openclawFeishuChannel = raw.openclawFeishuChannel;
+  if (typeof raw.openclawFeishuAccount === "string") config.openclawFeishuAccount = raw.openclawFeishuAccount;
+  if (typeof raw.defaultMeetingNotificationChatId === "string" && raw.defaultMeetingNotificationChatId.trim() !== "") {
+    config.defaultMeetingNotificationChatId = raw.defaultMeetingNotificationChatId.trim();
+  }
   if (typeof raw.timeoutMs === "number") config.timeoutMs = raw.timeoutMs;
   const travel = readTravelConfig(raw.travel);
   if (travel) config.travel = travel;
@@ -84,9 +106,20 @@ export function createDefaultWorkAssistantRuntime(api: RuntimeApi) {
     : new LarkCliCalendarAdapter(cliOptions);
   const imAdapter = config.dryRun
     ? new DryRunIMAdapter()
-    : new LarkCliIMAdapter(cliOptions);
+    : config.imProvider === "lark-cli"
+      ? new LarkCliIMAdapter(cliOptions)
+      : new OpenClawFeishuIMAdapter({
+          ...(config.openclawCliPath ? { cliPath: config.openclawCliPath } : {}),
+          ...(config.timeoutMs ? { timeoutMs: config.timeoutMs } : {}),
+          ...(config.openclawFeishuChannel ? { channel: config.openclawFeishuChannel } : {}),
+          ...(config.openclawFeishuAccount ? { accountId: config.openclawFeishuAccount } : {})
+        });
   const travelConfig = config.travel ?? {};
-  const routeAdapter = config.dryRun ? new DryRunRouteAdapter() : new UnavailableRouteAdapter();
+  const routeAdapter = config.dryRun
+    ? new DryRunRouteAdapter()
+    : travelConfig.route?.provider === "amap"
+      ? new AmapRouteAdapter({ config: travelConfig.route })
+      : new UnavailableRouteAdapter();
   const weatherAdapter = config.dryRun
     ? new DryRunWeatherAdapter()
     : travelConfig.weather?.provider === "qweather"
@@ -104,7 +137,10 @@ export function createDefaultWorkAssistantRuntime(api: RuntimeApi) {
       calendarAdapter
     }),
     meetingReminderAssistant: new MeetingReminderAssistant({
-      imAdapter
+      imAdapter,
+      ...(config.defaultMeetingNotificationChatId
+        ? { defaultNotificationTarget: { chat_id: config.defaultMeetingNotificationChatId } satisfies MeetingNotificationTarget }
+        : {})
     }),
     travelPlannerAssistant: new TravelPlannerAssistant({
       routeAdapter,
@@ -190,6 +226,7 @@ export { CalendarAssistant } from "./calendar/assistant.js";
 export { CalendarIntentParser } from "./calendar/parser.js";
 export { createWorkAssistantHandler } from "./handler.js";
 export { MeetingReminderAssistant } from "./meeting/assistant.js";
+export { OpenClawFeishuIMAdapter } from "./lark/openclaw-feishu.js";
 export { MemoryIdempotencyStore } from "./runtime/idempotency.js";
 export {
   JsonFileTriggerPlanStore,
@@ -206,6 +243,7 @@ export {
   UnavailableRouteAdapter,
   UnavailableWeatherAdapter
 } from "./travel/dry-run.js";
+export { AmapRouteAdapter } from "./travel/amap-route.js";
 export { QWeatherWeatherAdapter } from "./travel/qweather.js";
 export { WellbeingCompanionAssistant } from "./wellbeing/assistant.js";
 
@@ -215,12 +253,33 @@ function readTravelConfig(value: unknown): TravelPlannerConfig | undefined {
   const originAddress = readNonEmptyString(raw.originAddress);
   const defaultRouteMode = readRouteMode(raw.defaultRouteMode);
   const arrivalBufferMinutes = readPositiveNumber(raw.arrivalBufferMinutes);
+  const route = readAmapRouteConfig(raw.route);
   const weather = readQWeatherConfig(raw.weather);
   if (originAddress) config.originAddress = originAddress;
   if (defaultRouteMode) config.defaultRouteMode = defaultRouteMode;
   if (arrivalBufferMinutes !== undefined) config.arrivalBufferMinutes = Math.floor(arrivalBufferMinutes);
+  if (route) config.route = route;
   if (weather) config.weather = weather;
   return Object.keys(config).length > 0 ? config : undefined;
+}
+
+function readAmapRouteConfig(value: unknown): AmapRouteConfig | undefined {
+  const raw = typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  if (raw.provider !== "amap") return undefined;
+  const config: AmapRouteConfig = {
+    provider: "amap"
+  };
+  const apiHost = readNonEmptyString(raw.apiHost);
+  const credentialEnv = readNonEmptyString(raw.credentialEnv);
+  const defaultCity = readNonEmptyString(raw.defaultCity);
+  const originLocation = readNonEmptyString(raw.originLocation);
+  const timeoutMs = readPositiveNumber(raw.timeoutMs);
+  if (apiHost) config.apiHost = apiHost;
+  if (credentialEnv) config.credentialEnv = credentialEnv;
+  if (defaultCity) config.defaultCity = defaultCity;
+  if (originLocation) config.originLocation = originLocation;
+  if (timeoutMs !== undefined) config.timeoutMs = timeoutMs;
+  return config;
 }
 
 function readQWeatherConfig(value: unknown): TravelPlannerConfig["weather"] | undefined {

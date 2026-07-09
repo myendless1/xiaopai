@@ -14,6 +14,7 @@ export declare class MemoryTriggerPlanStore implements TriggerPlanStore {
 export declare class JsonFileTriggerPlanStore extends MemoryTriggerPlanStore {
     private readonly statePath;
     private static readonly claimsByStatePath;
+    private static readonly operationChainsByStatePath;
     private loaded;
     constructor(statePath: string);
     upsertPlans(plans: TriggerPlan[], now: string): Promise<TriggerUpsertResult>;
@@ -24,4 +25,5 @@ export declare class JsonFileTriggerPlanStore extends MemoryTriggerPlanStore {
     protected persist(): Promise<void>;
     private load;
     private static claimSetFor;
+    private runExclusive;
 }

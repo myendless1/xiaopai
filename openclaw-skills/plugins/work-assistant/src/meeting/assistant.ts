@@ -12,6 +12,7 @@ import type { LarkIMAdapter, LarkMessageSendRequest } from "../lark/adapters.js"
 
 export type MeetingReminderAssistantOptions = {
   imAdapter: LarkIMAdapter;
+  defaultNotificationTarget?: MeetingNotificationTarget;
 };
 
 type LateNotificationRequest = {
@@ -22,9 +23,11 @@ type LateNotificationRequest = {
 
 export class MeetingReminderAssistant {
   private readonly imAdapter: LarkIMAdapter;
+  private readonly defaultNotificationTarget: MeetingNotificationTarget | undefined;
 
   constructor(options: MeetingReminderAssistantOptions) {
     this.imAdapter = options.imAdapter;
+    this.defaultNotificationTarget = normalizeNotificationTarget(options.defaultNotificationTarget);
   }
 
   async handleReminder(event: InputEvent): Promise<StructuredResponse> {
@@ -80,7 +83,7 @@ export class MeetingReminderAssistant {
         expected: false
       },
       context_patch: {
-        current_focus: buildCurrentFocus(calendarEvent)
+        current_focus: buildCurrentFocus(calendarEvent, this.defaultNotificationTarget)
       }
     };
   }
@@ -98,7 +101,7 @@ export class MeetingReminderAssistant {
       );
     }
 
-    const target = normalizeNotificationTarget(focus.notification_target);
+    const target = normalizeNotificationTarget(focus.notification_target) ?? this.defaultNotificationTarget;
     if (!target) {
       return {
         speech: "我还不知道要通知哪个会议群或哪些参会人。",
@@ -186,7 +189,7 @@ export class MeetingReminderAssistant {
         expected: false
       },
       context_patch: {
-        current_focus: focus
+        current_focus: mergeFocusNotificationTarget(focus, target)
       }
     };
   }
@@ -325,7 +328,10 @@ function formatLocalTime(value: string, timezone: string): string {
   }
 }
 
-function buildCurrentFocus(event: SchedulerCalendarEventPayload): CurrentMeetingFocus {
+function buildCurrentFocus(
+  event: SchedulerCalendarEventPayload,
+  defaultTarget?: MeetingNotificationTarget
+): CurrentMeetingFocus {
   const focus: CurrentMeetingFocus = {
     type: "calendar_event",
     event_id: event.id,
@@ -340,9 +346,20 @@ function buildCurrentFocus(event: SchedulerCalendarEventPayload): CurrentMeeting
       chat_id: event.chat_id,
       attendee_user_ids: event.attendee_user_ids
     }
-  );
+  ) ?? defaultTarget;
   if (target) focus.notification_target = target;
   return focus;
+}
+
+function mergeFocusNotificationTarget(
+  focus: CurrentMeetingFocus,
+  target: MeetingNotificationTarget
+): CurrentMeetingFocus {
+  if (normalizeNotificationTarget(focus.notification_target)) return focus;
+  return {
+    ...focus,
+    notification_target: target
+  };
 }
 
 function normalizeCurrentMeetingFocus(value: unknown): CurrentMeetingFocus | undefined {

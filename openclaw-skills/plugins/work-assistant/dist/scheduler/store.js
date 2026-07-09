@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 export class MemoryTriggerPlanStore {
     records = new Map();
@@ -87,30 +87,41 @@ export class MemoryTriggerPlanStore {
 export class JsonFileTriggerPlanStore extends MemoryTriggerPlanStore {
     statePath;
     static claimsByStatePath = new Map();
+    static operationChainsByStatePath = new Map();
     loaded = false;
     constructor(statePath) {
         super(JsonFileTriggerPlanStore.claimSetFor(statePath));
         this.statePath = statePath;
     }
     async upsertPlans(plans, now) {
-        await this.load({ force: true });
-        return super.upsertPlans(plans, now);
+        return this.runExclusive(async () => {
+            await this.load({ force: true });
+            return super.upsertPlans(plans, now);
+        });
     }
     async getDue(now) {
-        await this.load({ force: true });
-        return super.getDue(now);
+        return this.runExclusive(async () => {
+            await this.load({ force: true });
+            return super.getDue(now);
+        });
     }
     async markDispatched(key, eventId, dispatchedAt, response) {
-        await this.load({ force: true });
-        return super.markDispatched(key, eventId, dispatchedAt, response);
+        return this.runExclusive(async () => {
+            await this.load({ force: true });
+            return super.markDispatched(key, eventId, dispatchedAt, response);
+        });
     }
     async recordDispatchFailure(key, error, failedAt) {
-        await this.load({ force: true });
-        return super.recordDispatchFailure(key, error, failedAt);
+        return this.runExclusive(async () => {
+            await this.load({ force: true });
+            return super.recordDispatchFailure(key, error, failedAt);
+        });
     }
     async listRecords() {
-        await this.load({ force: true });
-        return super.listRecords();
+        return this.runExclusive(async () => {
+            await this.load({ force: true });
+            return super.listRecords();
+        });
     }
     async persist() {
         if (!this.loaded)
@@ -120,7 +131,9 @@ export class JsonFileTriggerPlanStore extends MemoryTriggerPlanStore {
             version: 1,
             records: [...this.records.values()]
         };
-        await writeFile(this.statePath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+        const tempPath = `${this.statePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+        await writeFile(tempPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+        await rename(tempPath, this.statePath);
     }
     async load(options = {}) {
         if (this.loaded && !options.force)
@@ -151,6 +164,29 @@ export class JsonFileTriggerPlanStore extends MemoryTriggerPlanStore {
         const claims = new Set();
         JsonFileTriggerPlanStore.claimsByStatePath.set(statePath, claims);
         return claims;
+    }
+    async runExclusive(operation) {
+        const previous = JsonFileTriggerPlanStore.operationChainsByStatePath.get(this.statePath) ?? Promise.resolve();
+        let release = () => undefined;
+        const gate = new Promise((resolve) => {
+            release = resolve;
+        });
+        const chain = previous.catch(() => undefined).then(() => gate);
+        JsonFileTriggerPlanStore.operationChainsByStatePath.set(this.statePath, chain);
+        await previous.catch(() => undefined);
+        try {
+            return await operation();
+        }
+        finally {
+            release();
+            if (JsonFileTriggerPlanStore.operationChainsByStatePath.get(this.statePath) === chain) {
+                void chain.finally(() => {
+                    if (JsonFileTriggerPlanStore.operationChainsByStatePath.get(this.statePath) === chain) {
+                        JsonFileTriggerPlanStore.operationChainsByStatePath.delete(this.statePath);
+                    }
+                });
+            }
+        }
     }
 }
 function isTriggerStoreRecord(value) {

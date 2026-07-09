@@ -145,7 +145,7 @@ Result: TypeScript build passed and Vitest reported 11 test files, 106 tests pas
 Coverage added:
 
 - Scheduler config parses opt-in `scheduler.agentDispatch` with target session, optional agent/device ids, delivery mode, and interrupt behavior.
-- Scheduler-produced `StructuredResponse` objects are wrapped into pure `openclaw.stackchan.event.v1` JSON envelopes with `render.target: "xiaopai"` and `payload.schema: "openclaw.work_assistant.scheduler_response.v1"`.
+- Scheduler-produced `StructuredResponse` objects are wrapped into plain natural-language agent prompts. The prompt includes scheduler facts, the generated response, task-specific speech style, and explicit `xiaopaiControl.execute` face/action/speak requirements instead of a stack-chan JSON envelope.
 - A dry-run scheduler tick can call the internal `assistant.handleEvent(event)`, then queue a one-shot OpenClaw agent turn through `api.session.workflow.scheduleSessionTurn`; successful agent turn queueing marks the scheduler dispatch successful without waiting for Xiaopai hardware execution.
 
 ## Meeting Reminder and Notification Verification

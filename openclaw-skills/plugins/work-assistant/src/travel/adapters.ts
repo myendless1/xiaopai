@@ -78,6 +78,15 @@ export type QWeatherWeatherConfig = {
   timeoutMs?: number;
 };
 
+export type AmapRouteConfig = {
+  provider: "amap";
+  apiHost?: string;
+  credentialEnv?: string;
+  defaultCity?: string;
+  originLocation?: string;
+  timeoutMs?: number;
+};
+
 export type UserProfile = {
   originAddress?: string;
   homeCity?: string;
@@ -133,5 +142,6 @@ export type TravelPlannerConfig = {
   originAddress?: string;
   defaultRouteMode?: RouteMode;
   arrivalBufferMinutes?: number;
+  route?: AmapRouteConfig;
   weather?: QWeatherWeatherConfig;
 };
