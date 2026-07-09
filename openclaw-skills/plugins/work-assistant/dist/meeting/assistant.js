@@ -1,8 +1,10 @@
 import { followUpResponse, validateStructuredAssistantIntent } from "../contracts.js";
 export class MeetingReminderAssistant {
     imAdapter;
+    defaultNotificationTarget;
     constructor(options) {
         this.imAdapter = options.imAdapter;
+        this.defaultNotificationTarget = normalizeNotificationTarget(options.defaultNotificationTarget);
     }
     async handleReminder(event) {
         const calendarEvent = normalizeCalendarEvent(event.payload.calendar_event);
@@ -55,7 +57,7 @@ export class MeetingReminderAssistant {
                 expected: false
             },
             context_patch: {
-                current_focus: buildCurrentFocus(calendarEvent)
+                current_focus: buildCurrentFocus(calendarEvent, this.defaultNotificationTarget)
             }
         };
     }
@@ -67,7 +69,7 @@ export class MeetingReminderAssistant {
         if (!focus) {
             return followUpResponse("要通知哪一个会议的参会人？", "missing_meeting_focus", "请告诉我要通知哪一个会议。");
         }
-        const target = normalizeNotificationTarget(focus.notification_target);
+        const target = normalizeNotificationTarget(focus.notification_target) ?? this.defaultNotificationTarget;
         if (!target) {
             return {
                 speech: "我还不知道要通知哪个会议群或哪些参会人。",
@@ -153,7 +155,7 @@ export class MeetingReminderAssistant {
                 expected: false
             },
             context_patch: {
-                current_focus: focus
+                current_focus: mergeFocusNotificationTarget(focus, target)
             }
         };
     }
@@ -285,7 +287,7 @@ function formatLocalTime(value, timezone) {
         return value;
     }
 }
-function buildCurrentFocus(event) {
+function buildCurrentFocus(event, defaultTarget) {
     const focus = {
         type: "calendar_event",
         event_id: event.id,
@@ -300,10 +302,18 @@ function buildCurrentFocus(event) {
     const target = normalizeNotificationTarget(event.notification_target ?? {
         chat_id: event.chat_id,
         attendee_user_ids: event.attendee_user_ids
-    });
+    }) ?? defaultTarget;
     if (target)
         focus.notification_target = target;
     return focus;
+}
+function mergeFocusNotificationTarget(focus, target) {
+    if (normalizeNotificationTarget(focus.notification_target))
+        return focus;
+    return {
+        ...focus,
+        notification_target: target
+    };
 }
 function normalizeCurrentMeetingFocus(value) {
     const record = isRecord(value) ? value : undefined;

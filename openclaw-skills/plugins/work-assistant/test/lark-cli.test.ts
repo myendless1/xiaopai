@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DryRunIMAdapter } from "../src/lark/dry-run.js";
 import { LarkCliCalendarAdapter, LarkCliContactAdapter, LarkCliIMAdapter, type ProcessRunner } from "../src/lark/lark-cli.js";
+import { OpenClawFeishuIMAdapter } from "../src/lark/openclaw-feishu.js";
 
 describe("lark-cli adapters", () => {
   it("resolves unique, ambiguous, and missing attendees from mocked process output", async () => {
@@ -340,6 +341,123 @@ describe("lark-cli adapters", () => {
     expect(parseFailed).toMatchObject({
       ok: false,
       code: "LARK_MESSAGE_PARSE_FAILED"
+    });
+  });
+
+  it("sends IM messages through OpenClaw Feishu channel targets and parses message ids", async () => {
+    const runner: ProcessRunner = async (argv) => {
+      expect(argv).toEqual([
+        "--no-color",
+        "message",
+        "send",
+        "--channel",
+        "feishu",
+        "--target",
+        "chat:oc_meeting_chat",
+        "--message",
+        "我会晚 5 分钟到，请大家稍等一下。",
+        "--json"
+      ]);
+      return {
+        code: 0,
+        stderr: "[info]: [ 'client ready' ]",
+        stdout: JSON.stringify({
+          messageId: "om_openclaw_1",
+          payload: {
+            chatId: "oc_meeting_chat"
+          }
+        })
+      };
+    };
+
+    const result = await new OpenClawFeishuIMAdapter({ runner }).sendText({
+      text: "我会晚 5 分钟到，请大家稍等一下。",
+      requesterId: "ou_requester",
+      chatId: "oc_meeting_chat",
+      idempotencyKey: "evt-late"
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      messageId: "om_openclaw_1",
+      chatId: "oc_meeting_chat"
+    });
+  });
+
+  it("uses the first attendee id as an OpenClaw Feishu user target", async () => {
+    const runner: ProcessRunner = async (argv) => {
+      expect(argv).toEqual([
+        "--no-color",
+        "message",
+        "send",
+        "--channel",
+        "feishu",
+        "--target",
+        "user:ou_1",
+        "--message",
+        "hello",
+        "--json",
+        "--account",
+        "default"
+      ]);
+      return {
+        code: 0,
+        stderr: "",
+        stdout: JSON.stringify({
+          payload: {
+            receipt: {
+              primaryPlatformMessageId: "om_openclaw_user"
+            }
+          }
+        })
+      };
+    };
+
+    const result = await new OpenClawFeishuIMAdapter({ runner, accountId: "default" }).sendText({
+      text: "hello",
+      requesterId: "ou_requester",
+      attendeeUserIds: ["ou_1", "ou_2"]
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      messageId: "om_openclaw_user",
+      attendeeUserIds: ["ou_1", "ou_2"]
+    });
+  });
+
+  it("converts OpenClaw Feishu send failures and parse failures into stable results", async () => {
+    const failed = await new OpenClawFeishuIMAdapter({
+      runner: async () => ({
+        code: 1,
+        stdout: "",
+        stderr: "permission denied"
+      })
+    }).sendText({
+      text: "hello",
+      requesterId: "ou_requester",
+      chatId: "oc_meeting_chat"
+    });
+
+    const parseFailed = await new OpenClawFeishuIMAdapter({
+      runner: async () => ({
+        code: 0,
+        stdout: "{}",
+        stderr: ""
+      })
+    }).sendText({
+      text: "hello",
+      requesterId: "ou_requester",
+      chatId: "oc_meeting_chat"
+    });
+
+    expect(failed).toMatchObject({
+      ok: false,
+      code: "OPENCLAW_MESSAGE_SEND_FAILED"
+    });
+    expect(parseFailed).toMatchObject({
+      ok: false,
+      code: "OPENCLAW_MESSAGE_PARSE_FAILED"
     });
   });
 });

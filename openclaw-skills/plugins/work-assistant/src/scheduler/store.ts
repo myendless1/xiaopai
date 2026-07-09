@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type {
   StructuredResponse
@@ -105,6 +105,7 @@ export class MemoryTriggerPlanStore implements TriggerPlanStore {
 
 export class JsonFileTriggerPlanStore extends MemoryTriggerPlanStore {
   private static readonly claimsByStatePath = new Map<string, Set<string>>();
+  private static readonly operationChainsByStatePath = new Map<string, Promise<void>>();
   private loaded = false;
 
   constructor(private readonly statePath: string) {
@@ -112,28 +113,38 @@ export class JsonFileTriggerPlanStore extends MemoryTriggerPlanStore {
   }
 
   override async upsertPlans(plans: TriggerPlan[], now: string): Promise<TriggerUpsertResult> {
-    await this.load({ force: true });
-    return super.upsertPlans(plans, now);
+    return this.runExclusive(async () => {
+      await this.load({ force: true });
+      return super.upsertPlans(plans, now);
+    });
   }
 
   override async getDue(now: string): Promise<TriggerStoreRecord[]> {
-    await this.load({ force: true });
-    return super.getDue(now);
+    return this.runExclusive(async () => {
+      await this.load({ force: true });
+      return super.getDue(now);
+    });
   }
 
   override async markDispatched(key: string, eventId: string, dispatchedAt: string, response: StructuredResponse): Promise<void> {
-    await this.load({ force: true });
-    return super.markDispatched(key, eventId, dispatchedAt, response);
+    return this.runExclusive(async () => {
+      await this.load({ force: true });
+      return super.markDispatched(key, eventId, dispatchedAt, response);
+    });
   }
 
   override async recordDispatchFailure(key: string, error: string, failedAt: string): Promise<void> {
-    await this.load({ force: true });
-    return super.recordDispatchFailure(key, error, failedAt);
+    return this.runExclusive(async () => {
+      await this.load({ force: true });
+      return super.recordDispatchFailure(key, error, failedAt);
+    });
   }
 
   override async listRecords(): Promise<TriggerStoreRecord[]> {
-    await this.load({ force: true });
-    return super.listRecords();
+    return this.runExclusive(async () => {
+      await this.load({ force: true });
+      return super.listRecords();
+    });
   }
 
   protected override async persist(): Promise<void> {
@@ -143,7 +154,9 @@ export class JsonFileTriggerPlanStore extends MemoryTriggerPlanStore {
       version: 1,
       records: [...this.records.values()]
     };
-    await writeFile(this.statePath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+    const tempPath = `${this.statePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+    await writeFile(tempPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+    await rename(tempPath, this.statePath);
   }
 
   private async load(options: { force?: boolean } = {}): Promise<void> {
@@ -169,6 +182,29 @@ export class JsonFileTriggerPlanStore extends MemoryTriggerPlanStore {
     const claims = new Set<string>();
     JsonFileTriggerPlanStore.claimsByStatePath.set(statePath, claims);
     return claims;
+  }
+
+  private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = JsonFileTriggerPlanStore.operationChainsByStatePath.get(this.statePath) ?? Promise.resolve();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chain = previous.catch(() => undefined).then(() => gate);
+    JsonFileTriggerPlanStore.operationChainsByStatePath.set(this.statePath, chain);
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (JsonFileTriggerPlanStore.operationChainsByStatePath.get(this.statePath) === chain) {
+        void chain.finally(() => {
+          if (JsonFileTriggerPlanStore.operationChainsByStatePath.get(this.statePath) === chain) {
+            JsonFileTriggerPlanStore.operationChainsByStatePath.delete(this.statePath);
+          }
+        });
+      }
+    }
   }
 }
 

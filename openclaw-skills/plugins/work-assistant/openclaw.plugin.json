@@ -31,6 +31,30 @@
         ],
         "description": "Lark identity used for calendar operations."
       },
+      "imProvider": {
+        "type": "string",
+        "enum": [
+          "openclaw",
+          "lark-cli"
+        ],
+        "description": "Sender used for meeting late notifications. Defaults to openclaw, which sends through OpenClaw's configured Feishu channel."
+      },
+      "openclawCliPath": {
+        "type": "string",
+        "description": "Executable path for openclaw when imProvider is openclaw."
+      },
+      "openclawFeishuChannel": {
+        "type": "string",
+        "description": "OpenClaw channel id used for meeting late notifications. Defaults to feishu."
+      },
+      "openclawFeishuAccount": {
+        "type": "string",
+        "description": "Optional OpenClaw Feishu channel account id used for meeting late notifications."
+      },
+      "defaultMeetingNotificationChatId": {
+        "type": "string",
+        "description": "Default Feishu chat id used for meeting late notifications when the calendar event does not include a notification target."
+      },
       "timeoutMs": {
         "type": "number",
         "minimum": 1000,
@@ -58,6 +82,43 @@
             "type": "number",
             "minimum": 1,
             "description": "Minutes to arrive before an outdoor event starts."
+          },
+          "route": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Route provider used by same-day outdoor reminders.",
+            "properties": {
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "amap"
+                ]
+              },
+              "apiHost": {
+                "type": "string",
+                "description": "Amap Web Service API host. Defaults to https://restapi.amap.com."
+              },
+              "credentialEnv": {
+                "type": "string",
+                "description": "Environment variable containing the Amap Web Service API key."
+              },
+              "defaultCity": {
+                "type": "string",
+                "description": "Default city used for address/POI lookup and transit route planning, for example 上海."
+              },
+              "originLocation": {
+                "type": "string",
+                "description": "Optional pre-resolved origin coordinate in longitude,latitude format."
+              },
+              "timeoutMs": {
+                "type": "number",
+                "minimum": 100,
+                "maximum": 60000
+              }
+            },
+            "required": [
+              "provider"
+            ]
           },
           "weather": {
             "type": "object",

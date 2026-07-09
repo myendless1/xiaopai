@@ -17,7 +17,6 @@ import {
   buildSchedulerAgentTurnMessage,
   dispatchSchedulerResponseToAgent,
   selectOnlineXiaopaiDeviceId,
-  WORK_ASSISTANT_SCHEDULER_RESPONSE_SCHEMA,
   deriveInputEventId,
   deriveTriggerKey,
   readSchedulerConfig
@@ -141,7 +140,7 @@ describe("scheduler config", () => {
   });
 });
 
-describe("scheduler agent dispatch envelope", () => {
+describe("scheduler agent dispatch prompt", () => {
   it("selects a realtime online Xiaopai device and builds a matching OpenClaw session key", () => {
     const deviceId = selectOnlineXiaopaiDeviceId({
       default_device_id: "default",
@@ -193,7 +192,7 @@ describe("scheduler agent dispatch envelope", () => {
     );
   });
 
-  it("builds a stack-chan Xiaopai render envelope around the StructuredResponse", () => {
+  it("builds a direct Xiaopai control prompt around the StructuredResponse", () => {
     const event: InputEvent = {
       event_id: "scheduler-event-1",
       type: "meeting_starting_soon",
@@ -206,6 +205,13 @@ describe("scheduler agent dispatch envelope", () => {
           fired_at: "2026-06-06T01:20:00.000Z",
           source: "proactive_calendar_scheduler",
           trigger_key: "trigger_1"
+        },
+        calendar_event: {
+          id: "calendar-event-1",
+          title: "客户同步会议",
+          start: "2026-06-06T09:30:00+08:00",
+          end: "2026-06-06T10:00:00+08:00",
+          location: "3A 会议室"
         }
       },
       context: { timezone: "Asia/Shanghai" }
@@ -222,33 +228,120 @@ describe("scheduler agent dispatch envelope", () => {
         interrupt: true
       }
     });
-    const envelope = JSON.parse(message) as Record<string, unknown>;
-    const scheduledEvent = envelope.event as Record<string, unknown>;
-    const payload = scheduledEvent.payload as Record<string, unknown>;
 
-    expect(envelope).toMatchObject({
-      schema: "openclaw.stackchan.event.v1",
-      event_id: "scheduler-event-1",
-      device_id: "device-1",
-      render: {
-        target: "xiaopai",
-        interrupt: true
-      }
-    });
-    expect(scheduledEvent).toMatchObject({
-      event_id: "scheduler-event-1",
-      type: "work_assistant_proactive_response",
-      timestamp: "2026-06-06T09:20:00+08:00"
-    });
-    expect(payload.schema).toBe(WORK_ASSISTANT_SCHEDULER_RESPONSE_SCHEMA);
-    expect(payload.source_event).toMatchObject({ type: "meeting_starting_soon" });
-    expect(payload.structured_response).toMatchObject({
-      speech: "ok",
-      follow_up: { expected: false }
-    });
+    expect(() => JSON.parse(message)).toThrow();
+    expect(message).not.toContain("openclaw.stackchan.event.v1");
+    expect(message).toContain("必须调用 xiaopaiControl.execute");
+    expect(message).toContain("不要调用 workAssistant.handleEvent");
+    expect(message).toContain("任务类型: 会议会前提醒 (meeting_starting_soon)");
+    expect(message).toContain("目标小派设备 device_id: device-1");
+    expect(message).toContain("打断当前播报 interrupt: true");
+    expect(message).toContain("日程标题: 客户同步会议");
+    expect(message).toContain("日程地点: 3A 会议室");
+    expect(message).toContain("距离日程开始: 10 分钟");
+    expect(message).toContain("打扰一下，xxx点 xx 会议还有 x 分钟");
+    expect(message).toContain("face expression: smile_blink");
+    expect(message).toContain("action: blink");
   });
 
-  it("resolves online Xiaopai device into both scheduler session key and render envelope", async () => {
+  it("adds task-specific speech styles and Xiaopai presentation instructions", () => {
+    const baseEvent: InputEvent = {
+      event_id: "scheduler-profile-event",
+      type: "daily_briefing_triggered",
+      timestamp: "2026-06-06T08:00:00+08:00",
+      user_id: "ou_requester",
+      payload: {
+        trigger: {
+          rule_id: "daily_briefing",
+          scheduled_for: "2026-06-06T00:00:00.000Z",
+          fired_at: "2026-06-06T00:00:00.000Z",
+          source: "proactive_calendar_scheduler",
+          trigger_key: "trigger_profile"
+        }
+      },
+      context: { timezone: "Asia/Shanghai" }
+    };
+    const build = (event: InputEvent, response = successResponse) =>
+      buildSchedulerAgentTurnMessage({
+        event,
+        response,
+        config: {
+          enabled: true,
+          sessionKey: "xiaopai-device-1",
+          deliveryMode: "none",
+          deviceId: "device-1",
+          interrupt: true
+        }
+      });
+
+    expect(build(baseEvent)).toEqual(expect.stringContaining("早上好呀！今天是x月x日（周x）"));
+    expect(build(baseEvent)).toEqual(expect.stringContaining("face expression: happy_squint"));
+
+    expect(
+      build({
+        ...baseEvent,
+        type: "meeting_starting_soon",
+        payload: {
+          ...baseEvent.payload,
+          calendar_event: {
+            id: "meeting-1",
+            title: "项目同步会议",
+            start: "2026-06-06T08:05:00+08:00",
+            end: "2026-06-06T09:00:00+08:00",
+            location: "B2"
+          }
+        }
+      })
+    ).toEqual(expect.stringContaining("face expression: smile_blink 和 action: blink"));
+
+    expect(
+      build({
+        ...baseEvent,
+        type: "outdoor_event_detected",
+        payload: {
+          ...baseEvent.payload,
+          calendar_event: {
+            id: "outdoor-1",
+            title: "外出拜访",
+            start: "2026-06-06T14:00:00+08:00",
+            end: "2026-06-06T16:00:00+08:00",
+            location: "深圳湾客户园区"
+          }
+        }
+      })
+    ).toEqual(expect.stringContaining("哈喽，您下午 xxx 点有外出行程"));
+
+    expect(
+      build(
+        {
+          ...baseEvent,
+          type: "business_trip_tomorrow_detected",
+          payload: {
+            ...baseEvent.payload,
+            calendar_event: {
+              id: "trip-1",
+              title: "出差 - 上海",
+              start: "2026-06-07T09:00:00+08:00",
+              end: "2026-06-07T11:00:00+08:00",
+              description: "前往上海出差"
+            }
+          }
+        },
+        {
+          ...successResponse,
+          context_patch: {
+            travel_summary: {
+              destination: "上海",
+              trip_date: "2026-06-07",
+              weather_status: "上海明日小雨，23到31度。"
+            }
+          }
+        }
+      )
+    ).toEqual(expect.stringContaining("哈喽，准备下班咯~提醒您明早 x 点将前往 xx 出差"));
+  });
+
+  it("resolves online Xiaopai device into both scheduler session key and prompt target", async () => {
     const scheduledTurns: SchedulerAgentTurnScheduleParams[] = [];
     const event: InputEvent = {
       event_id: "scheduler-event-online-device",
@@ -304,12 +397,9 @@ describe("scheduler agent dispatch envelope", () => {
     });
     expect(scheduledTurns).toHaveLength(1);
     expect(scheduledTurns[0]?.sessionKey).toBe("agent:main:xiaopai-44:1b:f6:df:5d:b8");
-    const envelope = JSON.parse(scheduledTurns[0]?.message ?? "{}") as Record<string, unknown>;
-    expect(envelope).toMatchObject({
-      schema: "openclaw.stackchan.event.v1",
-      device_id: "44:1b:f6:df:5d:b8",
-      render: { target: "xiaopai", interrupt: true }
-    });
+    expect(scheduledTurns[0]?.message).toContain("目标小派设备 device_id: 44:1b:f6:df:5d:b8");
+    expect(scheduledTurns[0]?.message).toContain('"device_id": "44:1b:f6:df:5d:b8"');
+    expect(scheduledTurns[0]?.message).toContain("必须调用 xiaopaiControl.execute");
   });
 });
 
@@ -713,22 +803,14 @@ describe("dry-run scheduler smoke", () => {
         tag: "work-assistant-scheduler"
       });
 
-      const envelope = JSON.parse(scheduledTurn.message) as Record<string, unknown>;
-      const scheduledEvent = envelope.event as Record<string, unknown>;
-      const payload = scheduledEvent.payload as Record<string, unknown>;
-      expect(envelope).toMatchObject({
-        schema: "openclaw.stackchan.event.v1",
-        device_id: "device-1",
-        render: { target: "xiaopai", interrupt: true }
-      });
-      expect(payload.structured_response).toMatchObject({
-        speech: expect.stringContaining("今天"),
-        follow_up: { expected: false }
-      });
-      expect(payload.source_event).toMatchObject({
-        type: "daily_briefing_triggered",
-        user_id: "ou_requester"
-      });
+      expect(() => JSON.parse(scheduledTurn.message)).toThrow();
+      expect(scheduledTurn.message).not.toContain("openclaw.stackchan.event.v1");
+      expect(scheduledTurn.message).toContain("任务类型: 定时日程管理及播报 (daily_briefing_triggered)");
+      expect(scheduledTurn.message).toContain("目标小派设备 device_id: device-1");
+      expect(scheduledTurn.message).toContain("早上好呀！今天是x月x日（周x）");
+      expect(scheduledTurn.message).toContain("face expression: happy_squint");
+      expect(scheduledTurn.message).toContain("原始播报:");
+      expect(scheduledTurn.message).toContain("今天");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

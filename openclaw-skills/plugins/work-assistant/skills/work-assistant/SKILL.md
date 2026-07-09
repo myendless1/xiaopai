@@ -23,7 +23,9 @@ When a user message is JSON with `schema: "openclaw.stackchan.event.v1"` and an 
 
 First inspect `envelope.event.type`, `envelope.event.payload`, and any structured intent. Call `workAssistant.handleEvent` only when the event matches this plugin's business capabilities, such as calendar creation, explicit agenda briefing triggers, scheduler meeting reminders, scheduler travel reminders, late-arrival notifications, sedentary-care events, or wellbeing follow-up events. Ordinary chat, simple Q&A, direct robot expression requests, raw device events such as a bare `head_touch`, and Xiaopai presentation-only commands can be handled by the OpenClaw agent directly and then rendered with `xiaopaiControl.execute`.
 
-If `envelope.event.type` is `work_assistant_proactive_response` and `envelope.event.payload.schema` is `openclaw.work_assistant.scheduler_response.v1`, this is already the output of the work-assistant built-in scheduler. Do not call `workAssistant.handleEvent` again. Treat `envelope.event.payload.structured_response` as the canonical `StructuredResponse`, use its `speech` as the reminder text, preserve any `context_patch` that is useful for follow-up turns, and render the response through `xiaopaiControl.execute` when robot output is needed. The envelope's `render.target: "xiaopai"` also allows the Xiaopai runtime fallback to queue speech if the agent returns final text but forgets the explicit control call.
+Current scheduler-produced proactive reminders are delivered to the agent as a plain natural-language execution prompt, not as a stack-chan JSON envelope. When a user message says it is a "Work Assistant 调度器生成的被动播报任务", treat the prompt as already handled by the built-in scheduler: do not call `workAssistant.handleEvent` again, do not re-read the calendar, and do not replace the provided facts with new tool lookups. Follow the prompt's task type, key facts, Work Assistant generated result, requested speech style, and Xiaopai expression/action requirements. The scheduler prompt explicitly expects `xiaopaiControl.execute`; the stack-chan render fallback does not apply to this plain prompt format.
+
+If you receive a legacy `envelope.event.type` of `work_assistant_proactive_response` with `envelope.event.payload.schema` set to `openclaw.work_assistant.scheduler_response.v1`, this is also already the output of the work-assistant built-in scheduler. Do not call `workAssistant.handleEvent` again. Treat `envelope.event.payload.structured_response` as the canonical `StructuredResponse`, use its `speech` as the reminder text, preserve any `context_patch` that is useful for follow-up turns, and render the response through `xiaopaiControl.execute` when robot output is needed.
 
 For events that do match work-assistant, route the embedded event through the existing method:
 
@@ -43,12 +45,12 @@ lark-cli auth status --verify
 
 Use the returned `userOpenId` as `event.user_id` and, when the user wants to invite themself, as a direct attendee id in `structured_intent.attendees`.
 
-The default runtime uses Lark user identity, so local OAuth must be ready and the app backend must have matching scopes. The minimum scopes for this plugin's Lark path are `contact:user:search`, `calendar:calendar.event:read`, `calendar:calendar.event:create`, and `calendar:calendar.event:update`. Optional flows need additional scopes: `calendar:calendar.free_busy:read` for free/busy or meeting-time suggestions, and `im:message.send_as_user im:message` for user-identity late-arrival notifications.
+The default runtime uses Lark user identity for contact and calendar operations, so local OAuth must be ready and the app backend must have matching scopes. The minimum scopes for this plugin's Lark contact/calendar path are `contact:user:search`, `calendar:calendar.event:read`, `calendar:calendar.event:create`, and `calendar:calendar.event:update`. Optional calendar flows need `calendar:calendar.free_busy:read` for free/busy or meeting-time suggestions. Late-arrival notifications default to OpenClaw's configured Feishu channel (`imProvider: "openclaw"`); only `imProvider: "lark-cli"` uses `lark-cli im +messages-send` and needs `im:message.send_as_user im:message`.
 
 To diagnose missing authorization, use:
 
 ```bash
-lark-cli auth check --scope "contact:user:search calendar:calendar.event:read calendar:calendar.event:create calendar:calendar.event:update calendar:calendar.free_busy:read im:message.send_as_user im:message"
+lark-cli auth check --scope "contact:user:search calendar:calendar.event:read calendar:calendar.event:create calendar:calendar.event:update calendar:calendar.free_busy:read"
 ```
 
 When the user asks the workplace robot to create a Lark calendar event, first extract a deterministic `calendar.create` structured intent from the utterance. Then call the Gateway method `workAssistant.handleEvent` with both the original text and `payload.structured_intent`.

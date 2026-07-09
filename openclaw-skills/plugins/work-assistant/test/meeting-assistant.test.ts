@@ -55,6 +55,92 @@ describe("meeting reminder assistant", () => {
     });
   });
 
+  it("uses the configured default notification chat when reminder events omit targets", async () => {
+    const assistant = new MeetingReminderAssistant({
+      imAdapter: new FakeIMAdapter(),
+      defaultNotificationTarget: {
+        chat_id: "oc_default_meeting"
+      }
+    });
+    const response = await assistant.handleReminder({
+      ...sampleEvent,
+      event_id: "evt-reminder-default-target",
+      type: "meeting_starting_soon",
+      timestamp: "2026-06-06T09:20:00+08:00",
+      payload: {
+        trigger: {
+          rule_id: "meeting_starting_soon"
+        },
+        calendar_event: {
+          id: "calendar_default",
+          title: "项目同步",
+          start: "2026-06-06T09:30:00+08:00",
+          end: "2026-06-06T10:00:00+08:00",
+          calendar_id: "primary"
+        }
+      }
+    });
+
+    expect(response.context_patch.current_focus).toMatchObject({
+      event_id: "calendar_default",
+      notification_target: {
+        chat_id: "oc_default_meeting"
+      }
+    });
+  });
+
+  it("sends late notifications to the configured default chat when focus has no target", async () => {
+    const im = new FakeIMAdapter();
+    const assistant = new MeetingReminderAssistant({
+      imAdapter: im,
+      defaultNotificationTarget: {
+        chat_id: "oc_default_meeting"
+      }
+    });
+    const response = await assistant.handleLateNotification({
+      ...sampleEvent,
+      event_id: "evt-late-default-target",
+      type: "user_utterance",
+      payload: {
+        text: "我会晚到三分钟，帮我通知参会人",
+        structured_intent: {
+          type: "meeting.notify_late",
+          version: "1",
+          delay_minutes: 3
+        }
+      },
+      context: {
+        timezone: "Asia/Shanghai",
+        current_focus: {
+          type: "calendar_event",
+          event_id: "calendar_default",
+          title: "项目同步",
+          start_time: "2026-06-06T09:30:00+08:00",
+          end_time: "2026-06-06T10:00:00+08:00",
+          calendar_id: "primary"
+        }
+      }
+    });
+
+    expect(response.actions[0]).toMatchObject({
+      type: "lark.message.send",
+      status: "success",
+      details: {
+        target: {
+          chat_id: "oc_default_meeting"
+        }
+      }
+    });
+    expect(response.context_patch.current_focus).toMatchObject({
+      notification_target: {
+        chat_id: "oc_default_meeting"
+      }
+    });
+    expect(im.calls[0]).toMatchObject({
+      chatId: "oc_default_meeting"
+    });
+  });
+
   it("returns failed reminder actions without side effects for malformed scheduler events", async () => {
     const im = new FakeIMAdapter();
     const assistant = new MeetingReminderAssistant({ imAdapter: im });
