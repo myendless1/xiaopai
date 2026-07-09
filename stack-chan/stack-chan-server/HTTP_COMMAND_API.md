@@ -390,7 +390,7 @@ X-Device-Id: <device_id>
 
 `/upload-audio` is an alias of `/upload`.
 
-If OpenClaw is configured with `OPENCLAW_BASE_URL` and `OPENCLAW_GATEWAY_TOKEN`, non-empty ASR text is sent directly as the chat `user.content`. The server does not read or parse OpenClaw response text, tags, or actions. The OpenClaw agent may call `workAssistant.handleEvent` for supported business intents, or answer directly for ordinary conversation and presentation-only requests. OpenClaw should call the command API when it wants Xiaopai to speak, move, or change expression.
+If Morrow/OpenClaw is configured with `OPENCLAW_BASE_URL`, non-empty ASR text is sent as a Morrow `start_turn` prompt over the session WebSocket. The server consumes streaming `text_delta` events, accumulates text until punctuation, and queues each segment as a Xiaopai `speak` command. Legacy OpenAI-compatible `/v1/chat/completions` URLs are still accepted as a fallback.
 
 Response:
 

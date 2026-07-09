@@ -185,7 +185,7 @@ class RealtimeConfig:
     openclaw_model: str = "openclaw/default"
     openclaw_backend_model: str = ""
     openclaw_timeout: int = 45
-    openclaw_session_prefix: str = "xiaopai"
+    openclaw_session_prefix: str = "default"
     openclaw_max_completion_tokens: int = 512
     audio_capture_dir: str = ""
     save_audio_uploads: bool = True
@@ -654,6 +654,9 @@ class RealtimeManager:
                     for key in ("voice", "sample_rate", "volume", "speech_rate", "pitch_rate")
                     if key in payload and payload[key] not in (None, "")
                 },
+                interrupt=bool(command.get("interrupt")),
+                coalesce_key=str(command.get("coalesce_key") or "realtime_speak"),
+                ttl_seconds=float(command.get("ttl_seconds") or 8.0),
             )
             return True
         return await self._send_mcp_command(session, command)
@@ -923,23 +926,56 @@ class RealtimeManager:
         if not self._openclaw.enabled:
             # Temporarily disabled: stay silent instead of fallback speech.
             return
-        loop = asyncio.get_running_loop()
         try:
             self._mark(session, "openclaw_start")
             await self._send_device_state(session, "waiting")
-            reply = await loop.run_in_executor(None, self._openclaw.chat, session.device_id, text)
+            spoken = await self._speak_openclaw_stream(session, text)
             self._mark(session, "openclaw_done")
         except Exception as exc:
             self.logger(f"OpenClaw 实时对话失败: {exc}")
-            reply = ""
             # Temporarily disabled: stay silent instead of fallback speech.
             return
+        if spoken:
+            self.logger(f"实时 Morrow 回复已加入播放队列: segments={spoken}")
+
+    def _iter_openclaw_speech_segments(self, device_id: str, text: str):
+        if hasattr(self._openclaw, "chat_stream"):
+            yield from self._openclaw.chat_stream(device_id, text)
+            return
+        reply = self._openclaw.chat(device_id, text)
         if reply:
-            if speech_text_is_temporarily_suppressed(reply):
-                self.logger("实时 OpenClaw 回复已被临时静默保护抑制")
-                return
-            await self._speak(session, reply)
-            self.logger("实时 OpenClaw 回复已加入播放队列")
+            yield reply
+
+    async def _speak_openclaw_stream(self, session: RealtimeDeviceSession, text: str) -> int:
+        loop = asyncio.get_running_loop()
+        iterator = self._iter_openclaw_speech_segments(session.device_id, text)
+        done = object()
+
+        def next_segment():
+            try:
+                return next(iterator)
+            except StopIteration:
+                return done
+
+        spoken = 0
+        while True:
+            segment = await loop.run_in_executor(None, next_segment)
+            if segment is done:
+                break
+            segment_text = str(segment or "").strip()
+            if not segment_text or speech_text_is_temporarily_suppressed(segment_text):
+                continue
+            spoken += 1
+            await self._speak(
+                session,
+                segment_text,
+                interrupt=spoken == 1,
+                coalesce_key=f"realtime_morrow_speak:{session.session_id}:{spoken}",
+                ttl_seconds=60.0,
+            )
+            if spoken == 1:
+                self._mark(session, "openclaw_first_segment")
+        return spoken
 
     async def _speak(
         self,
@@ -949,6 +985,9 @@ class RealtimeManager:
         cache_name: str = "",
         pause_listener: bool = True,
         tts_options: dict | None = None,
+        interrupt: bool = True,
+        coalesce_key: str = "realtime_speak",
+        ttl_seconds: float = 8.0,
     ) -> None:
         text = str(text or "").strip()
         if not text:
@@ -972,10 +1011,10 @@ class RealtimeManager:
                 "cmd_id": make_request_id("cmd"),
                 "type": "speak",
                 "priority": 95,
-                "interrupt": True,
-                "ttl_seconds": 8.0,
+                "interrupt": bool(interrupt),
+                "ttl_seconds": float(ttl_seconds),
                 "discardable": False,
-                "coalesce_key": "realtime_speak",
+                "coalesce_key": str(coalesce_key or "realtime_speak"),
                 "payload": dict(speak_step),
                 "created_at": time.time(),
             }

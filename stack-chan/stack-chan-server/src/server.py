@@ -23,7 +23,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue import Empty
 
-from openclaw_agent import build_openclaw_session_key
+from openclaw_agent import OpenClawAgent
 from realtime_server import RealtimeConfig, RealtimeManager
 from xiaopai_openclaw_prompt import XIAOPAI_OPENCLAW_SYSTEM_PROMPT
 from xiaozhi_protocol import ota_config
@@ -2303,7 +2303,19 @@ class Handler(BaseHTTPRequestHandler):
         self._log_debug(f"对话休眠详情: device={device_id} reason={reason!r}")
 
     def _openclaw_enabled(self) -> bool:
-        return bool(self.server.openclaw_base_url and self.server.openclaw_token)
+        return bool(self.server.openclaw_base_url)
+
+    def _new_openclaw_agent(self) -> OpenClawAgent:
+        return OpenClawAgent(
+            base_url=self.server.openclaw_base_url,
+            token=self.server.openclaw_token,
+            model=self.server.openclaw_model,
+            backend_model=self.server.openclaw_backend_model,
+            timeout=self.server.openclaw_timeout,
+            session_prefix=self.server.openclaw_session_prefix,
+            max_completion_tokens=self.server.openclaw_max_completion_tokens,
+            max_segment_chars=self.server.max_sentence_chars,
+        )
 
     def _send_device_state_command(self, device_id: str, state: str, reason: str = "") -> list[str]:
         device_id = safe_device_id(device_id)
@@ -2369,45 +2381,36 @@ class Handler(BaseHTTPRequestHandler):
 
     def _call_openclaw(self, device_id: str, event_type: str, details: dict) -> None:
         event_content = build_openclaw_event_content(device_id, event_type, details)
-        url = self.server.openclaw_base_url.rstrip("/") + "/chat/completions"
-        session_key = build_openclaw_session_key(self.server.openclaw_session_prefix, device_id)
-        payload = {
-            "model": self.server.openclaw_model,
-            "messages": [
-                {"role": "system", "content": XIAOPAI_OPENCLAW_SYSTEM_PROMPT},
-                {"role": "user", "content": event_content},
-            ],
-            "user": session_key,
-            "max_completion_tokens": self.server.openclaw_max_completion_tokens,
-        }
-        headers = {
-            "Authorization": f"Bearer {self.server.openclaw_token}",
-            "Content-Type": "application/json",
-            "x-openclaw-session-key": session_key,
-        }
-        if self.server.openclaw_backend_model:
-            headers["x-openclaw-model"] = self.server.openclaw_backend_model
-
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            method="POST",
-            headers=headers,
-        )
+        agent = self._new_openclaw_agent()
+        stream_id = f"morrow:{uuid.uuid4().hex[:8]}"
+        queued_count = 0
+        started = time.perf_counter()
         try:
-            with urllib.request.urlopen(req, timeout=self.server.openclaw_timeout) as resp:
-                status = getattr(resp, "status", HTTPStatus.OK)
-                response_text = resp.read().decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"OpenClaw HTTP {exc.code}: {detail}") from exc
+            for raw_segment in agent.chat_stream(device_id, event_content):
+                text = normalize_speech_text_for_voice(str(raw_segment or ""))
+                if not text or speech_text_is_temporarily_suppressed(text):
+                    continue
+                queued_count += 1
+                command = make_command(
+                    "speak",
+                    {"text": text, "pause_listener": True},
+                    priority=30,
+                    interrupt=queued_count == 1,
+                    ttl_seconds=60,
+                    discardable=False,
+                    coalesce_key=f"{stream_id}:{queued_count}",
+                )
+                self._enqueue_command(device_id, command)
+                self._log_info(f"Morrow 流式播报已入队: index={queued_count} text={text!r}")
+        finally:
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            self._log_info(
+                f"Morrow 响应流结束: device={device_id} event={event_type} "
+                f"segments={queued_count} elapsed_ms={elapsed_ms:.0f}"
+            )
 
-        self._log_info(f"OpenClaw 响应: HTTP {status}")
-        self._log_debug(
-            "OpenClaw 响应详情: "
-            f"device={device_id} event={event_type} session_key={session_key} status={status} "
-            f"body={truncate_log_text(response_text)!r}"
-        )
+        if queued_count == 0:
+            self._log_info(f"Morrow 未产生可播报文本: device={device_id} event={event_type}")
 
     def _handle_tts_voices(self) -> None:
         self._send_json(
@@ -4048,7 +4051,7 @@ def main():
         type=int,
         default=int(os.environ.get("STACKCHAN_OPENCLAW_MAX_COMPLETION_TOKENS", "512")),
     )
-    parser.add_argument("--openclaw-session-prefix", default=os.environ.get("STACKCHAN_OPENCLAW_SESSION_PREFIX", "xiaopai"))
+    parser.add_argument("--openclaw-session-prefix", default=os.environ.get("STACKCHAN_OPENCLAW_SESSION_PREFIX", "default"))
     parser.add_argument(
         "--realtime-enabled",
         action=argparse.BooleanOptionalAction,

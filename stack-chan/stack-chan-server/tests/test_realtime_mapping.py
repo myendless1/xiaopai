@@ -566,6 +566,49 @@ class RealtimeMappingTest(unittest.TestCase):
         self.assertTrue(any('"type":"device_state"' in payload and '"state":"waiting"' in payload for payload in sent))
         self.assertTrue(any('"type":"llm"' in payload for payload in sent))
 
+    def test_openclaw_realtime_stream_queues_each_segment(self):
+        class FakeOpenClaw:
+            enabled = True
+
+            def chat_stream(self, device_id, text):
+                yield "你好，"
+                yield "今天有两个安排。"
+
+        class FakeWebSocket:
+            def __init__(self):
+                self.sent = []
+
+            async def send(self, payload):
+                self.sent.append(payload)
+
+        async def run_case():
+            queued = []
+
+            def command_callback(device_id, command):
+                queued.append((device_id, command))
+                return True
+
+            manager = RealtimeManager(
+                RealtimeConfig(
+                    openclaw_base_url="http://morrow:3000",
+                    command_callback=command_callback,
+                ),
+                logger=lambda _msg: None,
+            )
+            manager._openclaw = FakeOpenClaw()
+            websocket = FakeWebSocket()
+            session = RealtimeDeviceSession(device_id="dev1", websocket=websocket, session_id="sess1")
+            session.dialog_awake = True
+            await manager._handle_final_text(session, "今天有什么安排")
+            return queued, websocket.sent
+
+        queued, sent = asyncio.run(run_case())
+        self.assertEqual([item[1]["payload"]["text"] for item in queued], ["你好，", "今天有两个安排。"])
+        self.assertTrue(queued[0][1]["interrupt"])
+        self.assertFalse(queued[1][1]["interrupt"])
+        self.assertNotEqual(queued[0][1]["coalesce_key"], queued[1][1]["coalesce_key"])
+        self.assertTrue(any('"type":"device_state"' in payload and '"state":"waiting"' in payload for payload in sent))
+
     def test_realtime_device_connected_callback_runs_on_register_and_id_update(self):
         connected = []
         manager = RealtimeManager(

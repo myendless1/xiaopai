@@ -106,6 +106,16 @@ menu "Xiaopai settings"
         bool "Enable DJI Mic receiver USB input auto-switch"
         default y
 
+    config STACKCHAN_DJI_MIC_AUTO_START
+        bool "Auto start DJI Mic USB input on boot"
+        depends on STACKCHAN_DJI_MIC_USB_INPUT
+        default n
+
+    config STACKCHAN_DJI_MIC_DRIVE_VBUS
+        bool "Drive CoreS3 USB VBUS for DJI Mic"
+        depends on STACKCHAN_DJI_MIC_USB_INPUT
+        default n
+
     config STACKCHAN_DJI_MIC_ENUM_ONLY
         bool "Run only DJI Mic USB descriptor enumeration"
         depends on STACKCHAN_DJI_MIC_USB_INPUT
@@ -118,19 +128,19 @@ menu "Xiaopai settings"
 
     config STACKCHAN_DJI_MIC_UAC_RECORD_RATE
         int "DJI Mic UAC record sample rate"
-        depends on STACKCHAN_DJI_MIC_UAC_RECORD
+        depends on STACKCHAN_DJI_MIC_USB_INPUT
         default 48000
         range 8000 48000
 
     config STACKCHAN_DJI_MIC_UAC_RECORD_CHANNELS
         int "DJI Mic UAC record channels"
-        depends on STACKCHAN_DJI_MIC_UAC_RECORD
+        depends on STACKCHAN_DJI_MIC_USB_INPUT
         default 2
         range 1 2
 
     config STACKCHAN_DJI_MIC_UAC_RECORD_BITS
         int "DJI Mic UAC record bit resolution"
-        depends on STACKCHAN_DJI_MIC_UAC_RECORD
+        depends on STACKCHAN_DJI_MIC_USB_INPUT
         default 24
         range 8 24
 
@@ -142,13 +152,13 @@ menu "Xiaopai settings"
 
     config STACKCHAN_DJI_MIC_UAC_RINGBUF_BYTES
         int "DJI Mic UAC callback ringbuffer bytes"
-        depends on STACKCHAN_DJI_MIC_UAC_RECORD
-        default 65536
+        depends on STACKCHAN_DJI_MIC_USB_INPUT
+        default 131072
         range 8192 524288
 
     config STACKCHAN_DJI_MIC_UAC_INTERNAL_BUF_BYTES
         int "usb_stream internal mic buffer bytes"
-        depends on STACKCHAN_DJI_MIC_UAC_RECORD
+        depends on STACKCHAN_DJI_MIC_USB_INPUT
         default 16384
         range 0 262144
 

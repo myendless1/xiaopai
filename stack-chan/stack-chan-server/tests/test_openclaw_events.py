@@ -174,6 +174,28 @@ class OpenClawWaitingStateTest(unittest.TestCase):
         self.assertEqual(result["queued_commands"], ["waiting:dev1:speech_recognition"])
         self.assertEqual(len(handler.server.openclaw_executor.submitted), 1)
 
+    def test_call_openclaw_queues_streaming_speech_segments(self):
+        class FakeAgent:
+            def chat_stream(self, device_id, text):
+                yield "你好，"
+                yield "今天有两个安排。"
+
+        handler = object.__new__(server.Handler)
+        handler.server = type("FakeServer", (), {})()
+        queued = []
+        handler._new_openclaw_agent = lambda: FakeAgent()
+        handler._enqueue_command = lambda device_id, command: queued.append((device_id, command)) or True
+        handler._log_info = lambda _msg: None
+        handler._log_debug = lambda _msg: None
+        handler._log_error = lambda _msg: None
+
+        handler._call_openclaw("dev1", "speech_recognition", {"text": "今天有什么安排"})
+
+        self.assertEqual([item[1]["payload"]["text"] for item in queued], ["你好，", "今天有两个安排。"])
+        self.assertTrue(queued[0][1]["interrupt"])
+        self.assertFalse(queued[1][1]["interrupt"])
+        self.assertNotEqual(queued[0][1]["coalesce_key"], queued[1][1]["coalesce_key"])
+
 
 class CommandRoutingTest(unittest.TestCase):
     def make_handler(self):

@@ -3,6 +3,7 @@
 #include <M5Unified.h>
 
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/ringbuf.h"
 #include "sdkconfig.h"
@@ -20,6 +21,10 @@
 #define CONFIG_STACKCHAN_DJI_MIC_USB_INPUT 0
 #endif
 
+#ifndef CONFIG_STACKCHAN_DJI_MIC_DRIVE_VBUS
+#define CONFIG_STACKCHAN_DJI_MIC_DRIVE_VBUS 0
+#endif
+
 #ifndef CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_RATE
 #define CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_RATE 48000
 #endif
@@ -33,7 +38,7 @@
 #endif
 
 #ifndef CONFIG_STACKCHAN_DJI_MIC_UAC_RINGBUF_BYTES
-#define CONFIG_STACKCHAN_DJI_MIC_UAC_RINGBUF_BYTES 65536
+#define CONFIG_STACKCHAN_DJI_MIC_UAC_RINGBUF_BYTES 131072
 #endif
 
 #ifndef CONFIG_STACKCHAN_DJI_MIC_UAC_INTERNAL_BUF_BYTES
@@ -49,6 +54,13 @@ static constexpr uint32_t kOutputSampleRate = 16000;
 static constexpr size_t kCallbackOutChunkSamples = 512;
 static constexpr int kQuietBeforeVbusMs = 500;
 static constexpr int kVbusSettleBeforeStreamMs = 800;
+
+struct RawUacFrameHeader {
+    uint32_t data_bytes = 0;
+    uint32_t sample_rate = 0;
+    uint16_t bit_resolution = 0;
+    uint16_t channels = 0;
+};
 
 static int16_t clamp_i16(int32_t value)
 {
@@ -99,12 +111,25 @@ public:
             return false;
         }
 
+        raw_ringbuf_ = xRingbufferCreate(CONFIG_STACKCHAN_DJI_MIC_UAC_RINGBUF_BYTES, RINGBUF_TYPE_NOSPLIT);
+        if (raw_ringbuf_ == nullptr) {
+            set_detail("DJI Mic raw ringbuffer alloc failed");
+            started_ = false;
+            delete_ringbufs();
+            ESP_LOGE(TAG, "%s", detail_);
+            return false;
+        }
+
         sample_rate_ = CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_RATE;
         bit_resolution_ = CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_BITS;
         channels_ = CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_CHANNELS;
         connected_ = false;
         capture_ready_ = false;
         resample_accum_ = 0;
+        callback_count_ = 0;
+        callback_bytes_ = 0;
+        output_samples_ = 0;
+        dropped_samples_ = 0;
 
         uac_config_t uac_config = {};
         uac_config.mic_ch_num = CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_CHANNELS;
@@ -118,6 +143,7 @@ public:
         if (err != ESP_OK) {
             set_detail("usb_stream state cb failed: %s", esp_err_to_name(err));
             started_ = false;
+            delete_ringbufs();
             ESP_LOGE(TAG, "%s", detail_);
             return false;
         }
@@ -126,14 +152,35 @@ public:
         if (err != ESP_OK) {
             set_detail("UAC config failed: %s", esp_err_to_name(err));
             started_ = false;
+            delete_ringbufs();
             ESP_LOGE(TAG, "%s", detail_);
             return false;
         }
 
-        set_detail("DJI Mic主输入已选择，旧音频链路保持静默");
-        xiaopai_state_set(LocalVoiceState::Waiting, "dji input selected");
-        ESP_LOGI(TAG, "DJI Mic主输入已选择: source=dji_mic_receiver; 内置mic/ASR/WS音频在UAC首帧前保持禁用");
+        BaseType_t task_ok = xTaskCreatePinnedToCore(
+            [](void* arg) {
+                static_cast<DjiMicReceiverInput*>(arg)->decode_task();
+                vTaskDelete(nullptr);
+            },
+            "dji_uac_decode",
+            8192,
+            this,
+            4,
+            &decode_task_,
+            0);
+        if (task_ok != pdPASS) {
+            set_detail("DJI Mic decode task create failed");
+            started_ = false;
+            delete_ringbufs();
+            ESP_LOGE(TAG, "%s", detail_);
+            return false;
+        }
 
+        set_detail("DJI Mic USB输入已启动，等待首帧UAC PCM");
+        xiaopai_state_set(LocalVoiceState::Waiting, "dji input selected");
+        ESP_LOGI(TAG, "DJI Mic USB输入已启动: source=dji_mic_receiver; 收到UAC首帧后切换主输入");
+
+#if CONFIG_STACKCHAN_DJI_MIC_DRIVE_VBUS
         M5.Power.setUsbOutput(false);
         ESP_LOGI(TAG, "DJI Mic USB bring-up: quiet %dms before VBUS", kQuietBeforeVbusMs);
         vTaskDelay(pdMS_TO_TICKS(kQuietBeforeVbusMs));
@@ -144,17 +191,21 @@ public:
         ESP_LOGI(TAG, "DJI Mic USB bring-up: VBUS settle %dms before usb_streaming_start",
                  kVbusSettleBeforeStreamMs);
         vTaskDelay(pdMS_TO_TICKS(kVbusSettleBeforeStreamMs));
+#else
+        ESP_LOGW(TAG, "Skip CoreS3 USB VBUS drive; expect external host-power-safe wiring");
+#endif
 
         set_detail("启动usb_stream，等待DJI Mic USB枚举");
         err = usb_streaming_start();
         if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
             set_detail("usb_stream start failed: %s", esp_err_to_name(err));
-            started_ = false;
+            stop_decode_task();
+            delete_ringbufs();
             ESP_LOGE(TAG, "%s", detail_);
             return false;
         }
 
-        set_detail("等待DJI Mic USB接收器接入；接入后将停用内置麦克风输入");
+        set_detail("等待DJI Mic USB接收器接入；首帧UAC PCM后切换输入");
         ESP_LOGI(TAG, "DJI Mic UAC输入已启动: requested=%uHz %u-bit %u ch, output=16000Hz mono",
                  static_cast<unsigned>(CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_RATE),
                  static_cast<unsigned>(CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_BITS),
@@ -267,7 +318,7 @@ private:
             resample_accum_ = 0;
             set_detail("DJI Mic USB已接入，等待第一帧UAC音频");
             xiaopai_state_set(LocalVoiceState::Waiting, "dji usb attach");
-            ESP_LOGI(TAG, "DJI Mic USB接收器已接入: source=dji_mic_receiver requested=%uHz %u-bit %u ch; 内置麦克风输入将停用",
+            ESP_LOGI(TAG, "DJI Mic USB接收器已接入: source=dji_mic_receiver requested=%uHz %u-bit %u ch; 等待首帧UAC PCM后切换输入",
                      static_cast<unsigned>(CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_RATE),
                      static_cast<unsigned>(CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_BITS),
                      static_cast<unsigned>(CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_CHANNELS));
@@ -277,6 +328,7 @@ private:
         connected_ = false;
         capture_ready_ = false;
         resample_accum_ = 0;
+        drop_raw_ring();
         drop_pcm_ring();
         set_detail("DJI Mic USB已断开，等待重新接入");
         xiaopai_state_set(LocalVoiceState::Waiting, "dji usb detached");
@@ -286,19 +338,74 @@ private:
 
     void on_mic_frame(mic_frame_t* frame)
     {
-        if (frame == nullptr || frame->data == nullptr || frame->data_bytes == 0 || pcm_ringbuf_ == nullptr) {
+        if (frame == nullptr || frame->data == nullptr || frame->data_bytes == 0 || raw_ringbuf_ == nullptr) {
             return;
         }
 
-        uint32_t input_rate = frame->samples_frequence != 0
-                                  ? frame->samples_frequence
-                                  : static_cast<uint32_t>(CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_RATE);
-        uint16_t bits = frame->bit_resolution != 0
-                            ? frame->bit_resolution
-                            : static_cast<uint16_t>(CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_BITS);
-        uint32_t channels = CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_CHANNELS;
+        RawUacFrameHeader header;
+        header.data_bytes = frame->data_bytes;
+        header.sample_rate = frame->samples_frequence != 0
+                                 ? frame->samples_frequence
+                                 : static_cast<uint32_t>(CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_RATE);
+        header.bit_resolution = frame->bit_resolution != 0
+                                    ? frame->bit_resolution
+                                    : static_cast<uint16_t>(CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_BITS);
+        header.channels = CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_CHANNELS;
+
+        const size_t packet_bytes = sizeof(header) + frame->data_bytes;
+        auto* packet = static_cast<uint8_t*>(
+            heap_caps_malloc(packet_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        if (packet == nullptr) {
+            dropped_samples_.fetch_add(1);
+            return;
+        }
+
+        memcpy(packet, &header, sizeof(header));
+        memcpy(packet + sizeof(header), frame->data, frame->data_bytes);
+
+        BaseType_t ok = xRingbufferSend(raw_ringbuf_, packet, packet_bytes, 0);
+        heap_caps_free(packet);
+        if (ok != pdTRUE) {
+            dropped_samples_.fetch_add(1);
+        }
+    }
+
+    void decode_task()
+    {
+        while (started_.load()) {
+            size_t item_bytes = 0;
+            auto* item = static_cast<uint8_t*>(
+                xRingbufferReceive(raw_ringbuf_, &item_bytes, pdMS_TO_TICKS(100)));
+
+            if (item == nullptr) {
+                continue;
+            }
+            if (item_bytes <= sizeof(RawUacFrameHeader)) {
+                vRingbufferReturnItem(raw_ringbuf_, item);
+                continue;
+            }
+
+            RawUacFrameHeader header;
+            memcpy(&header, item, sizeof(header));
+            const uint8_t* data = item + sizeof(header);
+            const size_t data_bytes = item_bytes - sizeof(header);
+
+            process_raw_uac_frame(data, data_bytes, header.sample_rate,
+                                  header.bit_resolution, header.channels);
+            vRingbufferReturnItem(raw_ringbuf_, item);
+        }
+        decode_task_ = nullptr;
+    }
+
+    void process_raw_uac_frame(const uint8_t* data,
+                               size_t data_bytes,
+                               uint32_t input_rate,
+                               uint16_t bits,
+                               uint32_t channels)
+    {
         uint32_t bytes_per_sample = bits / 8;
-        if (input_rate == 0 || bytes_per_sample == 0 || channels == 0) {
+        if (data == nullptr || data_bytes == 0 || input_rate == 0 ||
+            bytes_per_sample == 0 || channels == 0) {
             return;
         }
 
@@ -306,7 +413,7 @@ private:
         if (bytes_per_frame == 0) {
             return;
         }
-        uint32_t frames = frame->data_bytes / bytes_per_frame;
+        uint32_t frames = data_bytes / bytes_per_frame;
         if (frames == 0) {
             return;
         }
@@ -315,19 +422,18 @@ private:
         bit_resolution_ = bits;
         channels_ = channels;
         callback_count_.fetch_add(1);
-        callback_bytes_.fetch_add(frame->data_bytes);
+        callback_bytes_.fetch_add(static_cast<uint32_t>(data_bytes));
 
         if (!capture_ready_.exchange(true)) {
             set_detail("DJI Mic UAC采集中：完全使用USB麦克风");
             xiaopai_state_set(LocalVoiceState::Listening, "dji mic ready");
-            ESP_LOGI(TAG, "DJI Mic UAC首帧: %uHz %u-bit %u ch bytes=%" PRIu32 " -> 16000Hz mono; 内置麦克风输入已停用",
+            ESP_LOGI(TAG, "DJI Mic UAC首帧: %uHz %u-bit %u ch bytes=%u -> 16000Hz mono; 内置麦克风输入已停用",
                      static_cast<unsigned>(input_rate),
                      static_cast<unsigned>(bits),
                      static_cast<unsigned>(channels),
-                     frame->data_bytes);
+                     static_cast<unsigned>(data_bytes));
         }
 
-        const auto* data = static_cast<const uint8_t*>(frame->data);
         int16_t out[kCallbackOutChunkSamples];
         size_t out_count = 0;
         for (uint32_t i = 0; i < frames; ++i) {
@@ -391,6 +497,41 @@ private:
         }
     }
 
+    void drop_raw_ring()
+    {
+        if (raw_ringbuf_ == nullptr) {
+            return;
+        }
+        size_t item_bytes = 0;
+        while (void* item = xRingbufferReceive(raw_ringbuf_, &item_bytes, 0)) {
+            vRingbufferReturnItem(raw_ringbuf_, item);
+        }
+    }
+
+    void stop_decode_task()
+    {
+        started_ = false;
+        if (raw_ringbuf_ != nullptr) {
+            uint8_t wake = 0;
+            xRingbufferSend(raw_ringbuf_, &wake, sizeof(wake), 0);
+        }
+        for (int i = 0; decode_task_ != nullptr && i < 20; ++i) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+
+    void delete_ringbufs()
+    {
+        if (pcm_ringbuf_ != nullptr) {
+            vRingbufferDelete(pcm_ringbuf_);
+            pcm_ringbuf_ = nullptr;
+        }
+        if (raw_ringbuf_ != nullptr && decode_task_ == nullptr) {
+            vRingbufferDelete(raw_ringbuf_);
+            raw_ringbuf_ = nullptr;
+        }
+    }
+
     void set_detail(const char* format, ...)
     {
         if (format == nullptr) {
@@ -414,6 +555,8 @@ private:
     std::atomic<uint32_t> output_samples_{0};
     std::atomic<uint32_t> dropped_samples_{0};
     RingbufHandle_t pcm_ringbuf_ = nullptr;
+    RingbufHandle_t raw_ringbuf_ = nullptr;
+    TaskHandle_t decode_task_ = nullptr;
     uint32_t resample_accum_ = 0;
     char detail_[128] = "未启动";
 };

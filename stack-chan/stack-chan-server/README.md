@@ -25,8 +25,9 @@ cat > .env <<'EOF'
 ALIYUN_AK_ID='your-access-key-id'
 ALIYUN_AK_SECRET='your-access-key-secret'
 ALIYUN_NLS_APPKEY='your-nls-appkey'
-OPENCLAW_BASE_URL='http://127.0.0.1:18789/v1'
-OPENCLAW_GATEWAY_TOKEN='your-openclaw-gateway-token'
+OPENCLAW_BASE_URL='http://127.0.0.1:3000'
+# Optional, only if your morrow/OpenClaw endpoint requires bearer auth.
+OPENCLAW_GATEWAY_TOKEN=''
 EOF
 ./start.sh
 ```
@@ -378,14 +379,14 @@ Environment variables:
 | `STACKCHAN_YUNET_SCORE_THRESHOLD` | `0.45` | YuNet confidence threshold |
 | `STACKCHAN_YUNET_NMS_THRESHOLD` | `0.3` | YuNet non-maximum suppression threshold |
 | `STACKCHAN_YUNET_TOP_K` | `5000` | YuNet pre-NMS top-k candidate limit |
-| `OPENCLAW_BASE_URL` / `STACKCHAN_OPENCLAW_BASE_URL` | empty | OpenClaw OpenAI-compatible base URL, for example `http://127.0.0.1:18789/v1` |
-| `OPENCLAW_GATEWAY_TOKEN` / `STACKCHAN_OPENCLAW_GATEWAY_TOKEN` | empty | OpenClaw Gateway bearer token |
-| `STACKCHAN_OPENCLAW_MODEL` | `openclaw/default` | OpenClaw agent target |
-| `STACKCHAN_OPENCLAW_BACKEND_MODEL` | empty | Optional `x-openclaw-model` override |
-| `STACKCHAN_OPENCLAW_TIMEOUT` | `45` | OpenClaw request timeout in seconds |
-| `STACKCHAN_OPENCLAW_WORKERS` | `4` | Background OpenClaw event forwarding workers |
-| `STACKCHAN_OPENCLAW_MAX_COMPLETION_TOKENS` | `512` | Max OpenClaw output tokens |
-| `STACKCHAN_OPENCLAW_SESSION_PREFIX` | `xiaopai` | Prefix for per-device OpenClaw session keys; sent as `x-openclaw-session-key` and `user` fallback |
+| `OPENCLAW_BASE_URL` / `STACKCHAN_OPENCLAW_BASE_URL` | empty | Morrow robot server base URL, for example `http://127.0.0.1:3000`; legacy `/v1` chat-completions URLs remain supported |
+| `OPENCLAW_GATEWAY_TOKEN` / `STACKCHAN_OPENCLAW_GATEWAY_TOKEN` | empty | Optional bearer token if the Morrow/OpenClaw endpoint requires auth |
+| `STACKCHAN_OPENCLAW_MODEL` | `openclaw/default` | Legacy OpenAI-compatible target; ignored by Morrow WebSocket mode |
+| `STACKCHAN_OPENCLAW_BACKEND_MODEL` | empty | Legacy optional `x-openclaw-model` override |
+| `STACKCHAN_OPENCLAW_TIMEOUT` | `45` | Morrow/OpenClaw request timeout in seconds |
+| `STACKCHAN_OPENCLAW_WORKERS` | `4` | Background Morrow/OpenClaw event forwarding workers |
+| `STACKCHAN_OPENCLAW_MAX_COMPLETION_TOKENS` | `512` | Legacy max OpenClaw output tokens |
+| `STACKCHAN_OPENCLAW_SESSION_PREFIX` | `default` | Morrow session selector. `default` uses `/api/sessions/default/ws`; other values create per-device sessions with that prefix |
 
 ## Firmware URLs
 

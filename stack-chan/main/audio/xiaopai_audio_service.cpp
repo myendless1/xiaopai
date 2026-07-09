@@ -63,6 +63,9 @@
 #ifndef CONFIG_STACKCHAN_DJI_MIC_USB_INPUT
 #define CONFIG_STACKCHAN_DJI_MIC_USB_INPUT 0
 #endif
+#ifndef CONFIG_STACKCHAN_DJI_MIC_AUTO_START
+#define CONFIG_STACKCHAN_DJI_MIC_AUTO_START 0
+#endif
 
 namespace {
 
@@ -298,10 +301,10 @@ static bool dji_receiver_protocol_ready(const DjiMicReceiverStatus& dji)
 static bool dji_receiver_should_own_input(const DjiMicReceiverStatus& dji)
 {
 #if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT
-    (void)dji;
-    return true;
+    return dji.capture_ready;
 #else
-    return dji_receiver_protocol_ready(dji);
+    (void)dji;
+    return false;
 #endif
 }
 
@@ -893,14 +896,25 @@ public:
             return false;
         }
 #if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT
-        active_input_source_ = static_cast<int>(AudioInputSource::kDjiMicReceiver);
+        active_input_source_ = static_cast<int>(AudioInputSource::kInternalMic);
         vad_state_ = static_cast<int>(AudioVadState::kUnknown);
-        ESP_LOGI(TAG, "DJI Mic USB输入为启动主输入: 内置mic capture/ASR/WS audio sender在UAC首帧前禁用");
+
+#if CONFIG_STACKCHAN_DJI_MIC_AUTO_START
+        ESP_LOGI(TAG, "DJI Mic auto-start enabled");
         if (!dji_mic_receiver_input_start()) {
-            ESP_LOGE(TAG, "DJI Mic接收器输入启动失败，内置麦克风仍保持禁用: %s",
+            ESP_LOGE(TAG, "DJI Mic receiver start failed: %s",
                      dji_mic_receiver_input_status().detail);
         } else {
-            ESP_LOGI(TAG, "DJI Mic接收器输入门控已启用: 等待STREAM_CONNECTED和第一帧UAC PCM");
+            ESP_LOGI(TAG, "DJI Mic接收器输入门控已启用: 收到首帧UAC PCM后切换输入源");
+        }
+#else
+        ESP_LOGW(TAG, "DJI Mic USB input compiled but not auto-started");
+#endif
+
+        if (!codec_.init()) {
+            ESP_LOGW(TAG, "internal codec init failed; playback/internal mic unavailable");
+        } else {
+            codec_initialized_ = true;
         }
 #else
         if (!codec_.init()) {
@@ -1428,7 +1442,7 @@ private:
 
     size_t try_read_dji_receiver(std::vector<int16_t>& buffer, const DjiMicReceiverStatus& status)
     {
-        if (!dji_receiver_protocol_ready(status) || buffer.empty()) {
+        if (!status.capture_ready || !dji_receiver_protocol_ready(status) || buffer.empty()) {
             return 0;
         }
         size_t read = dji_mic_receiver_input_read_16k(buffer.data(), buffer.size(), pdMS_TO_TICKS(2));
@@ -1706,7 +1720,7 @@ private:
     {
 #if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT
         DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
-        return dji_mic_receiver_input_is_enabled() && !dji.capture_ready;
+        return dji_mic_receiver_input_is_enabled() && dji_receiver_should_own_input(dji) && !dji.capture_ready;
 #else
         return false;
 #endif
