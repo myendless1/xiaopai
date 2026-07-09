@@ -55,12 +55,20 @@
 #include <string>
 #include <vector>
 
+#ifndef CONFIG_STACKCHAN_DJI_MIC_USB_INPUT
+#define CONFIG_STACKCHAN_DJI_MIC_USB_INPUT 0
+#endif
+
 #ifndef CONFIG_STACKCHAN_DJI_MIC_ENUM_ONLY
 #define CONFIG_STACKCHAN_DJI_MIC_ENUM_ONLY 0
 #endif
 
 #ifndef CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD
 #define CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD 0
+#endif
+
+#ifndef CONFIG_STACKCHAN_DJI_MIC_START_DELAY_MS
+#define CONFIG_STACKCHAN_DJI_MIC_START_DELAY_MS 5000
 #endif
 
 void run_xiaozhi_ota_probe();
@@ -267,6 +275,44 @@ static void draw_dji_mic_uac_record_screen()
 }
 #endif
 
+#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT
+static void start_dji_mic_after_boot_task(void*)
+{
+    const int delay_ms = CONFIG_STACKCHAN_DJI_MIC_START_DELAY_MS;
+    ESP_LOGI(TAG, "DJI Mic delayed start scheduled: %d ms", delay_ms);
+
+    if (delay_ms > 0) {
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    }
+
+    ESP_LOGI(TAG, "Starting DJI Mic USB input after boot stabilization");
+    bool ok = dji_mic_receiver_input_start();
+    if (!ok) {
+        ESP_LOGE(TAG, "Delayed DJI Mic start failed: %s",
+                 dji_mic_receiver_input_status().detail);
+    } else {
+        ESP_LOGI(TAG, "Delayed DJI Mic start OK");
+    }
+
+    vTaskDelete(nullptr);
+}
+
+static void schedule_dji_mic_after_boot()
+{
+    BaseType_t created = xTaskCreatePinnedToCore(
+        start_dji_mic_after_boot_task,
+        "dji_mic_delay",
+        4096,
+        nullptr,
+        3,
+        nullptr,
+        0);
+    if (created != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create delayed DJI Mic start task");
+    }
+}
+#endif
+
 extern "C" void app_main(void)
 {
     ESP_ERROR_CHECK(init_nvs_once());
@@ -343,6 +389,10 @@ extern "C" void app_main(void)
     run_light_strip_boot_probe();
 
     start_background_services();
+
+#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT
+    schedule_dji_mic_after_boot();
+#endif
 
     while (true) {
         {

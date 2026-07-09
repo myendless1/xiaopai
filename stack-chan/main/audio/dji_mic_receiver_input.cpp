@@ -3,7 +3,6 @@
 #include <M5Unified.h>
 
 #include "esp_err.h"
-#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/ringbuf.h"
 #include "sdkconfig.h"
@@ -353,18 +352,18 @@ private:
         header.channels = CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_CHANNELS;
 
         const size_t packet_bytes = sizeof(header) + frame->data_bytes;
-        auto* packet = static_cast<uint8_t*>(
-            heap_caps_malloc(packet_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-        if (packet == nullptr) {
+        void* item = nullptr;
+        BaseType_t ok = xRingbufferSendAcquire(raw_ringbuf_, &item, packet_bytes, 0);
+        if (ok != pdTRUE || item == nullptr) {
             dropped_samples_.fetch_add(1);
             return;
         }
 
-        memcpy(packet, &header, sizeof(header));
-        memcpy(packet + sizeof(header), frame->data, frame->data_bytes);
+        auto* out = static_cast<uint8_t*>(item);
+        memcpy(out, &header, sizeof(header));
+        memcpy(out + sizeof(header), frame->data, frame->data_bytes);
 
-        BaseType_t ok = xRingbufferSend(raw_ringbuf_, packet, packet_bytes, 0);
-        heap_caps_free(packet);
+        ok = xRingbufferSendComplete(raw_ringbuf_, item);
         if (ok != pdTRUE) {
             dropped_samples_.fetch_add(1);
         }

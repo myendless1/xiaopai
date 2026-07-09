@@ -116,6 +116,12 @@ menu "Xiaopai settings"
         depends on STACKCHAN_DJI_MIC_USB_INPUT
         default n
 
+    config STACKCHAN_DJI_MIC_START_DELAY_MS
+        int "Delay before starting DJI Mic USB input after boot"
+        depends on STACKCHAN_DJI_MIC_USB_INPUT
+        default 5000
+        range 0 30000
+
     config STACKCHAN_DJI_MIC_ENUM_ONLY
         bool "Run only DJI Mic USB descriptor enumeration"
         depends on STACKCHAN_DJI_MIC_USB_INPUT
