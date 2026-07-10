@@ -193,6 +193,8 @@ float tracking_pitch_deg = kTrackingHomePitchDeg;
 int speaker_volume_percent =
     std::max(kSpeakerVolumePercentMin, std::min(kSpeakerVolumePercentMax, (CONFIG_STACKCHAN_TTS_VOLUME * 100 + 127) / 255));
 char client_id[37] = {};
+uint32_t xiaopai_boot_id = 0;
+uint32_t command_ack_seq = 0;
 std::string active_wifi_ssid = CONFIG_STACKCHAN_WIFI_SSID;
 std::string active_server_base = "http://192.168.21.15:8091";
 bool active_server_selected = false;

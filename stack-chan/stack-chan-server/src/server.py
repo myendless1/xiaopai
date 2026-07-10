@@ -28,6 +28,11 @@ from realtime_server import RealtimeConfig, RealtimeManager
 from xiaopai_openclaw_prompt import XIAOPAI_OPENCLAW_SYSTEM_PROMPT
 from xiaozhi_protocol import ota_config
 from yunet_service import YunetFaceService
+from command_store import CommandStore
+from database import Database
+from delivery_coordinator import DeliveryCoordinator
+from device_registry import DeviceRegistry
+from schemas import CommandEnvelope, DEFAULT_LEASE_MS, PROTOCOL_VERSION
 
 
 ASR_URLS = {
@@ -1259,6 +1264,10 @@ class AliyunVoiceServer(ThreadingHTTPServer):
     device_log_post_interval_ms: int
     device_logs: dict[str, list[dict]]
     recording_cache: list[dict]
+    v3_database: Database
+    command_store: CommandStore
+    device_registry: DeviceRegistry
+    delivery_coordinator: DeliveryCoordinator
 
     def get_token(self) -> str:
         if self.access_key_id and self.access_key_secret:
@@ -1297,6 +1306,13 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "service": "xiaopai-aliyun-voice",
+                    "protocol_version": PROTOCOL_VERSION,
+                    "v3": {
+                        "deliveries": "/v3/deliveries",
+                        "tts": "/v3/tts",
+                        "ota_manifest": "/v3/ota/manifest",
+                        "control_hello": "/v3/control/hello",
+                    },
                     "asr": "/upload",
                     "tts": "/stream-speak?text=...",
                     "tts_debug": f"/tts/debug?text=...&voice={DEFAULT_TTS_VOICE}&format=wav",
@@ -1346,6 +1362,22 @@ class Handler(BaseHTTPRequestHandler):
                     },
                 }
             )
+            return
+        if path == "/v3/devices":
+            self._handle_v3_devices()
+            return
+        if path.startswith("/v3/deliveries/"):
+            delivery_id = urllib.parse.unquote(path.split("/", 3)[-1])
+            self._handle_v3_delivery(delivery_id)
+            return
+        if path == "/v3/ota/manifest":
+            self._handle_v3_ota_manifest()
+            return
+        if path.startswith("/v3/ota/images/"):
+            self._handle_firmware_download(path.rsplit("/", 1)[-1])
+            return
+        if path == "/v3/device/next-command":
+            self._handle_next_command(query)
             return
         if path in ("/xiaozhi/ota", "/xiaozhi/ota/", "/realtime/config"):
             self._handle_xiaozhi_ota(query)
@@ -1449,6 +1481,32 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/upload":
             self._handle_upload(body)
             return
+        if path == "/v3/deliveries":
+            payload = json.loads(body.decode("utf-8")) if body else {}
+            self._handle_v3_deliveries(payload)
+            return
+        if path.startswith("/v3/deliveries/") and path.endswith("/cancel"):
+            delivery_id = urllib.parse.unquote(path.split("/")[-2])
+            self._handle_v3_delivery_cancel(delivery_id)
+            return
+        if path == "/v3/control/hello":
+            payload = json.loads(body.decode("utf-8")) if body else {}
+            self._handle_v3_hello(payload)
+            return
+        if path == "/v3/control/heartbeat":
+            payload = json.loads(body.decode("utf-8")) if body else {}
+            self._handle_v3_heartbeat(payload)
+            return
+        if path == "/v3/command_ack":
+            payload = json.loads(body.decode("utf-8")) if body else {}
+            self._handle_v3_command_ack(payload)
+            return
+        if path == "/v3/tts":
+            self._handle_stream_speak(query, body)
+            return
+        if path == "/v3/vision/captures":
+            self._handle_upload_image(body)
+            return
         if path == "/upload-audio":
             self._handle_upload(body)
             return
@@ -1489,6 +1547,113 @@ class Handler(BaseHTTPRequestHandler):
     def _path_query(self):
         parsed = urllib.parse.urlparse(self.path)
         return parsed.path, urllib.parse.parse_qs(parsed.query)
+
+    def _handle_v3_devices(self) -> None:
+        now = time.time()
+        registry_devices = {item["device_id"]: item for item in self.server.device_registry.list_devices()}
+        with self.server.device_lock:
+            known_device_ids = list(self.server.device_order)
+            last_seen_snapshot = dict(self.server.last_seen)
+            last_ack_snapshot = dict(self.server.last_ack)
+        for device_id, seen in last_seen_snapshot.items():
+            item = registry_devices.setdefault(device_id, {"device_id": device_id, "capabilities": []})
+            item["last_seen_seconds_ago"] = round(now - seen, 1)
+            item["online"] = now - seen <= DEVICE_ONLINE_TTL_SECONDS
+            item["pending_commands"] = self._queue_for(device_id).qsize()
+            item["last_ack"] = last_ack_snapshot.get(device_id)
+        ordered = []
+        for device_id in known_device_ids:
+            if device_id in registry_devices:
+                ordered.append(registry_devices.pop(device_id))
+        ordered.extend(registry_devices.values())
+        self._send_json(
+            {
+                "type": "devices",
+                "protocol_version": PROTOCOL_VERSION,
+                "default_device_id": first_connected_device_id(last_seen_snapshot, known_device_ids),
+                "online_ttl_seconds": DEVICE_ONLINE_TTL_SECONDS,
+                "devices": ordered,
+            }
+        )
+
+    def _handle_v3_hello(self, payload: dict) -> None:
+        body = self.server.device_registry.hello(payload)
+        device_id = safe_device_id(payload.get("device_id") or "default")
+        self._mark_device_seen(device_id)
+        self._send_json(body)
+
+    def _handle_v3_heartbeat(self, payload: dict) -> None:
+        device_id = safe_device_id(payload.get("device_id") or self.headers.get("X-Device-Id", "") or "default")
+        body = self.server.device_registry.heartbeat(device_id, last_ack_seq=int(payload.get("last_ack_seq") or 0))
+        self._mark_device_seen(device_id)
+        self._send_json(body)
+
+    def _handle_v3_deliveries(self, payload: dict) -> None:
+        if not isinstance(payload, dict):
+            self._send_json({"type": "error", "message": "delivery body must be a JSON object"}, HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            body = self.server.delivery_coordinator.submit(payload)
+        except Exception as exc:
+            self._log_error(f"V3 delivery 创建失败: {exc}")
+            self._send_json({"type": "error", "message": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self._send_json(body, HTTPStatus.ACCEPTED)
+
+    def _handle_v3_delivery(self, delivery_id: str) -> None:
+        delivery_id = str(delivery_id or "").strip()
+        body = self.server.command_store.get_delivery(delivery_id)
+        if body is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "unknown delivery")
+            return
+        self._send_json({"type": "delivery", **body})
+
+    def _handle_v3_delivery_cancel(self, delivery_id: str) -> None:
+        body = self.server.command_store.cancel_delivery(delivery_id)
+        if not body:
+            self.send_error(HTTPStatus.NOT_FOUND, "unknown delivery")
+            return
+        self._enqueue_stop_for_delivery(str(body.get("device_id") or "default"), delivery_id)
+        self._send_json({"type": "delivery", **body})
+
+    def _handle_v3_command_ack(self, payload: dict) -> None:
+        if not isinstance(payload, dict):
+            self._send_json({"type": "error", "message": "ack body must be a JSON object"}, HTTPStatus.BAD_REQUEST)
+            return
+        result = self.server.command_store.record_ack(payload)
+        device_id = safe_device_id(payload.get("device_id") or self.headers.get("X-Device-Id", "") or "default")
+        with self.server.device_lock:
+            self.server.last_ack[device_id] = {
+                "cmd_id": result.get("cmd_id", ""),
+                "status": result.get("state", ""),
+                "message": payload.get("message", ""),
+                "ts": time.time(),
+            }
+        self._mark_device_seen(device_id)
+        self._send_json({"type": "command_ack", "device_id": device_id, **result})
+
+    def _handle_v3_ota_manifest(self) -> None:
+        firmware = find_latest_ota_firmware(self.server.ota_firmware_file, self.server.ota_firmware_dir)
+        if firmware is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "OTA firmware is not configured")
+            return
+        body = ota_firmware_manifest(self.server, self.headers, firmware)
+        body["image_url"] = body.pop("url")
+        body["signature_required"] = False
+        body["rollback_supported"] = True
+        self._send_json({"type": "ota_manifest", "firmware": body})
+
+    def _enqueue_stop_for_delivery(self, device_id: str, delivery_id: str) -> None:
+        command = make_command(
+            "stop",
+            {"reason": f"delivery_cancelled:{delivery_id}"},
+            priority=100,
+            interrupt=True,
+            ttl_seconds=5,
+            discardable=False,
+            coalesce_key=f"{delivery_id}:stop",
+        )
+        self._enqueue_command(device_id, command)
 
     def _realtime_status(self) -> dict:
         manager = getattr(self.server, "realtime_manager", None)
@@ -2149,16 +2314,44 @@ class Handler(BaseHTTPRequestHandler):
         device_id = self._device_id(query)
         timeout = float(first_value(query, "timeout") or "25")
         timeout = max(0.0, min(timeout, 55.0))
+        boot_id = int(first_value(query, "boot_id") or self.headers.get("X-Boot-Id", "0") or "0")
         self._mark_device_seen(device_id)
         self._expire_dialog_if_needed(device_id)
         queue = self._queue_for(device_id)
         try:
             command = queue.get(timeout=timeout)
+            command_store = getattr(self.server, "command_store", None)
+            if command_store is not None:
+                leased = command_store.lease_command(
+                    str(command.get("cmd_id") or ""),
+                    boot_id=boot_id,
+                    lease_ms=DEFAULT_LEASE_MS,
+                )
+                if leased is not None:
+                    command = leased
             self._send_json({"type": "command", "device_id": device_id, "command": command})
         except Empty:
+            command_store = getattr(self.server, "command_store", None)
+            if command_store is not None:
+                leased = command_store.lease_next_command(
+                    device_id,
+                    boot_id=boot_id,
+                    lease_ms=DEFAULT_LEASE_MS,
+                )
+                if leased is not None:
+                    self._send_json({"type": "command", "device_id": device_id, "command": leased})
+                    return
             if self._expire_dialog_if_needed(device_id):
                 try:
                     command = queue.get_nowait()
+                    if command_store is not None:
+                        leased = command_store.lease_command(
+                            str(command.get("cmd_id") or ""),
+                            boot_id=boot_id,
+                            lease_ms=DEFAULT_LEASE_MS,
+                        )
+                        if leased is not None:
+                            command = leased
                     self._send_json({"type": "command", "device_id": device_id, "command": command})
                     return
                 except Empty:
@@ -2176,6 +2369,16 @@ class Handler(BaseHTTPRequestHandler):
         }
         with self.server.device_lock:
             self.server.last_ack[device_id] = ack
+        command_store = getattr(self.server, "command_store", None)
+        if command_store is not None:
+            command_store.record_ack(
+                {
+                    "device_id": device_id,
+                    "cmd_id": ack["cmd_id"],
+                    "state": ack["status"],
+                    "message": ack["message"],
+                }
+            )
         self._mark_device_seen(device_id)
         self._send_json({"type": "ack", "device_id": device_id, "ack": ack})
 
@@ -2236,6 +2439,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _enqueue_http_command(self, device_id: str, command: dict) -> bool:
         device_id = safe_device_id(device_id)
+        command_store = getattr(self.server, "command_store", None)
+        if command_store is not None:
+            try:
+                envelope = CommandEnvelope.from_legacy(device_id, command)
+                command_store.create_command(envelope)
+            except Exception as exc:
+                self._log_error(f"命令持久化失败: device={device_id} cmd_id={command.get('cmd_id', '')} error={exc}")
+                return False
         queue = self._queue_for(device_id)
         stats = queue.put(command)
         detail = ""
@@ -3536,7 +3747,7 @@ def connected_device_ids(server) -> list[str]:
     return device_ids
 
 
-def enqueue_server_command(server, device_id: str, command: dict, *, realtime_fallback: bool = True) -> bool:
+def enqueue_server_command(server, device_id: str, command: dict, *, realtime_fallback: bool = True, persist: bool = True) -> bool:
     device_id = safe_device_id(device_id)
     if is_placeholder_device_id(device_id):
         return False
@@ -3544,6 +3755,16 @@ def enqueue_server_command(server, device_id: str, command: dict, *, realtime_fa
     command_type = str(command.get("type") or "")
     payload = command.get("payload")
     normalize_command_speech_payload(command_type, payload)
+    command_store = getattr(server, "command_store", None)
+    if persist and command_store is not None:
+        try:
+            command_store.create_command(CommandEnvelope.from_legacy(device_id, command))
+        except Exception as exc:
+            log_print(
+                f"周期命令持久化失败: device={device_id} cmd_id={command.get('cmd_id', '')} error={exc}",
+                file=sys.stderr,
+            )
+            return False
     with server.device_lock:
         queue = server.device_queues.get(device_id)
         if queue is None:
@@ -4012,6 +4233,11 @@ def main():
     )
     parser.add_argument("--static-dir", default=os.environ.get("STACKCHAN_STATIC_DIR", "static"))
     parser.add_argument(
+        "--database-path",
+        default=os.environ.get("STACKCHAN_DATABASE_PATH", os.path.join("data", "xiaopai-v3.sqlite3")),
+        help="SQLite WAL database for V3 devices, commands, ACKs and deliveries.",
+    )
+    parser.add_argument(
         "--face-detector",
         choices=("yunet", "legacy", "none"),
         default=os.environ.get("STACKCHAN_FACE_DETECTOR", "yunet"),
@@ -4205,6 +4431,9 @@ def main():
     httpd.tts_retries = args.tts_retries
     httpd.tts_tail_silence_ms = args.tts_tail_silence_ms
     httpd.command_queue_max_size = args.command_queue_max_size
+    httpd.v3_database = Database(args.database_path)
+    httpd.command_store = CommandStore(httpd.v3_database)
+    httpd.device_registry = DeviceRegistry(httpd.v3_database)
     httpd.capture_save_mode = args.capture_save_mode
     httpd.save_audio_uploads = args.save_recording
     httpd.debug_log = args.debug
@@ -4270,6 +4499,11 @@ def main():
     httpd.recording_cache = []
     httpd.morrow_notice_stop_event = threading.Event()
     httpd.morrow_notice_thread = None
+
+    def enqueue_v3_delivery_command(device_id: str, command: dict) -> bool:
+        return enqueue_server_command(httpd, device_id, command, realtime_fallback=True, persist=False)
+
+    httpd.delivery_coordinator = DeliveryCoordinator(httpd.command_store, enqueue=enqueue_v3_delivery_command)
 
     def record_realtime_capture(metadata: dict) -> None:
         item = dict(metadata or {})

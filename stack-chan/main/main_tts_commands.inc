@@ -285,6 +285,42 @@ static bool http_get_string(const std::string& url, std::string* response, int t
     return status >= 200 && status < 300;
 }
 
+static bool http_post_json_string(const std::string& url, const std::string& body, std::string* response,
+                                  int timeout_ms)
+{
+    esp_http_client_config_t config = {};
+    config.url = url.c_str();
+    config.method = HTTP_METHOD_POST;
+    config.timeout_ms = timeout_ms;
+    config.buffer_size = kHttpBufferSize;
+    config.buffer_size_tx = kHttpBufferSize;
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == nullptr) {
+        return false;
+    }
+
+    std::string device_id = mac_address();
+    esp_http_client_set_header(client, "Accept", "application/json");
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_header(client, "X-Device-Id", device_id.c_str());
+    esp_http_client_set_post_field(client, body.c_str(), static_cast<int>(body.size()));
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    if (err == ESP_OK && response != nullptr) {
+        char buffer[512];
+        int read_len = 0;
+        while (response->size() < 4096 &&
+               (read_len = esp_http_client_read(client, buffer, sizeof(buffer) - 1)) > 0) {
+            response->append(buffer, read_len);
+        }
+    }
+    esp_http_client_cleanup(client);
+    ESP_LOGI(TAG, "HTTP POST %s -> err=%s status=%d response_len=%u", url.c_str(), esp_err_to_name(err), status,
+             response != nullptr ? static_cast<unsigned>(response->size()) : 0);
+    return err == ESP_OK && status >= 200 && status < 300;
+}
+
 static double json_number_value(const cJSON* root, const char* key, double default_value)
 {
     const cJSON* value = cJSON_GetObjectItemCaseSensitive(root, key);
@@ -321,6 +357,36 @@ static bool json_bool_value(const cJSON* root, const char* key, bool default_val
 
 static bool send_command_ack(const char* cmd_id, const char* status, const char* message = "")
 {
+    if (xiaopai_boot_id == 0) {
+        xiaopai_boot_id = esp_random();
+    }
+    const uint32_t ack_seq = ++command_ack_seq;
+    const char* state = status != nullptr ? status : "received";
+    std::string v3_url = make_server_url("/v3/command_ack");
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "command_ack");
+    cJSON_AddNumberToObject(root, "ack_seq", ack_seq);
+    cJSON_AddStringToObject(root, "device_id", mac_address().c_str());
+    cJSON_AddNumberToObject(root, "boot_id", xiaopai_boot_id);
+    cJSON_AddStringToObject(root, "cmd_id", cmd_id != nullptr ? cmd_id : "");
+    cJSON_AddNumberToObject(root, "attempt", 0);
+    cJSON_AddStringToObject(root, "state", state);
+    cJSON_AddStringToObject(root, "effect", strcmp(state, "rendered") == 0 ? "speech_played" : "");
+    cJSON_AddNumberToObject(root, "started_at_tick", 0);
+    cJSON_AddNumberToObject(root, "finished_at_tick", static_cast<double>(esp_timer_get_time() / 1000));
+    cJSON_AddStringToObject(root, "message", message != nullptr ? message : "");
+    char* encoded = cJSON_PrintUnformatted(root);
+    std::string body = encoded != nullptr ? encoded : "{}";
+    if (encoded != nullptr) {
+        cJSON_free(encoded);
+    }
+    cJSON_Delete(root);
+
+    std::string v3_response;
+    if (http_post_json_string(v3_url, body, &v3_response, 5000)) {
+        return true;
+    }
+
     std::string url = make_server_url("/device/ack");
     url += "?device_id=";
     url += url_encode(mac_address().c_str());
@@ -549,7 +615,7 @@ static void run_speak_command_loop()
                                                  item.sample_rate, item.volume, item.speech_rate, item.pitch_rate);
         speak_command_active = false;
         if (item.cmd_id[0] != '\0') {
-            send_command_ack(item.cmd_id, ok ? "done" : "failed", ok ? "" : "speak command interrupted or failed");
+            send_command_ack(item.cmd_id, ok ? "rendered" : "failed", ok ? "" : "speak command interrupted or failed");
         }
     }
 }

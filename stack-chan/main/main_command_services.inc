@@ -395,6 +395,37 @@ static bool handle_command_response(const std::string& response)
     return ok;
 }
 
+static bool send_v3_control_hello()
+{
+    if (xiaopai_boot_id == 0) {
+        xiaopai_boot_id = esp_random();
+    }
+    const esp_app_desc_t* app = esp_app_get_description();
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "hello");
+    cJSON_AddStringToObject(root, "device_id", mac_address().c_str());
+    cJSON_AddNumberToObject(root, "boot_id", xiaopai_boot_id);
+    cJSON_AddStringToObject(root, "firmware_version", app != nullptr ? app->version : "unknown");
+    cJSON_AddNumberToObject(root, "protocol_version", 3);
+    cJSON_AddNumberToObject(root, "last_ack_seq", command_ack_seq);
+    cJSON* capabilities = cJSON_AddArrayToObject(root, "capabilities");
+    cJSON_AddItemToArray(capabilities, cJSON_CreateString("internal_mic"));
+#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT || CONFIG_STACKCHAN_DJI_MIC_AUTO_START
+    cJSON_AddItemToArray(capabilities, cJSON_CreateString("dji_uac"));
+#endif
+    cJSON_AddItemToArray(capabilities, cJSON_CreateString("camera"));
+    cJSON_AddItemToArray(capabilities, cJSON_CreateString("servo"));
+    cJSON_AddItemToArray(capabilities, cJSON_CreateString("signed_ota"));
+    char* encoded = cJSON_PrintUnformatted(root);
+    std::string body = encoded != nullptr ? encoded : "{}";
+    if (encoded != nullptr) {
+        cJSON_free(encoded);
+    }
+    cJSON_Delete(root);
+    std::string response;
+    return http_post_json_string(make_server_url("/v3/control/hello"), body, &response, 5000);
+}
+
 static void run_command_http_loop()
 {
     ensure_client_id();
@@ -403,11 +434,17 @@ static void run_command_http_loop()
     }
     ESP_LOGI(TAG, "HTTP command long-poll started");
     expression_state_set(kDefaultExpression);
+    send_v3_control_hello();
 
     while (true) {
-        std::string url = make_server_url("/device/next-command");
+        if (xiaopai_boot_id == 0) {
+            xiaopai_boot_id = esp_random();
+        }
+        std::string url = make_server_url("/v3/device/next-command");
         url += "?device_id=";
         url += url_encode(mac_address().c_str());
+        url += "&boot_id=";
+        url += std::to_string(xiaopai_boot_id);
         url += "&timeout=";
         url += std::to_string(kCommandLongPollSeconds);
         ESP_LOGI(TAG, "HTTP command poll: %s", url.c_str());
