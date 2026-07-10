@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -72,6 +73,30 @@ typedef enum {
     STREAM_CONNECTED = 0,
     STREAM_DISCONNECTED,
 } usb_stream_state_t;
+
+/**
+ * @brief Snapshot of the currently enumerated USB device.
+ *
+ * Values are populated only after the device descriptor has been read during
+ * enumeration. String descriptor indexes are exposed for diagnostics; this
+ * component does not fetch manufacturer/product strings.
+ */
+typedef struct {
+    bool connected;
+    bool descriptor_valid;
+    bool full_speed;
+    uint16_t vendor_id;
+    uint16_t product_id;
+    uint16_t bcd_usb;
+    uint16_t bcd_device;
+    uint8_t manufacturer_index;
+    uint8_t product_index;
+    bool audio_control;
+    bool audio_streaming;
+    uint32_t mic_sample_rate;
+    uint16_t mic_bit_resolution;
+    uint8_t mic_channels;
+} usb_stream_device_info_t;
 
 /**
  * @brief Stream control type, which also depends on if device support
@@ -245,6 +270,17 @@ esp_err_t usb_streaming_stop(void);
  *      ESP_OK: device connected
  */
 esp_err_t usb_streaming_connect_wait(size_t timeout_ms);
+
+/**
+ * @brief Get a read-only snapshot of the current USB device identity and UAC mic stream.
+ *
+ * @param info output snapshot
+ * @return
+ *      ESP_ERR_INVALID_ARG: parameter error
+ *      ESP_ERR_NOT_FOUND: full USB device descriptor has not been read
+ *      ESP_OK: descriptor-backed identity is available
+ */
+esp_err_t usb_streaming_device_info_get(usb_stream_device_info_t *info);
 
 /**
  * @brief This function registers a callback for USB streaming, please note that only one callback

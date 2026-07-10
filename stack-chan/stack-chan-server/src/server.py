@@ -23,7 +23,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue import Empty
 
-from openclaw_agent import OpenClawAgent
+from openclaw_agent import OpenClawAgent, is_legacy_chat_completions_base_url
 from realtime_server import RealtimeConfig, RealtimeManager
 from xiaopai_openclaw_prompt import XIAOPAI_OPENCLAW_SYSTEM_PROMPT
 from xiaozhi_protocol import ota_config
@@ -1216,6 +1216,8 @@ class AliyunVoiceServer(ThreadingHTTPServer):
     openclaw_max_completion_tokens: int
     openclaw_session_prefix: str
     openclaw_executor: ThreadPoolExecutor
+    morrow_notice_stop_event: threading.Event
+    morrow_notice_thread: threading.Thread | None
     debug_log: bool
     device_lock: threading.Lock
     face_detector_backend: str
@@ -3619,6 +3621,73 @@ def make_command(
     }
 
 
+def enqueue_morrow_notice_speech(server, notice_text: str) -> int:
+    text = normalize_speech_text_for_voice(str(notice_text or ""))
+    if not text or speech_text_is_temporarily_suppressed(text):
+        return 0
+
+    device_ids = connected_device_ids(server)
+    if not device_ids:
+        log_print("Morrow 主动提醒已收到，但当前没有在线小派设备，已跳过播报")
+        return 0
+
+    device_id = device_ids[0]
+    stream_id = f"morrow_notice:{uuid.uuid4().hex[:8]}"
+    queued_count = 0
+    for raw_segment in split_sentences(text, int(getattr(server, "max_sentence_chars", 120) or 120)):
+        segment = normalize_speech_text_for_voice(str(raw_segment or ""))
+        if not segment or speech_text_is_temporarily_suppressed(segment):
+            continue
+        queued_count += 1
+        command = make_command(
+            "speak",
+            {"text": segment, "pause_listener": True},
+            priority=35,
+            interrupt=queued_count == 1,
+            ttl_seconds=120,
+            discardable=False,
+            coalesce_key=f"{stream_id}:{queued_count}",
+        )
+        enqueue_server_command(server, device_id, command)
+
+    if queued_count:
+        log_print(f"Morrow 主动提醒已入队: device={device_id} segments={queued_count}")
+    return queued_count
+
+
+def run_morrow_notice_listener(server) -> None:
+    if not server.openclaw_base_url or is_legacy_chat_completions_base_url(server.openclaw_base_url):
+        return
+
+    stop_event = server.morrow_notice_stop_event
+    agent = OpenClawAgent(
+        base_url=server.openclaw_base_url,
+        token=server.openclaw_token,
+        model=server.openclaw_model,
+        backend_model=server.openclaw_backend_model,
+        timeout=server.openclaw_timeout,
+        session_prefix="default",
+        max_completion_tokens=server.openclaw_max_completion_tokens,
+        max_segment_chars=server.max_sentence_chars,
+    )
+    backoff_seconds = 1.0
+    while not stop_event.is_set():
+        try:
+            log_print("Morrow 主动提醒监听正在连接默认 session")
+            for notice_text in agent.morrow_robot_notice_stream(stop_event=stop_event, session_id="default"):
+                if stop_event.is_set():
+                    break
+                enqueue_morrow_notice_speech(server, notice_text)
+            backoff_seconds = 1.0
+        except Exception as exc:
+            if stop_event.is_set():
+                break
+            log_print(f"Morrow 主动提醒监听断开: {exc}", file=sys.stderr)
+        if not stop_event.is_set():
+            stop_event.wait(backoff_seconds)
+            backoff_seconds = min(backoff_seconds * 2, 30.0)
+
+
 def command_payload_from_query(command_type: str, query: dict):
     if command_type in ("state", "device_state"):
         return {
@@ -4197,6 +4266,8 @@ def main():
     httpd.device_log_post_interval_ms = max(250, args.device_log_post_interval_ms)
     httpd.device_logs = {}
     httpd.recording_cache = []
+    httpd.morrow_notice_stop_event = threading.Event()
+    httpd.morrow_notice_thread = None
 
     def record_realtime_capture(metadata: dict) -> None:
         item = dict(metadata or {})
@@ -4251,6 +4322,17 @@ def main():
         except Exception as exc:
             httpd.realtime_manager = None
             log_print(f"实时语音服务启动失败: {exc}", file=sys.stderr)
+
+    if httpd.openclaw_base_url and not is_legacy_chat_completions_base_url(httpd.openclaw_base_url):
+        httpd.morrow_notice_thread = threading.Thread(
+            target=run_morrow_notice_listener,
+            args=(httpd,),
+            name="morrow-notice",
+            daemon=True,
+        )
+        httpd.morrow_notice_thread.start()
+    elif httpd.openclaw_base_url:
+        log_print("Morrow 主动提醒监听未启动: 当前为 legacy OpenClaw chat-completions 模式")
 
     threading.Thread(target=run_periodic_ota_check_loop, args=(httpd,), name="ota-check", daemon=True).start()
 
@@ -4324,6 +4406,7 @@ def main():
     try:
         httpd.serve_forever()
     finally:
+        httpd.morrow_notice_stop_event.set()
         if httpd.realtime_manager:
             httpd.realtime_manager.stop()
 

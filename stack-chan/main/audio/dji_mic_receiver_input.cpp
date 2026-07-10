@@ -130,6 +130,8 @@ public:
         callback_bytes_ = 0;
         output_samples_ = 0;
         dropped_samples_ = 0;
+        selected_channel_ = 0;
+        channel_select_log_counter_ = 0;
 
         uac_config_t uac_config = {};
         uac_config.mic_ch_num = CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_CHANNELS;
@@ -231,22 +233,30 @@ public:
     {
         const bool connected = connected_.load();
         const bool ready = capture_ready_.load();
+        usb_stream_device_info_t usb_info = {};
+        const bool descriptor_valid = usb_streaming_device_info_get(&usb_info) == ESP_OK &&
+                                      usb_info.descriptor_valid;
+        const bool target_vid_pid = descriptor_valid &&
+                                    usb_info.vendor_id == kDjiVid &&
+                                    usb_info.product_id == kDjiPid;
 
         DjiMicReceiverStatus status;
-        status.detected = connected || ready;
-        status.target_vid_pid = connected || ready;
-        status.full_speed = connected || ready;
-        status.audio_control = connected || ready;
-        status.audio_streaming = connected || ready;
+        status.detected = connected || ready || (descriptor_valid && usb_info.connected);
+        status.target_vid_pid = target_vid_pid;
+        status.full_speed = descriptor_valid && usb_info.full_speed;
+        status.audio_control = descriptor_valid && usb_info.audio_control;
+        status.audio_streaming = ready || (descriptor_valid && usb_info.audio_streaming);
         status.capture_ready = ready;
-        status.identity_confirmed = connected || ready;
-        status.vendor_id = connected || ready ? kDjiVid : 0;
-        status.product_id = connected || ready ? kDjiPid : 0;
-        status.sample_rate = sample_rate_.load();
-        status.channels = channels_.load();
-        status.speed = connected || ready ? "Full-Speed" : "";
-        status.manufacturer = connected || ready ? "DJI" : "";
-        status.product = connected || ready ? "DJI Mic Receiver" : "";
+        status.identity_confirmed = target_vid_pid;
+        status.vendor_id = descriptor_valid ? usb_info.vendor_id : 0;
+        status.product_id = descriptor_valid ? usb_info.product_id : 0;
+        status.sample_rate = usb_info.mic_sample_rate != 0 ? static_cast<int>(usb_info.mic_sample_rate)
+                                                           : static_cast<int>(sample_rate_.load());
+        status.channels = usb_info.mic_channels != 0 ? static_cast<int>(usb_info.mic_channels)
+                                                     : static_cast<int>(channels_.load());
+        status.speed = descriptor_valid ? (usb_info.full_speed ? "Full-Speed" : "Low-Speed") : "";
+        status.manufacturer = "";
+        status.product = "";
         status.detail = detail_;
         return status;
     }
@@ -341,6 +351,7 @@ private:
             bit_resolution_ = CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_BITS;
             channels_ = CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_CHANNELS;
             resample_accum_ = 0;
+            selected_channel_ = 0;
             set_detail("DJI Mic USB已接入，等待第一帧UAC音频");
             xiaopai_state_set(LocalVoiceState::Waiting, "dji usb attach");
             ESP_LOGI(TAG, "DJI Mic USB接收器已接入: source=dji_mic_receiver requested=%uHz %u-bit %u ch; 等待首帧UAC PCM后切换输入",
@@ -353,6 +364,7 @@ private:
         connected_ = false;
         capture_ready_ = false;
         resample_accum_ = 0;
+        selected_channel_ = 0;
         drop_raw_ring();
         drop_pcm_ring();
         set_detail("DJI Mic USB已断开，等待重新接入");
@@ -472,15 +484,28 @@ private:
                 }
             }
 
-            selected_ch = ch_energy[1] > ch_energy[0] ? 1 : 0;
+            uint32_t best_ch = ch_energy[1] > ch_energy[0] ? 1 : 0;
+            int64_t best_energy = ch_energy[best_ch];
+            uint32_t current_ch = selected_channel_.load();
+            if (current_ch < inspect_channels &&
+                ch_energy[current_ch] > 0 &&
+                ch_energy[current_ch] * 4 >= best_energy * 3) {
+                selected_ch = current_ch;
+            } else {
+                selected_ch = best_ch;
+            }
+            selected_channel_ = selected_ch;
 
-            static uint32_t select_log_counter = 0;
-            if ((++select_log_counter % 100) == 1) {
-                ESP_LOGI(TAG, "DJI Mic channel select: ch=%u energy0=%lld energy1=%lld",
+            uint32_t select_log_counter = ++channel_select_log_counter_;
+            if ((select_log_counter % 100) == 1) {
+                ESP_LOGI(TAG, "DJI Mic channel select: ch=%u best=%u energy0=%lld energy1=%lld",
                          static_cast<unsigned>(selected_ch),
+                         static_cast<unsigned>(best_ch),
                          static_cast<long long>(ch_energy[0]),
                          static_cast<long long>(ch_energy[1]));
             }
+        } else {
+            selected_channel_ = 0;
         }
 
         int16_t out[kCallbackOutChunkSamples];
@@ -599,6 +624,8 @@ private:
     std::atomic<uint32_t> callback_bytes_{0};
     std::atomic<uint32_t> output_samples_{0};
     std::atomic<uint32_t> dropped_samples_{0};
+    std::atomic<uint32_t> selected_channel_{0};
+    std::atomic<uint32_t> channel_select_log_counter_{0};
     RingbufHandle_t pcm_ringbuf_ = nullptr;
     RingbufHandle_t raw_ringbuf_ = nullptr;
     TaskHandle_t decode_task_ = nullptr;

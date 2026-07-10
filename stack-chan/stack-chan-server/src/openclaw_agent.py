@@ -112,6 +112,13 @@ def extract_openclaw_text(response_text: str) -> str:
     return str(first.get("text") or "").strip()
 
 
+def extract_morrow_robot_notice_text(message: dict) -> str:
+    if not isinstance(message, dict) or str(message.get("type") or "") != "robot_notice":
+        return ""
+    data = message.get("data") if isinstance(message.get("data"), dict) else {}
+    return str(data.get("text") or "").strip()
+
+
 class OpenClawAgent:
     def __init__(
         self,
@@ -255,8 +262,7 @@ class OpenClawAgent:
                     continue
 
                 if message_type == "robot_notice":
-                    data = message.get("data") if isinstance(message.get("data"), dict) else {}
-                    notice_text = str(data.get("text") or "").strip()
+                    notice_text = extract_morrow_robot_notice_text(message)
                     if notice_text:
                         notice_segmenter = PunctuationTextSegmenter(max_chars=self.max_segment_chars)
                         for segment in notice_segmenter.feed(notice_text):
@@ -283,6 +289,63 @@ class OpenClawAgent:
                 for segment in segmenter.feed(final_message):
                     yield segment
                 yield from segmenter.flush()
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+    def morrow_robot_notice_stream(self, *, stop_event=None, session_id: str = "default"):
+        if not self.enabled or self._uses_legacy_chat_completions():
+            return
+
+        session_id = safe_openclaw_session_part(session_id or "default")
+        self._ensure_morrow_session(session_id)
+        ws_url = build_morrow_ws_url(self.base_url, session_id)
+        if not ws_url:
+            return
+
+        try:
+            import websocket  # type: ignore
+        except Exception as exc:
+            raise RuntimeError("websocket-client is required for Morrow robot_notice streaming") from exc
+
+        headers = []
+        if self.token:
+            headers.append(f"Authorization: Bearer {self.token}")
+
+        recv_timeout = min(max(int(self.timeout or 45), 1), 10)
+        ws = websocket.create_connection(ws_url, timeout=recv_timeout, header=headers)
+        try:
+            try:
+                ws.settimeout(recv_timeout)
+            except Exception:
+                pass
+
+            timeout_error = getattr(websocket, "WebSocketTimeoutException", None)
+            while stop_event is None or not stop_event.is_set():
+                try:
+                    raw = ws.recv()
+                except Exception as exc:
+                    if timeout_error is not None and isinstance(exc, timeout_error):
+                        continue
+                    raise
+                if raw in (None, ""):
+                    break
+                try:
+                    message = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+
+                message_type = str(message.get("type") or "")
+                if message_type == "robot_notice":
+                    notice_text = extract_morrow_robot_notice_text(message)
+                    if notice_text:
+                        yield notice_text
+                    continue
+                if message_type == "error":
+                    data = message.get("data") if isinstance(message.get("data"), dict) else {}
+                    raise RuntimeError(f"Morrow error: {data.get('message') or raw}")
         finally:
             try:
                 ws.close()

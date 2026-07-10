@@ -529,6 +529,13 @@ typedef struct {
     hcd_pipe_handle_t dflt_pipe_hdl;
     usb_speed_t dev_speed;
     uint8_t ep_mps;
+    bool descriptor_valid;
+    uint16_t vendor_id;
+    uint16_t product_id;
+    uint16_t bcd_usb;
+    uint16_t bcd_device;
+    uint8_t manufacturer_index;
+    uint8_t product_index;
     _uac_device_t *uac;
     _uvc_device_t *uvc;
     _stream_ifc_t *ifc[STREAM_MAX];
@@ -586,6 +593,19 @@ IRAM_ATTR static _device_state_t _usb_device_get_state()
     _device_state_t state = s_usb_dev.state;
     UVC_EXIT_CRITICAL();
     return state;
+}
+
+static void _usb_device_identity_clear(_usb_device_t *usb_dev)
+{
+    UVC_ENTER_CRITICAL();
+    usb_dev->descriptor_valid = false;
+    usb_dev->vendor_id = 0;
+    usb_dev->product_id = 0;
+    usb_dev->bcd_usb = 0;
+    usb_dev->bcd_device = 0;
+    usb_dev->manufacturer_index = 0;
+    usb_dev->product_index = 0;
+    UVC_EXIT_CRITICAL();
 }
 
 IRAM_ATTR static bool _usb_port_callback(hcd_port_handle_t port_hdl, hcd_port_event_t port_event, void *user_arg, bool in_isr)
@@ -3103,6 +3123,15 @@ static esp_err_t _uvc_uac_device_enum(bool abort_process, bool *waiting_urb_done
     case ENUM_STAGE_CHECK_FULL_DEV_DESC: {
         usb_device_desc_t *dev_desc = (usb_device_desc_t *)(enum_done->transfer.data_buffer + sizeof(usb_setup_packet_t));
         print_device_descriptor((const uint8_t *)dev_desc);
+        UVC_ENTER_CRITICAL();
+        usb_dev->descriptor_valid = true;
+        usb_dev->vendor_id = dev_desc->idVendor;
+        usb_dev->product_id = dev_desc->idProduct;
+        usb_dev->bcd_usb = dev_desc->bcdUSB;
+        usb_dev->bcd_device = dev_desc->bcdDevice;
+        usb_dev->manufacturer_index = dev_desc->iManufacturer;
+        usb_dev->product_index = dev_desc->iProduct;
+        UVC_EXIT_CRITICAL();
         break;
     }
     case ENUM_STAGE_GET_SHORT_CONFIG_DESC: {
@@ -3331,12 +3360,14 @@ static void _usb_processing_task(void *arg)
         }
         if (action_bits & ACTION_DEVICE_DISCONNECT) {
             ESP_LOGI(TAG, "Action: ACTION_DEVICE_DISCONN");
+            _usb_device_identity_clear(usb_dev);
             action_bits &= ~ACTION_DEVICE_DISCONNECT;
             ESP_LOGD(TAG, "Action: ACTION_DEVICE_DISCONN, Done!");
             ESP_LOGI(TAG, "Waiting USB Connection");
         }
         if (action_bits & ACTION_DEVICE_CONNECT) {
             ESP_LOGI(TAG, "Action: ACTION_DEVICE_CONNECT");
+            _usb_device_identity_clear(usb_dev);
             vTaskDelay(pdMS_TO_TICKS(WAITING_USB_AFTER_CONNECTION_MS));
             ESP_LOGI(TAG, "Resetting Port");
             static int reset_retry = 3;
@@ -3399,6 +3430,7 @@ static void _usb_processing_task(void *arg)
                 usb_dev->state = STATE_DEVICE_ENUM_FAILED;
                 UVC_EXIT_CRITICAL();
 #endif
+                _usb_device_identity_clear(usb_dev);
             } else if (usb_dev->enum_stage == ENUM_STAGE_NONE) {
                 UVC_ENTER_CRITICAL();
                 usb_dev->state = STATE_DEVICE_ACTIVE;
@@ -3424,6 +3456,7 @@ static void _usb_processing_task(void *arg)
         usb_dev->port_hdl = NULL;
     }
 free_task_:
+    _usb_device_identity_clear(usb_dev);
     UVC_ENTER_CRITICAL();
     usb_dev->state = STATE_NONE;
     UVC_EXIT_CRITICAL();
@@ -3710,6 +3743,7 @@ esp_err_t usb_streaming_start()
     s_usb_dev.dev_speed = USB_SPEED_FULL;
     s_usb_dev.dev_addr = USB_DEVICE_ADDR;
     s_usb_dev.configuration = USB_CONFIG_NUM;
+    _usb_device_identity_clear(&s_usb_dev);
 #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 3, 3)
     s_usb_dev.fifo_bias = HCD_PORT_FIFO_BIAS_BALANCED;
 #endif
@@ -3853,6 +3887,40 @@ esp_err_t usb_streaming_connect_wait(size_t timeout_ms)
     vTaskDelay(pdMS_TO_TICKS(20));
     ESP_LOGI(TAG, "USB Device Connected");
     return ESP_OK;
+}
+
+esp_err_t usb_streaming_device_info_get(usb_stream_device_info_t *info)
+{
+    UVC_CHECK(info != NULL, "info can't NULL", ESP_ERR_INVALID_ARG);
+    memset(info, 0, sizeof(*info));
+
+    UVC_ENTER_CRITICAL();
+    _device_state_t state = s_usb_dev.state;
+    bool descriptor_valid = s_usb_dev.descriptor_valid;
+    info->connected = state == STATE_DEVICE_ENUM || state == STATE_DEVICE_ACTIVE;
+    info->descriptor_valid = descriptor_valid;
+    if (descriptor_valid) {
+        info->full_speed = s_usb_dev.dev_speed == USB_SPEED_FULL;
+        info->vendor_id = s_usb_dev.vendor_id;
+        info->product_id = s_usb_dev.product_id;
+        info->bcd_usb = s_usb_dev.bcd_usb;
+        info->bcd_device = s_usb_dev.bcd_device;
+        info->manufacturer_index = s_usb_dev.manufacturer_index;
+        info->product_index = s_usb_dev.product_index;
+    }
+    if (s_usb_dev.uac != NULL) {
+        info->audio_control = s_usb_dev.uac->ac_interface != 0;
+        if (s_usb_dev.ifc[STREAM_UAC_MIC] != NULL) {
+            info->audio_streaming = !s_usb_dev.ifc[STREAM_UAC_MIC]->not_found &&
+                                    s_usb_dev.ifc[STREAM_UAC_MIC]->interface != 0;
+        }
+        info->mic_sample_rate = s_usb_dev.uac->samples_frequence[UAC_MIC];
+        info->mic_bit_resolution = s_usb_dev.uac->bit_resolution[UAC_MIC];
+        info->mic_channels = s_usb_dev.uac->ch_num[UAC_MIC];
+    }
+    UVC_EXIT_CRITICAL();
+
+    return descriptor_valid ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
 esp_err_t usb_streaming_state_register(state_callback_t cb, void *user_ptr)

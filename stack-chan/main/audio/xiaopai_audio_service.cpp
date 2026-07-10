@@ -66,6 +66,9 @@
 #ifndef CONFIG_STACKCHAN_DJI_MIC_AUTO_START
 #define CONFIG_STACKCHAN_DJI_MIC_AUTO_START 0
 #endif
+#ifndef CONFIG_STACKCHAN_DJI_MIC_START_DELAY_MS
+#define CONFIG_STACKCHAN_DJI_MIC_START_DELAY_MS 5000
+#endif
 
 namespace {
 
@@ -103,6 +106,7 @@ static constexpr int kDmaFrameNum = 240;
 static constexpr int kPlayQueueDepth = 8;
 static constexpr int kCleanQueueDepth = 32;
 static constexpr TickType_t kCleanQueueConsumerGraceTicks = pdMS_TO_TICKS(300);
+static constexpr int kDjiInputStartupTimeoutMs = CONFIG_STACKCHAN_DJI_MIC_START_DELAY_MS;
 static constexpr int kDjiPriorityWaitLogIntervalMs = 3000;
 static constexpr int kInputUnavailableLogIntervalMs = 3000;
 static constexpr int kToneChunkSamples = 512;
@@ -291,11 +295,6 @@ static const char* audio_input_source_label_impl(AudioInputSource source)
         default:
             return "内置麦克风";
     }
-}
-
-static bool dji_receiver_protocol_ready(const DjiMicReceiverStatus& dji)
-{
-    return dji.detected && dji.audio_streaming && dji.identity_confirmed;
 }
 
 static bool dji_receiver_should_own_input(const DjiMicReceiverStatus& dji)
@@ -534,28 +533,47 @@ class XiaopaiAudioCodec {
 public:
     bool init()
     {
-        if (initialized_) {
+        return init_output() && init_input();
+    }
+
+    bool start()
+    {
+        return start_output() && start_input();
+    }
+
+    bool start_output()
+    {
+        return init_output() && open_output();
+    }
+
+    bool start_input()
+    {
+        return init_input() && open_input();
+    }
+
+    bool init_output()
+    {
+        if (output_initialized_) {
             return true;
         }
 
         configure_core_s3_audio_power();
         reset_core_s3_aw88298();
         init_m5_i2c_ctrl(&out_ctrl_, kAw88298Addr);
-        init_m5_i2c_ctrl(&in_ctrl_, kEs7210Addr);
 
-        if (!create_duplex_channels()) {
+        if (!create_tx_channel()) {
             return false;
         }
 
         audio_codec_i2s_cfg_t i2s_cfg = {
             .port = static_cast<uint8_t>(kAudioI2sPort),
-            .rx_handle = rx_handle_,
+            .rx_handle = nullptr,
             .tx_handle = tx_handle_,
             .clk_src = I2S_CLK_SRC_DEFAULT,
         };
-        data_if_ = audio_codec_new_i2s_data(&i2s_cfg);
-        if (data_if_ == nullptr) {
-            ESP_LOGE(TAG, "audio_codec_new_i2s_data failed");
+        output_data_if_ = audio_codec_new_i2s_data(&i2s_cfg);
+        if (output_data_if_ == nullptr) {
+            ESP_LOGE(TAG, "audio_codec_new_i2s_data output failed");
             return false;
         }
 
@@ -580,11 +598,41 @@ public:
         esp_codec_dev_cfg_t out_dev_cfg = {
             .dev_type = ESP_CODEC_DEV_TYPE_OUT,
             .codec_if = out_codec_if_,
-            .data_if = data_if_,
+            .data_if = output_data_if_,
         };
         output_dev_ = esp_codec_dev_new(&out_dev_cfg);
         if (output_dev_ == nullptr) {
             ESP_LOGE(TAG, "esp_codec_dev_new output failed");
+            return false;
+        }
+
+        output_initialized_ = true;
+        ESP_LOGI(TAG, "CoreS3 speaker output initialized: hw_rate=%d", kHwSampleRate);
+        return true;
+    }
+
+    bool init_input()
+    {
+        if (input_initialized_) {
+            return true;
+        }
+
+        configure_core_s3_audio_power();
+        init_m5_i2c_ctrl(&in_ctrl_, kEs7210Addr);
+
+        if (!create_rx_channel()) {
+            return false;
+        }
+
+        audio_codec_i2s_cfg_t i2s_cfg = {
+            .port = static_cast<uint8_t>(kAudioI2sPort),
+            .rx_handle = rx_handle_,
+            .tx_handle = nullptr,
+            .clk_src = I2S_CLK_SRC_DEFAULT,
+        };
+        input_data_if_ = audio_codec_new_i2s_data(&i2s_cfg);
+        if (input_data_if_ == nullptr) {
+            ESP_LOGE(TAG, "audio_codec_new_i2s_data input failed");
             return false;
         }
 
@@ -602,7 +650,7 @@ public:
         esp_codec_dev_cfg_t in_dev_cfg = {
             .dev_type = ESP_CODEC_DEV_TYPE_IN,
             .codec_if = in_codec_if_,
-            .data_if = data_if_,
+            .data_if = input_data_if_,
         };
         input_dev_ = esp_codec_dev_new(&in_dev_cfg);
         if (input_dev_ == nullptr) {
@@ -610,19 +658,11 @@ public:
             return false;
         }
 
-        initialized_ = true;
-        ESP_LOGI(TAG, "CoreS3 duplex codec initialized: hw_rate=%d channels=%d reference=%d device_aec=%d mic_mag=%d",
+        input_initialized_ = true;
+        ESP_LOGI(TAG, "CoreS3 ES7210 input initialized late: hw_rate=%d channels=%d reference=%d device_aec=%d mic_mag=%d",
                  kHwSampleRate, kInputChannels, CONFIG_STACKCHAN_AUDIO_INPUT_REFERENCE,
                  CONFIG_STACKCHAN_AUDIO_DEVICE_AEC, CONFIG_STACKCHAN_MIC_MAGNIFICATION);
         return true;
-    }
-
-    bool start()
-    {
-        if (!init()) {
-            return false;
-        }
-        return open_output() && open_input();
     }
 
     bool open_output()
@@ -734,22 +774,23 @@ public:
             esp_codec_dev_dump_reg(input_dev_);
         }
         ESP_LOGI(TAG, "state: initialized=%d input_open=%d output_open=%d volume=%d",
-                 initialized_, input_open_, output_open_, volume_percent_);
+                 static_cast<int>(output_initialized_ && input_initialized_),
+                 input_open_, output_open_, volume_percent_);
     }
 
-    bool initialized() const { return initialized_; }
+    bool output_initialized() const { return output_initialized_; }
+    bool input_initialized() const { return input_initialized_; }
 
 private:
-    bool create_duplex_channels()
+    bool create_tx_channel()
     {
-        if (tx_handle_ != nullptr && rx_handle_ != nullptr) {
+        if (tx_handle_ != nullptr) {
             return true;
         }
 
-        ESP_LOGI(TAG, "Audio IOs: mclk=%d bclk=%d ws=%d dout=%d din=%d",
+        ESP_LOGI(TAG, "Audio TX IOs: mclk=%d bclk=%d ws=%d dout=%d",
                  static_cast<int>(kAudioMclkPin), static_cast<int>(kAudioBclkPin),
-                 static_cast<int>(kAudioWsPin), static_cast<int>(kAudioDoutPin),
-                 static_cast<int>(kAudioDinPin));
+                 static_cast<int>(kAudioWsPin), static_cast<int>(kAudioDoutPin));
 
         i2s_chan_config_t chan_cfg = {
             .id = kAudioI2sPort,
@@ -761,11 +802,10 @@ private:
             .allow_pd = false,
             .intr_priority = 0,
         };
-        esp_err_t err = i2s_new_channel(&chan_cfg, &tx_handle_, &rx_handle_);
+        esp_err_t err = i2s_new_channel(&chan_cfg, &tx_handle_, nullptr);
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "i2s_new_channel failed: %s", esp_err_to_name(err));
+            ESP_LOGE(TAG, "i2s_new_channel tx failed: %s", esp_err_to_name(err));
             tx_handle_ = nullptr;
-            rx_handle_ = nullptr;
             return false;
         }
 
@@ -802,6 +842,47 @@ private:
                 },
             },
         };
+
+        err = i2s_channel_init_std_mode(tx_handle_, &std_cfg);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "i2s_channel_init_std_mode tx failed: %s", esp_err_to_name(err));
+            return false;
+        }
+        err = i2s_channel_enable(tx_handle_);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "i2s_channel_enable tx failed: %s", esp_err_to_name(err));
+            return false;
+        }
+        ESP_LOGI(TAG, "I2S0 TX channel created for speaker output");
+        return true;
+    }
+
+    bool create_rx_channel()
+    {
+        if (rx_handle_ != nullptr) {
+            return true;
+        }
+
+        ESP_LOGI(TAG, "Audio RX IOs: mclk=%d bclk=%d ws=%d din=%d",
+                 static_cast<int>(kAudioMclkPin), static_cast<int>(kAudioBclkPin),
+                 static_cast<int>(kAudioWsPin), static_cast<int>(kAudioDinPin));
+
+        i2s_chan_config_t chan_cfg = {
+            .id = kAudioI2sPort,
+            .role = I2S_ROLE_MASTER,
+            .dma_desc_num = kDmaDescNum,
+            .dma_frame_num = kDmaFrameNum,
+            .auto_clear_after_cb = true,
+            .auto_clear_before_cb = false,
+            .allow_pd = false,
+            .intr_priority = 0,
+        };
+        esp_err_t err = i2s_new_channel(&chan_cfg, nullptr, &rx_handle_);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "i2s_new_channel rx failed: %s", esp_err_to_name(err));
+            rx_handle_ = nullptr;
+            return false;
+        }
 
         i2s_tdm_config_t tdm_cfg = {
             .clk_cfg = {
@@ -840,19 +921,9 @@ private:
             },
         };
 
-        err = i2s_channel_init_std_mode(tx_handle_, &std_cfg);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "i2s_channel_init_std_mode failed: %s", esp_err_to_name(err));
-            return false;
-        }
         err = i2s_channel_init_tdm_mode(rx_handle_, &tdm_cfg);
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "i2s_channel_init_tdm_mode failed: %s", esp_err_to_name(err));
-            return false;
-        }
-        err = i2s_channel_enable(tx_handle_);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "i2s_channel_enable tx failed: %s", esp_err_to_name(err));
+            ESP_LOGE(TAG, "i2s_channel_init_tdm_mode rx failed: %s", esp_err_to_name(err));
             return false;
         }
         err = i2s_channel_enable(rx_handle_);
@@ -860,13 +931,14 @@ private:
             ESP_LOGE(TAG, "i2s_channel_enable rx failed: %s", esp_err_to_name(err));
             return false;
         }
-        ESP_LOGI(TAG, "I2S0 duplex channels created");
+        ESP_LOGI(TAG, "I2S0 RX channel created for late ES7210 input");
         return true;
     }
 
     M5I2cCodecCtrl out_ctrl_ = {};
     M5I2cCodecCtrl in_ctrl_ = {};
-    const audio_codec_data_if_t* data_if_ = nullptr;
+    const audio_codec_data_if_t* output_data_if_ = nullptr;
+    const audio_codec_data_if_t* input_data_if_ = nullptr;
     const audio_codec_gpio_if_t* gpio_if_ = nullptr;
     const audio_codec_if_t* out_codec_if_ = nullptr;
     const audio_codec_if_t* in_codec_if_ = nullptr;
@@ -875,7 +947,8 @@ private:
     i2s_chan_handle_t tx_handle_ = nullptr;
     i2s_chan_handle_t rx_handle_ = nullptr;
     int volume_percent_ = CONFIG_STACKCHAN_AUDIO_OUTPUT_VOLUME_DEFAULT;
-    bool initialized_ = false;
+    bool output_initialized_ = false;
+    bool input_initialized_ = false;
     bool output_open_ = false;
     bool input_open_ = false;
 };
@@ -901,9 +974,12 @@ public:
 
 #if CONFIG_STACKCHAN_DJI_MIC_AUTO_START
         ESP_LOGI(TAG, "DJI Mic auto-start enabled");
+        dji_start_timeout_logged_ = false;
+        dji_start_wait_ticks_ = xTaskGetTickCount();
         if (!dji_mic_receiver_input_start()) {
             ESP_LOGE(TAG, "DJI Mic receiver start failed: %s",
                      dji_mic_receiver_input_status().detail);
+            dji_start_wait_ticks_ = 0;
         } else {
             ESP_LOGI(TAG, "DJI Mic接收器输入门控已启用: 收到首帧UAC PCM后切换输入源");
         }
@@ -911,17 +987,20 @@ public:
         ESP_LOGW(TAG, "DJI Mic USB input compiled but not auto-started");
 #endif
 
-        if (!codec_.init()) {
-            ESP_LOGW(TAG, "internal codec init failed; playback/internal mic unavailable");
-        } else {
-            codec_initialized_ = true;
+        if (!ensure_output_started("audio service init")) {
+            ESP_LOGW(TAG, "speaker output init failed; playback unavailable until retry");
         }
+#if !CONFIG_STACKCHAN_DJI_MIC_AUTO_START
+        if (!ensure_internal_input_started("audio service init without DJI auto-start")) {
+            ESP_LOGW(TAG, "internal input init failed; microphone unavailable until retry");
+        }
+#endif
 #else
-        if (!codec_.init()) {
-            ESP_LOGE(TAG, "codec init failed");
-            ESP_LOGW(TAG, "内部音频codec不可用: 将继续运行DJI USB输入；内置麦克风和扬声器暂不可用");
-        } else {
-            codec_initialized_ = true;
+        if (!ensure_output_started("audio service init")) {
+            ESP_LOGE(TAG, "speaker output init failed");
+        }
+        if (!ensure_internal_input_started("audio service init")) {
+            ESP_LOGE(TAG, "internal input init failed");
         }
 #endif
         if (!init_opus_decoder()) {
@@ -937,10 +1016,11 @@ public:
             return false;
         }
         DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
-        if (!dji_receiver_should_own_input(dji) || dji.capture_ready) {
-            ensure_codec_started("audio service start");
-        } else if (last_input_unavailable_log_ticks_ == 0) {
-            ESP_LOGI(TAG, "内部codec启动已延后: 等待DJI Mic首帧UAC PCM，避免USB枚举期间并行采集");
+        ensure_output_started("audio service start");
+        if (!dji_receiver_should_own_input(dji) && !dji_receiver_startup_waiting(dji)) {
+            ensure_internal_input_started("audio service start fallback");
+        } else if (dji_receiver_startup_waiting(dji) && last_input_unavailable_log_ticks_ == 0) {
+            ESP_LOGI(TAG, "ES7210输入初始化已延后: 等待DJI Mic首帧UAC PCM，避免USB枚举期间并行采集");
             last_input_unavailable_log_ticks_ = xTaskGetTickCount();
         }
         if (running_) {
@@ -948,13 +1028,6 @@ public:
         }
         running_ = true;
         abort_generation_++;
-
-#if CONFIG_STACKCHAN_AUDIO_DEVICE_AEC
-        if (!dji_receiver_should_own_input(dji) && !afe_init_attempted_) {
-            afe_init_attempted_ = true;
-            afe_ready_ = init_afe();
-        }
-#endif
 
         if (input_task_ == nullptr) {
             xTaskCreatePinnedToCore(
@@ -973,14 +1046,8 @@ public:
                 "xiaopai_audio_out", 4096, this, 5, &output_task_);
         }
 #if CONFIG_STACKCHAN_AUDIO_DEVICE_AEC
-        if (afe_ready_ && afe_task_ == nullptr) {
-            xTaskCreate(
-                [](void* arg) {
-                    static_cast<XiaopaiAudioService*>(arg)->afe_fetch_task();
-                    vTaskDelete(nullptr);
-                },
-                "xiaopai_afe_fetch", 6144, this, 4, &afe_task_);
-        }
+        ensure_afe_started("audio service start");
+        ensure_afe_fetch_task_started();
 #endif
         ESP_LOGI(TAG, "audio service started: hw=%d protocol=%d afe=%d", kHwSampleRate, kProtocolSampleRate,
                  static_cast<int>(afe_ready_));
@@ -1013,12 +1080,12 @@ public:
         if (!start() || play_queue_ == nullptr) {
             return false;
         }
-        if (!ensure_codec_started("playback request")) {
-            ESP_LOGW(TAG, "播放请求已延后/拒绝: 内部codec尚未可用");
+        if (!ensure_output_started("playback request")) {
+            ESP_LOGW(TAG, "播放请求已拒绝: 扬声器输出尚不可用");
             return false;
         }
-        if (!codec_started_.load()) {
-            ESP_LOGW(TAG, "播放请求已拒绝: 内部音频codec不可用");
+        if (!codec_output_started_.load()) {
+            ESP_LOGW(TAG, "播放请求已拒绝: 内部扬声器输出不可用");
             return false;
         }
         AudioBlock* block = allocate_block(count);
@@ -1173,7 +1240,16 @@ public:
     {
         DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
         AudioInputStatus status;
-        status.active_source = static_cast<AudioInputSource>(active_input_source_.load());
+        AudioInputSource active_source = static_cast<AudioInputSource>(active_input_source_.load());
+#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT && CONFIG_STACKCHAN_DJI_MIC_AUTO_START
+        TickType_t dji_start_ticks = dji_start_wait_ticks_.load();
+        if (dji_mic_receiver_input_is_enabled() && !dji.capture_ready &&
+            dji_start_ticks != 0 && kDjiInputStartupTimeoutMs > 0 &&
+            (xTaskGetTickCount() - dji_start_ticks) < pdMS_TO_TICKS(kDjiInputStartupTimeoutMs)) {
+            active_source = AudioInputSource::kDjiMicReceiver;
+        }
+#endif
+        status.active_source = active_source;
         status.dji_receiver_detected = dji.detected;
         status.dji_receiver_streaming = dji.audio_streaming;
         status.dji_receiver_capture_ready = dji.capture_ready;
@@ -1207,9 +1283,9 @@ public:
     {
         codec_.dump_state();
         DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
-        ESP_LOGI(TAG, "service: initialized=%d codec_init=%d codec_started=%d running=%d playing=%d play_q=%u clean_q=%u clean_readers=%u vad=%d afe=%d selected_ch=%d input=%d dji_detected=%d dji_streaming=%d dji_capture=%d identity=%d %04x:%04x rate=%d ch=%d manufacturer=%s product=%s detail=%s",
+        ESP_LOGI(TAG, "service: initialized=%d output_started=%d input_started=%d running=%d playing=%d play_q=%u clean_q=%u clean_readers=%u vad=%d afe=%d selected_ch=%d input=%d dji_detected=%d dji_streaming=%d dji_capture=%d identity=%d %04x:%04x rate=%d ch=%d manufacturer=%s product=%s detail=%s",
                  static_cast<int>(initialized_.load()),
-                 static_cast<int>(codec_initialized_.load()), static_cast<int>(codec_started_.load()),
+                 static_cast<int>(codec_output_started_.load()), static_cast<int>(codec_input_started_.load()),
                  static_cast<int>(running_.load()),
                  static_cast<int>(playing_.load()),
                  play_queue_ ? static_cast<unsigned>(uxQueueMessagesWaiting(play_queue_)) : 0,
@@ -1300,34 +1376,74 @@ private:
         return timeout - elapsed;
     }
 
-    bool ensure_codec_started(const char* reason)
+    bool ensure_output_started(const char* reason)
     {
-        if (codec_started_.load()) {
+        if (codec_output_started_.load()) {
+            return true;
+        }
+        if (!codec_.start_output()) {
+            ESP_LOGE(TAG, "speaker output start failed: reason=%s", reason != nullptr ? reason : "-");
+            return false;
+        }
+        codec_output_started_ = true;
+        ESP_LOGI(TAG, "扬声器输出已启动: reason=%s", reason != nullptr ? reason : "-");
+        return true;
+    }
+
+    bool ensure_internal_input_started(const char* reason)
+    {
+        if (codec_input_started_.load()) {
             return true;
         }
         DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
-        if (dji_receiver_should_own_input(dji) && !dji.capture_ready) {
-            ESP_LOGI(TAG, "内部codec启动继续延后: reason=%s dji_capture=%d detail=%s",
+        if (dji_receiver_startup_waiting(dji)) {
+            ESP_LOGI(TAG, "ES7210输入继续延后: reason=%s dji_capture=%d detail=%s",
                      reason != nullptr ? reason : "-",
                      static_cast<int>(dji.capture_ready),
                      dji.detail != nullptr ? dji.detail : "-");
             return false;
         }
-        if (!codec_initialized_.load()) {
-            if (!codec_.init()) {
-                ESP_LOGE(TAG, "codec init failed: reason=%s", reason != nullptr ? reason : "-");
-                return false;
-            }
-            codec_initialized_ = true;
-        }
-        if (!codec_.start()) {
-            ESP_LOGE(TAG, "codec start failed: reason=%s", reason != nullptr ? reason : "-");
+        if (!codec_.start_input()) {
+            ESP_LOGE(TAG, "ES7210 input start failed: reason=%s", reason != nullptr ? reason : "-");
             return false;
         }
-        codec_started_ = true;
-        ESP_LOGI(TAG, "内部codec已启动: reason=%s dji_capture=%d",
+        codec_input_started_ = true;
+        ESP_LOGI(TAG, "ES7210输入已启动: reason=%s dji_capture=%d",
                  reason != nullptr ? reason : "-", static_cast<int>(dji.capture_ready));
+#if CONFIG_STACKCHAN_AUDIO_DEVICE_AEC
+        ensure_afe_started(reason);
+        ensure_afe_fetch_task_started();
+#endif
         return true;
+    }
+
+    bool dji_receiver_startup_waiting(const DjiMicReceiverStatus& dji)
+    {
+#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT && CONFIG_STACKCHAN_DJI_MIC_AUTO_START
+        if (!dji_mic_receiver_input_is_enabled() || dji.capture_ready || kDjiInputStartupTimeoutMs <= 0) {
+            return false;
+        }
+        TickType_t start_ticks = dji_start_wait_ticks_.load();
+        if (start_ticks == 0) {
+            return false;
+        }
+        TickType_t elapsed = xTaskGetTickCount() - start_ticks;
+        if (elapsed < pdMS_TO_TICKS(kDjiInputStartupTimeoutMs)) {
+            return true;
+        }
+        if (!dji_start_timeout_logged_.exchange(true)) {
+            ESP_LOGW(TAG, "DJI Mic启动等待超时，允许ES7210输入fallback: timeout_ms=%d detected=%d streaming=%d capture=%d detail=%s",
+                     kDjiInputStartupTimeoutMs,
+                     static_cast<int>(dji.detected),
+                     static_cast<int>(dji.audio_streaming),
+                     static_cast<int>(dji.capture_ready),
+                     dji.detail != nullptr ? dji.detail : "-");
+        }
+        return false;
+#else
+        (void)dji;
+        return false;
+#endif
     }
 
     bool init_opus_decoder()
@@ -1347,6 +1463,35 @@ private:
     }
 
 #if CONFIG_STACKCHAN_AUDIO_DEVICE_AEC
+    bool ensure_afe_started(const char* reason)
+    {
+        if (afe_ready_) {
+            return true;
+        }
+        if (afe_init_attempted_ || !codec_input_started_.load()) {
+            return false;
+        }
+        afe_init_attempted_ = true;
+        afe_ready_ = init_afe();
+        if (!afe_ready_) {
+            ESP_LOGW(TAG, "AFE init failed: reason=%s", reason != nullptr ? reason : "-");
+        }
+        return afe_ready_;
+    }
+
+    void ensure_afe_fetch_task_started()
+    {
+        if (!running_ || !afe_ready_ || afe_task_ != nullptr) {
+            return;
+        }
+        xTaskCreate(
+            [](void* arg) {
+                static_cast<XiaopaiAudioService*>(arg)->afe_fetch_task();
+                vTaskDelete(nullptr);
+            },
+            "xiaopai_afe_fetch", 6144, this, 4, &afe_task_);
+    }
+
     bool init_afe()
     {
         if (!CONFIG_STACKCHAN_AUDIO_INPUT_REFERENCE) {
@@ -1397,26 +1542,28 @@ private:
             log_dji_status_if_changed(dji);
             if (dji_receiver_should_own_input(dji)) {
                 set_active_input_source(AudioInputSource::kDjiMicReceiver, dji,
-                                        dji.capture_ready ? "DJI Mic接收器正在采集，内置麦克风停用"
-                                                          : (dji.detected ? "DJI Mic已接入，等待UAC音频，内置麦克风停用"
-                                                                          : "等待DJI Mic USB接收器，内置麦克风停用"));
-                if (dji_receiver_protocol_ready(dji)) {
-                    size_t usb_read = try_read_dji_receiver(usb16, dji);
-                    if (usb_read > 0) {
-                        push_clean_samples(usb16.data(), usb_read);
-                    } else {
-                        log_dji_priority_wait_if_needed(dji);
-                        vTaskDelay(pdMS_TO_TICKS(5));
-                    }
+                                        "DJI Mic接收器正在采集，内置麦克风停用");
+                size_t usb_read = try_read_dji_receiver(usb16, dji);
+                if (usb_read > 0) {
+                    push_clean_samples(usb16.data(), usb_read);
                 } else {
                     log_dji_priority_wait_if_needed(dji);
-                    vTaskDelay(pdMS_TO_TICKS(20));
+                    vTaskDelay(pdMS_TO_TICKS(5));
                 }
+                continue;
+            }
+            if (dji_receiver_startup_waiting(dji)) {
+                set_active_input_source(AudioInputSource::kDjiMicReceiver, dji,
+                                        dji.detected ? "DJI Mic已接入，等待UAC音频，ES7210输入延后"
+                                                     : "等待DJI Mic USB接收器，ES7210输入延后");
+                drop_queued_clean_frames();
+                log_dji_priority_wait_if_needed(dji);
+                vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             }
             set_active_input_source(AudioInputSource::kInternalMic, dji,
                                     dji.detected ? "DJI Mic接收器暂不可采集" : "未检测到DJI Mic接收器");
-            if (!codec_started_.load()) {
+            if (!codec_input_started_.load() && !ensure_internal_input_started("audio input fallback")) {
                 log_input_unavailable_if_needed(dji);
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
@@ -1442,7 +1589,7 @@ private:
 
     size_t try_read_dji_receiver(std::vector<int16_t>& buffer, const DjiMicReceiverStatus& status)
     {
-        if (!status.capture_ready || !dji_receiver_protocol_ready(status) || buffer.empty()) {
+        if (!status.capture_ready || buffer.empty()) {
             return 0;
         }
         size_t read = dji_mic_receiver_input_read_16k(buffer.data(), buffer.size(), pdMS_TO_TICKS(2));
@@ -1506,7 +1653,7 @@ private:
             return;
         }
         last_input_unavailable_log_ticks_ = now;
-        ESP_LOGW(TAG, "监听输入不可用: 内部音频codec未启动，正在等待DJI Mic接收器 detected=%d streaming=%d capture=%d detail=%s",
+        ESP_LOGW(TAG, "监听输入不可用: ES7210输入尚未启动 detected=%d streaming=%d capture=%d detail=%s",
                  static_cast<int>(dji.detected), static_cast<int>(dji.audio_streaming),
                  static_cast<int>(dji.capture_ready), dji.detail != nullptr ? dji.detail : "-");
     }
@@ -1741,9 +1888,12 @@ private:
 
     bool dji_exclusive_waiting_for_audio() const
     {
-#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT
+#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT && CONFIG_STACKCHAN_DJI_MIC_AUTO_START
         DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
-        return dji_mic_receiver_input_is_enabled() && dji_receiver_should_own_input(dji) && !dji.capture_ready;
+        TickType_t start_ticks = dji_start_wait_ticks_.load();
+        return dji_mic_receiver_input_is_enabled() && !dji.capture_ready &&
+               start_ticks != 0 && kDjiInputStartupTimeoutMs > 0 &&
+               (xTaskGetTickCount() - start_ticks) < pdMS_TO_TICKS(kDjiInputStartupTimeoutMs);
 #else
         return false;
 #endif
@@ -1883,8 +2033,10 @@ private:
     TickType_t last_input_unavailable_log_ticks_ = 0;
     std::atomic<int> selected_input_channel_{0};
     std::atomic<int> active_input_source_{static_cast<int>(AudioInputSource::kInternalMic)};
-    std::atomic<bool> codec_initialized_{false};
-    std::atomic<bool> codec_started_{false};
+    std::atomic<bool> codec_output_started_{false};
+    std::atomic<bool> codec_input_started_{false};
+    std::atomic<TickType_t> dji_start_wait_ticks_{0};
+    std::atomic<bool> dji_start_timeout_logged_{false};
     bool last_dji_status_valid_ = false;
     bool last_dji_detected_ = false;
     bool last_dji_audio_streaming_ = false;

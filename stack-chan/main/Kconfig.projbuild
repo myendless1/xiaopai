@@ -23,7 +23,7 @@ menu "Xiaopai settings"
 
     config STACKCHAN_RECORD_UPLOAD_URL
         string "Record upload URL"
-        default "http://192.168.21.15:8091/upload-audio?save_only=1"
+        default "http://<server-ip>:8091/upload-audio"
 
     config STACKCHAN_STREAM_TTS_URL
         string "Stream TTS URL"
@@ -109,12 +109,12 @@ menu "Xiaopai settings"
     config STACKCHAN_DJI_MIC_AUTO_START
         bool "Auto start DJI Mic USB input on boot"
         depends on STACKCHAN_DJI_MIC_USB_INPUT
-        default n
+        default y
 
     config STACKCHAN_DJI_MIC_DRIVE_VBUS
         bool "Drive CoreS3 USB VBUS for DJI Mic"
         depends on STACKCHAN_DJI_MIC_USB_INPUT
-        default n
+        default y
 
     config STACKCHAN_DJI_MIC_START_DELAY_MS
         int "Delay before starting DJI Mic USB input after boot"
@@ -129,7 +129,7 @@ menu "Xiaopai settings"
 
     config STACKCHAN_DJI_MIC_UAC_RECORD
         bool "Upload DJI Mic UAC microphone stream as WAV over Wi-Fi"
-        depends on STACKCHAN_DJI_MIC_USB_INPUT && !STACKCHAN_DJI_MIC_ENUM_ONLY
+        depends on STACKCHAN_DJI_MIC_USB_INPUT && !STACKCHAN_DJI_MIC_ENUM_ONLY && !STACKCHAN_DJI_MIC_AUTO_START
         default n
 
     config STACKCHAN_DJI_MIC_UAC_RECORD_RATE

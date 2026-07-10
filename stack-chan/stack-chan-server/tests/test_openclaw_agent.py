@@ -49,6 +49,9 @@ class FakeMorrowWebSocket:
             return json.dumps({"type": "turn_saved", "data": {"session": "default"}}, ensure_ascii=False)
         return self.frames.pop(0)
 
+    def settimeout(self, _timeout):
+        return None
+
     def close(self):
         self.closed = True
 
@@ -147,6 +150,38 @@ class OpenClawAgentSessionTest(unittest.TestCase):
         sent = json.loads(websocket.sent[0])
         self.assertEqual(sent["type"], "start_turn")
         self.assertEqual(sent["data"]["prompt"], "今天怎么样")
+
+    def test_morrow_robot_notice_stream_uses_default_session_without_start_turn(self):
+        frames = [
+            json.dumps({"type": "snapshot", "data": {}}, ensure_ascii=False),
+            json.dumps(
+                {"type": "robot_notice", "data": {"text": "该喝水了。"}},
+                ensure_ascii=False,
+            ),
+            "",
+        ]
+        websocket = FakeMorrowWebSocket(frames)
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["session_url"] = request.full_url
+            return FakeSessionResponse()
+
+        def fake_create_connection(url, timeout, header=None):
+            captured["ws_url"] = url
+            captured["header"] = header
+            return websocket
+
+        agent = OpenClawAgent(base_url="http://morrow:3000", token="", model="ignored")
+        fake_websocket_module = types.SimpleNamespace(create_connection=fake_create_connection)
+
+        with patch("urllib.request.urlopen", fake_urlopen), patch.dict(sys.modules, {"websocket": fake_websocket_module}):
+            notices = list(agent.morrow_robot_notice_stream(session_id="default"))
+
+        self.assertEqual(notices, ["该喝水了。"])
+        self.assertEqual(captured["session_url"], "http://morrow:3000/api/sessions/default")
+        self.assertEqual(captured["ws_url"], "ws://morrow:3000/api/sessions/default/ws")
+        self.assertEqual(websocket.sent, [])
 
 
 if __name__ == "__main__":

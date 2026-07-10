@@ -995,7 +995,8 @@ class RealtimeManager:
         if speech_text_is_temporarily_suppressed(text):
             self.logger("实时语音播放已被临时静默保护抑制")
             return
-        await self._abort_session_tts(session)
+        if interrupt:
+            await self._abort_session_tts(session)
         self._mark(session, "device_tts_start")
         await session.websocket.send(json_dumps(build_llm(text, session_id=session.session_id)))
         speak_step = {"type": "speak", "text": text, "pause_listener": bool(pause_listener)}

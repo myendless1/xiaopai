@@ -191,7 +191,9 @@ also contains `最`, `声音最大` sets 100 and `声音最小` sets 10. The dev
 
 Audio upload endpoint for speech recognition. The body can be WAV or raw PCM. WAV sample rate is detected from the header; raw PCM defaults to `STACKCHAN_ALIYUN_SAMPLE_RATE` or `16000`.
 
-When OpenClaw is configured, recognized text is sent to OpenClaw directly as the chat `user.content`. The server does not read or parse OpenClaw response text, tags, or actions. The OpenClaw agent calls `workAssistant.handleEvent` only for supported business intents; ordinary chat and presentation-only requests can be handled directly before calling the command API above when Xiaopai should speak, move, or change expression.
+When Morrow/OpenClaw is configured, the recognized final ASR text is sent as a Morrow `start_turn` prompt over the session WebSocket. The server consumes streaming `text_delta` / `agent_message` output, splits speech on punctuation, queues each segment as a Xiaopai `speak` command, and the device plays it through `/stream-speak`. Legacy OpenAI-compatible `/v1/chat/completions` URLs remain supported as a non-streaming fallback.
+
+At server startup, Morrow WebSocket mode also opens a long-lived listener on `/api/sessions/default/ws` for proactive `robot_notice` messages. Each `robot_notice.data.text` is queued as Xiaopai speech for the currently online device; this listener is independent of user-triggered ASR turns.
 
 `POST /upload-audio`
 
@@ -386,7 +388,7 @@ Environment variables:
 | `STACKCHAN_OPENCLAW_TIMEOUT` | `45` | Morrow/OpenClaw request timeout in seconds |
 | `STACKCHAN_OPENCLAW_WORKERS` | `4` | Background Morrow/OpenClaw event forwarding workers |
 | `STACKCHAN_OPENCLAW_MAX_COMPLETION_TOKENS` | `512` | Legacy max OpenClaw output tokens |
-| `STACKCHAN_OPENCLAW_SESSION_PREFIX` | `default` | Morrow session selector. `default` uses `/api/sessions/default/ws`; other values create per-device sessions with that prefix |
+| `STACKCHAN_OPENCLAW_SESSION_PREFIX` | `default` | Morrow chat session selector. `default` uses `/api/sessions/default/ws`; other values create per-device chat sessions with that prefix. Proactive `robot_notice` is always consumed from the Morrow `default` session listener |
 
 ## Firmware URLs
 

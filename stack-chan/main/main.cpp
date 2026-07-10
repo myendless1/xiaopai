@@ -67,8 +67,16 @@
 #define CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD 0
 #endif
 
+#ifndef CONFIG_STACKCHAN_DJI_MIC_AUTO_START
+#define CONFIG_STACKCHAN_DJI_MIC_AUTO_START 0
+#endif
+
 #ifndef CONFIG_STACKCHAN_DJI_MIC_START_DELAY_MS
 #define CONFIG_STACKCHAN_DJI_MIC_START_DELAY_MS 5000
+#endif
+
+#if CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD && CONFIG_STACKCHAN_DJI_MIC_AUTO_START
+#error "CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD is a standalone test firmware mode; disable CONFIG_STACKCHAN_DJI_MIC_AUTO_START"
 #endif
 
 void run_xiaozhi_ota_probe();
@@ -275,7 +283,7 @@ static void draw_dji_mic_uac_record_screen()
 }
 #endif
 
-#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT
+#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT && !CONFIG_STACKCHAN_DJI_MIC_AUTO_START
 static void start_dji_mic_after_boot_task(void*)
 {
     const int delay_ms = CONFIG_STACKCHAN_DJI_MIC_START_DELAY_MS;
@@ -390,7 +398,7 @@ extern "C" void app_main(void)
 
     start_background_services();
 
-#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT
+#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT && !CONFIG_STACKCHAN_DJI_MIC_AUTO_START
     schedule_dji_mic_after_boot();
 #endif
 

@@ -609,6 +609,40 @@ class RealtimeMappingTest(unittest.TestCase):
         self.assertNotEqual(queued[0][1]["coalesce_key"], queued[1][1]["coalesce_key"])
         self.assertTrue(any('"type":"device_state"' in payload and '"state":"waiting"' in payload for payload in sent))
 
+    def test_realtime_speak_only_aborts_when_interrupting(self):
+        class FakeWebSocket:
+            def __init__(self):
+                self.sent = []
+
+            async def send(self, payload):
+                self.sent.append(payload)
+
+        async def run_case():
+            queued = []
+            aborted = []
+
+            def command_callback(device_id, command):
+                queued.append((device_id, command))
+                return True
+
+            manager = RealtimeManager(
+                RealtimeConfig(command_callback=command_callback),
+                logger=lambda _msg: None,
+            )
+
+            async def fake_abort(session):
+                aborted.append(session.session_id)
+
+            manager._abort_session_tts = fake_abort
+            session = RealtimeDeviceSession(device_id="dev1", websocket=FakeWebSocket(), session_id="sess1")
+            await manager._speak(session, "第一句", interrupt=False)
+            await manager._speak(session, "第二句", interrupt=True)
+            return queued, aborted
+
+        queued, aborted = asyncio.run(run_case())
+        self.assertEqual([item[1]["payload"]["text"] for item in queued], ["第一句", "第二句"])
+        self.assertEqual(aborted, ["sess1"])
+
     def test_realtime_device_connected_callback_runs_on_register_and_id_update(self):
         connected = []
         manager = RealtimeManager(

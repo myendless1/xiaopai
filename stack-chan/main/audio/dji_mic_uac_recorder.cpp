@@ -50,7 +50,7 @@
 #endif
 
 #ifndef CONFIG_STACKCHAN_RECORD_UPLOAD_URL
-#define CONFIG_STACKCHAN_RECORD_UPLOAD_URL "http://192.168.21.15:8091/upload-audio?save_only=1"
+#define CONFIG_STACKCHAN_RECORD_UPLOAD_URL "http://<server-ip>:8091/upload-audio"
 #endif
 
 #ifndef CONFIG_STACKCHAN_WIFI_SSID
