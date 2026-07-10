@@ -74,6 +74,11 @@ class CommandEnvelope:
     delivery_id: str = ""
     created_at: str = field(default_factory=utc_now)
     expires_at: str = ""
+    source_type: str = ""
+    source_id: str = ""
+    segment_index: int = 0
+    turn_generation: int = 0
+    payload_retention_until: str = ""
 
     @classmethod
     def from_legacy(cls, device_id: str, command: dict[str, Any], *, delivery_id: str = "") -> "CommandEnvelope":
@@ -96,6 +101,11 @@ class CommandEnvelope:
             delivery_id=delivery_id,
             created_at=utc_now(),
             expires_at=future_time_ms(ttl_ms),
+            source_type=str(command.get("source_type") or ""),
+            source_id=str(command.get("source_id") or ""),
+            segment_index=int(command.get("segment_index") or 0),
+            turn_generation=int(command.get("turn_generation") or 0),
+            payload_retention_until=str(command.get("payload_retention_until") or ""),
         )
 
     def to_device_command(self) -> dict[str, Any]:
@@ -120,6 +130,11 @@ class CommandEnvelope:
                 "delivery_id": self.delivery_id,
                 "created_at": self.created_at,
                 "expires_at": self.expires_at,
+                "source_type": self.source_type,
+                "source_id": self.source_id,
+                "segment_index": self.segment_index,
+                "turn_generation": self.turn_generation,
+                "payload_retention_until": self.payload_retention_until,
             }
         )
         return body

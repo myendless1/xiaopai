@@ -90,7 +90,12 @@ class Database:
                       updated_at TEXT NOT NULL,
                       expires_at TEXT NOT NULL DEFAULT '',
                       lease_expires_at TEXT NOT NULL DEFAULT '',
-                      last_message TEXT NOT NULL DEFAULT ''
+                      last_message TEXT NOT NULL DEFAULT '',
+                      source_type TEXT NOT NULL DEFAULT '',
+                      source_id TEXT NOT NULL DEFAULT '',
+                      segment_index INTEGER NOT NULL DEFAULT 0,
+                      turn_generation INTEGER NOT NULL DEFAULT 0,
+                      payload_retention_until TEXT NOT NULL DEFAULT ''
                     );
 
                     CREATE TABLE IF NOT EXISTS command_attempts (
@@ -154,6 +159,28 @@ class Database:
                       ON command_acks(cmd_id);
                     """
                 )
+                self._migrate_commands(conn)
                 conn.commit()
             finally:
                 conn.close()
+
+    @staticmethod
+    def _migrate_commands(conn: sqlite3.Connection) -> None:
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(commands)")}
+        additions = {
+            "source_type": "TEXT NOT NULL DEFAULT ''",
+            "source_id": "TEXT NOT NULL DEFAULT ''",
+            "segment_index": "INTEGER NOT NULL DEFAULT 0",
+            "turn_generation": "INTEGER NOT NULL DEFAULT 0",
+            "payload_retention_until": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE commands ADD COLUMN {name} {definition}")
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_commands_source_segment
+              ON commands(source_type, source_id, segment_index, type)
+             WHERE source_type != '' AND source_id != ''
+            """
+        )

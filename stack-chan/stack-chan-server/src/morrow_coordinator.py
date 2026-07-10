@@ -1,0 +1,311 @@
+"""Serializes all Xiaopai requests onto Morrow's single-session turn model."""
+
+from __future__ import annotations
+
+import queue
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Callable
+
+from morrow_protocol import MorrowEvent
+
+
+HARD_PUNCTUATION = frozenset("。！？!?；;\n")
+
+
+class StreamingTextSegmenter:
+    def __init__(self, *, max_chars: int = 120, max_bytes: int = 480) -> None:
+        self.max_chars = max(1, int(max_chars))
+        self.max_bytes = max(4, int(max_bytes))
+        self._buffer = ""
+
+    def feed(self, text: str) -> list[str]:
+        segments: list[str] = []
+        for char in str(text or ""):
+            candidate = self._buffer + char
+            if self._buffer and (
+                len(candidate) > self.max_chars
+                or len(candidate.encode("utf-8")) > self.max_bytes
+            ):
+                self._emit(segments)
+            self._buffer += char
+            if char in HARD_PUNCTUATION:
+                self._emit(segments)
+        return segments
+
+    def flush(self) -> list[str]:
+        segments: list[str] = []
+        self._emit(segments)
+        return segments
+
+    def _emit(self, output: list[str]) -> None:
+        segment = self._buffer.strip()
+        self._buffer = ""
+        if segment:
+            output.append(segment)
+
+
+@dataclass
+class MorrowRequest:
+    request_id: str
+    prompt: str
+    device_id: str
+    source: str
+    created_at: float
+    expires_at: float
+    generation: int
+
+
+@dataclass
+class TurnOutcome:
+    request_id: str
+    state: str
+    message: str = ""
+    segment_count: int = 0
+    finished: threading.Event = field(default_factory=threading.Event, repr=False)
+
+
+SegmentSink = Callable[[MorrowRequest, str, int], None]
+CancelSink = Callable[[str, int], None]
+
+
+def command_store_segment_sink(command_store, *, ttl_ms: int = 30_000) -> SegmentSink:
+    """Build a sink that persists every dialogue segment before device delivery."""
+    from schemas import AdmissionPolicy, CommandEnvelope, future_time_ms, new_id
+
+    def persist(request: MorrowRequest, text: str, segment_index: int) -> None:
+        command_store.create_command(
+            CommandEnvelope(
+                cmd_id=new_id("cmd"),
+                device_id=request.device_id,
+                type="speak",
+                payload={
+                    "text": text,
+                    "segment_index": segment_index,
+                    "generation": request.generation,
+                },
+                priority=50,
+                ttl_ms=ttl_ms,
+                turn_id=request.request_id,
+                admission=AdmissionPolicy(),
+                expires_at=future_time_ms(ttl_ms),
+                source_type="dialogue",
+                source_id=request.request_id,
+                segment_index=segment_index,
+                turn_generation=request.generation,
+            )
+        )
+
+    return persist
+
+
+class MorrowTurnCoordinator:
+    def __init__(
+        self,
+        client,
+        segment_sink: SegmentSink,
+        *,
+        cancel_sink: CancelSink | None = None,
+        queue_size: int = 8,
+        request_ttl: float = 60,
+        turn_timeout: float = 120,
+        max_segment_chars: int = 120,
+        max_segment_bytes: int = 480,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.client = client
+        self.segment_sink = segment_sink
+        self.cancel_sink = cancel_sink
+        self.request_ttl = max(0.01, float(request_ttl))
+        self.turn_timeout = max(0.01, float(turn_timeout))
+        self.max_segment_chars = max_segment_chars
+        self.max_segment_bytes = max_segment_bytes
+        self.clock = clock
+        self._queue: queue.Queue[MorrowRequest | None] = queue.Queue(maxsize=max(1, queue_size))
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.RLock()
+        self._active: MorrowRequest | None = None
+        self._generations: dict[str, int] = {}
+        self._outcomes: dict[str, TurnOutcome] = {}
+
+    @property
+    def active_request_id(self) -> str:
+        with self._lock:
+            return self._active.request_id if self._active else ""
+
+    @property
+    def queued_turns(self) -> int:
+        return self._queue.qsize()
+
+    def start(self) -> None:
+        self.client.start()
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="morrow-coordinator", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        try:
+            self._queue.put_nowait(None)
+        except queue.Full:
+            pass
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=2)
+
+    def submit(
+        self,
+        prompt: str,
+        device_id: str,
+        *,
+        source: str = "voice",
+        ttl: float | None = None,
+        request_id: str = "",
+    ) -> TurnOutcome:
+        prompt = str(prompt or "").strip()
+        if not prompt:
+            raise ValueError("prompt is required")
+        if source not in {"voice", "touch", "system", "admin"}:
+            raise ValueError(f"unsupported Morrow request source: {source}")
+        now = self.clock()
+        device_id = str(device_id or "default")
+        with self._lock:
+            generation = self._generations.get(device_id, 0)
+        request = MorrowRequest(
+            request_id=request_id or str(uuid.uuid4()),
+            prompt=prompt,
+            device_id=device_id,
+            source=source,
+            created_at=now,
+            expires_at=now + (self.request_ttl if ttl is None else max(0.01, float(ttl))),
+            generation=generation,
+        )
+        outcome = TurnOutcome(request.request_id, "queued")
+        with self._lock:
+            self._outcomes[request.request_id] = outcome
+        try:
+            self._queue.put_nowait(request)
+        except queue.Full:
+            with self._lock:
+                self._outcomes.pop(request.request_id, None)
+            raise
+        return outcome
+
+    def cancel_device(self, device_id: str) -> int:
+        device_id = str(device_id or "default")
+        with self._lock:
+            generation = self._generations.get(device_id, 0) + 1
+            self._generations[device_id] = generation
+            active = self._active
+        if self.cancel_sink is not None:
+            self.cancel_sink(device_id, generation)
+        if active is not None and active.device_id == device_id:
+            self.client.cancel_turn()
+        return generation
+
+    def outcome(self, request_id: str) -> TurnOutcome | None:
+        with self._lock:
+            return self._outcomes.get(request_id)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                request = self._queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                if request is None:
+                    return
+                self._process(request)
+            finally:
+                self._queue.task_done()
+
+    def _process(self, request: MorrowRequest) -> None:
+        outcome = self._outcomes[request.request_id]
+        if self._is_stale(request):
+            self._finish(outcome, "expired")
+            return
+        remaining = max(0.0, request.expires_at - self.clock())
+        if not self.client.wait_ready(remaining):
+            self._finish(outcome, "expired", "Morrow was not ready before request TTL")
+            return
+        if self._is_stale(request):
+            self._finish(outcome, "cancelled")
+            return
+
+        with self._lock:
+            self._active = request
+        outcome.state = "submitted"
+        segmenter = StreamingTextSegmenter(
+            max_chars=self.max_segment_chars,
+            max_bytes=self.max_segment_bytes,
+        )
+        saw_delta = False
+        final_message = ""
+        deadline = self.clock() + self.turn_timeout
+        try:
+            self.client.start_turn(request.request_id, request.prompt)
+            while not self._stop.is_set():
+                timeout = deadline - self.clock()
+                if timeout <= 0:
+                    self._finish(outcome, "timeout")
+                    return
+                try:
+                    event = self.client.events.get(timeout=min(0.2, timeout))
+                except queue.Empty:
+                    continue
+                if event.type == "agent_event":
+                    event_type = str(event.data.get("type") or "")
+                    text = str(event.data.get("data") or "")
+                    if event_type == "text_delta":
+                        saw_delta = True
+                        outcome.state = "streaming"
+                        self._deliver(request, outcome, segmenter.feed(text))
+                    elif event_type == "agent_message":
+                        final_message = text
+                    continue
+                if event.type == "turn_saved":
+                    if not saw_delta and final_message:
+                        self._deliver(request, outcome, segmenter.feed(final_message))
+                    self._deliver(request, outcome, segmenter.flush())
+                    self._finish(outcome, "saved")
+                    return
+                if event.type == "turn_rejected":
+                    data = event.data if isinstance(event.data, dict) else {}
+                    event_request_id = str(data.get("request_id") or "")
+                    if event_request_id and event_request_id != request.request_id:
+                        continue
+                    self._finish(outcome, "rejected", str(data.get("reason") or ""))
+                    return
+                if event.type == "error":
+                    data = event.data if isinstance(event.data, dict) else {}
+                    self._finish(outcome, "error", str(data.get("message") or ""))
+                    return
+        except Exception as exc:
+            self._finish(outcome, "disconnected", str(exc))
+        finally:
+            with self._lock:
+                if self._active is request:
+                    self._active = None
+
+    def _deliver(self, request: MorrowRequest, outcome: TurnOutcome, segments: list[str]) -> None:
+        if self._is_stale(request):
+            return
+        for segment in segments:
+            self.segment_sink(request, segment, outcome.segment_count)
+            outcome.segment_count += 1
+
+    def _is_stale(self, request: MorrowRequest) -> bool:
+        with self._lock:
+            generation = self._generations.get(request.device_id, 0)
+        return request.generation != generation or self.clock() >= request.expires_at
+
+    @staticmethod
+    def _finish(outcome: TurnOutcome, state: str, message: str = "") -> None:
+        outcome.state = state
+        outcome.message = message
+        outcome.finished.set()

@@ -34,8 +34,9 @@ class CommandStore:
                 INSERT OR IGNORE INTO commands (
                   cmd_id, delivery_id, device_id, type, priority, ttl_ms, attempt, max_attempts,
                   state, coalesce_key, safety_class, turn_id, admission_json, payload_json,
-                  created_at, updated_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)
+                  created_at, updated_at, expires_at, source_type, source_id, segment_index,
+                  turn_generation, payload_retention_until
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     command.cmd_id,
@@ -53,6 +54,11 @@ class CommandStore:
                     command.created_at or now,
                     now,
                     command.expires_at,
+                    command.source_type,
+                    command.source_id,
+                    command.segment_index,
+                    command.turn_generation,
+                    command.payload_retention_until,
                 ),
             )
         return row
@@ -107,7 +113,7 @@ class CommandStore:
                    AND (expires_at='' OR expires_at > ?)
                    AND (state='queued' OR lease_expires_at='' OR lease_expires_at < ?)
                    AND attempt < max_attempts
-                 ORDER BY safety_class DESC, priority DESC, created_at ASC
+                 ORDER BY safety_class DESC, priority DESC, created_at ASC, segment_index ASC
                  LIMIT 1
                 """,
                 (device_id, now, now),
@@ -183,6 +189,41 @@ class CommandStore:
             self._refresh_delivery_state(conn, delivery_id, now, cancelled=True)
             row = conn.execute("SELECT * FROM deliveries WHERE delivery_id=?", (delivery_id,)).fetchone()
         return dict(row) if row else {}
+
+    def cancel_pending_by_source(self, source_type: str, source_id: str, message: str = "source cancelled") -> int:
+        now = utc_now()
+        with self.database.connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE commands
+                   SET state='cancelled', updated_at=?, last_message=?
+                 WHERE source_type=? AND source_id=? AND state='queued'
+                """,
+                (now, message, str(source_type), str(source_id)),
+            )
+        return int(cursor.rowcount or 0)
+
+    def cancel_pending_before_generation(self, device_id: str, generation: int, message: str = "old generation") -> int:
+        now = utc_now()
+        with self.database.connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE commands
+                   SET state='cancelled', updated_at=?, last_message=?
+                 WHERE device_id=? AND turn_generation < ? AND state='queued'
+                """,
+                (now, message, str(device_id), int(generation)),
+            )
+        return int(cursor.rowcount or 0)
+
+    def find_terminal_ack(self, cmd_id: str) -> dict[str, Any] | None:
+        placeholders = ",".join("?" for _ in TERMINAL_COMMAND_STATES)
+        with self.database.connect() as conn:
+            row = conn.execute(
+                f"SELECT * FROM command_acks WHERE cmd_id=? AND state IN ({placeholders}) ORDER BY id DESC LIMIT 1",
+                (str(cmd_id), *sorted(TERMINAL_COMMAND_STATES)),
+            ).fetchone()
+        return dict(row) if row else None
 
     def get_delivery(self, delivery_id: str) -> dict[str, Any] | None:
         with self.database.connect() as conn:
@@ -338,6 +379,11 @@ class CommandStore:
                     "expires_at": row["expires_at"],
                     "lease_expires_at": row["lease_expires_at"],
                     "last_message": row["last_message"],
+                    "source_type": row["source_type"],
+                    "source_id": row["source_id"],
+                    "segment_index": row["segment_index"],
+                    "turn_generation": row["turn_generation"],
+                    "payload_retention_until": row["payload_retention_until"],
                 }
             )
         return command
