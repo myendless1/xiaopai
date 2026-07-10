@@ -380,8 +380,16 @@ static bool handle_command_response(const std::string& response)
     const cJSON* command = cJSON_GetObjectItemCaseSensitive(root, "command");
     std::string cmd_id = json_string_value(command, "cmd_id");
     std::string cmd_type = json_string_value(command, "type");
+    uint32_t attempt = static_cast<uint32_t>(json_int_value(command, "attempt", 0));
+    uint32_t ttl_ms = static_cast<uint32_t>(json_int_value(command, "ttl_ms", 30000));
     ESP_LOGI(TAG, "Command received: id=%s type=%s", cmd_id.c_str(), cmd_type.c_str());
-    send_command_ack(cmd_id.c_str(), "received");
+    const CommandDedupeEntry* duplicate = command_dedupe_find(cmd_id.c_str());
+    if (duplicate != nullptr) {
+        ESP_LOGW(TAG, "Duplicate command suppressed: id=%s state=%s", cmd_id.c_str(), duplicate->state);
+        send_command_ack(cmd_id.c_str(), duplicate->state, "duplicate command", duplicate->attempt);
+        cJSON_Delete(root);
+        return true;
+    }
     if (cmd_type != "sleep" && cmd_type != "state" && cmd_type != "device_state") {
         mark_user_interaction("http command");
     }
@@ -399,12 +407,17 @@ static bool handle_command_response(const std::string& response)
         int volume = json_int_value(payload, "volume", 0);
         int speech_rate = json_int_value(payload, "speech_rate", 0);
         int pitch_rate = json_int_value(payload, "pitch_rate", 0);
+        uint32_t generation = static_cast<uint32_t>(json_int_value(payload, "generation", 0));
+        uint16_t segment_index = static_cast<uint16_t>(json_int_value(payload, "segment_index", 0));
         bool pause_listener = json_bool_value(payload, "pause_listener", false) ||
                               json_bool_value(payload, "pause_voice_listener", false);
         bool queued = enqueue_speak_command(cmd_id.c_str(), text.c_str(), cache_name.c_str(), pause_listener,
-                                            voice.c_str(), sample_rate, volume, speech_rate, pitch_rate);
+                                            voice.c_str(), sample_rate, volume, speech_rate, pitch_rate,
+                                            attempt, generation, segment_index, ttl_ms);
         if (!queued) {
-            send_command_ack(cmd_id.c_str(), "failed", "speak queue unavailable or empty text");
+            send_command_ack(cmd_id.c_str(), "failed", "speak queue unavailable or empty text", attempt);
+        } else {
+            send_command_ack(cmd_id.c_str(), "received", "", attempt);
         }
         cJSON_Delete(root);
         return queued;
@@ -412,14 +425,17 @@ static bool handle_command_response(const std::string& response)
 
     if (cmd_type == "stop") {
         request_speak_preempt("stop command");
+        const cJSON* payload = command_payload_or_self(command);
+        advance_speech_generation(static_cast<uint32_t>(json_int_value(payload, "generation", 0)));
     }
 
+    send_command_ack(cmd_id.c_str(), "received", "", attempt);
     bool ok = execute_command_object(command);
     char message[96] = {};
     if (!ok) {
         snprintf(message, sizeof(message), "command execution failed: %s", cmd_type.c_str());
     }
-    send_command_ack(cmd_id.c_str(), ok ? "done" : "failed", message);
+    send_command_ack(cmd_id.c_str(), ok ? "done" : "failed", message, attempt);
     cJSON_Delete(root);
     return ok;
 }
@@ -468,6 +484,7 @@ static void run_command_http_loop()
         if (xiaopai_boot_id == 0) {
             xiaopai_boot_id = esp_random();
         }
+        replay_pending_command_acks();
         std::string url = make_server_url("/v3/device/next-command");
         url += "?device_id=";
         url += url_encode(mac_address().c_str());

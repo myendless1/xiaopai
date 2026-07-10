@@ -142,11 +142,19 @@ class Database:
 
                     CREATE TABLE IF NOT EXISTS morrow_notices (
                       notice_id TEXT PRIMARY KEY,
+                      kind TEXT NOT NULL,
+                      timestamp_ms INTEGER NOT NULL,
                       text TEXT NOT NULL,
                       state TEXT NOT NULL,
+                      expires_at TEXT,
+                      command_id TEXT,
+                      received_at TEXT NOT NULL,
+                      rendered_at TEXT,
+                      last_error TEXT,
+                      -- keep old columns for compatibility
                       attempts INTEGER NOT NULL DEFAULT 0,
-                      created_at TEXT NOT NULL,
-                      updated_at TEXT NOT NULL,
+                      created_at TEXT NOT NULL DEFAULT '',
+                      updated_at TEXT NOT NULL DEFAULT '',
                       next_attempt_at TEXT NOT NULL DEFAULT '',
                       last_message TEXT NOT NULL DEFAULT ''
                     );
@@ -160,6 +168,7 @@ class Database:
                     """
                 )
                 self._migrate_commands(conn)
+                self._migrate_notices(conn)
                 conn.commit()
             finally:
                 conn.close()
@@ -184,3 +193,19 @@ class Database:
              WHERE source_type != '' AND source_id != ''
             """
         )
+
+    @staticmethod
+    def _migrate_notices(conn: sqlite3.Connection) -> None:
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(morrow_notices)")}
+        additions = {
+            "kind": "TEXT NOT NULL DEFAULT 'unknown'",
+            "timestamp_ms": "INTEGER NOT NULL DEFAULT 0",
+            "expires_at": "TEXT",
+            "command_id": "TEXT",
+            "received_at": "TEXT NOT NULL DEFAULT ''",
+            "rendered_at": "TEXT",
+            "last_error": "TEXT",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE morrow_notices ADD COLUMN {name} {definition}")

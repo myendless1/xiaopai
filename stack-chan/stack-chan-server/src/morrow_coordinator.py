@@ -71,13 +71,12 @@ SegmentSink = Callable[[MorrowRequest, str, int], None]
 CancelSink = Callable[[str, int], None]
 
 
-def command_store_segment_sink(command_store, *, ttl_ms: int = 30_000) -> SegmentSink:
+def command_store_segment_sink(command_store, *, ttl_ms: int = 30_000, enqueue=None) -> SegmentSink:
     """Build a sink that persists every dialogue segment before device delivery."""
     from schemas import AdmissionPolicy, CommandEnvelope, future_time_ms, new_id
 
     def persist(request: MorrowRequest, text: str, segment_index: int) -> None:
-        command_store.create_command(
-            CommandEnvelope(
+        command = CommandEnvelope(
                 cmd_id=new_id("cmd"),
                 device_id=request.device_id,
                 type="speak",
@@ -96,7 +95,9 @@ def command_store_segment_sink(command_store, *, ttl_ms: int = 30_000) -> Segmen
                 segment_index=segment_index,
                 turn_generation=request.generation,
             )
-        )
+        command_store.create_command(command)
+        if enqueue is not None:
+            enqueue(request.device_id, command.to_device_command())
 
     return persist
 
@@ -130,6 +131,13 @@ class MorrowTurnCoordinator:
         self._active: MorrowRequest | None = None
         self._generations: dict[str, int] = {}
         self._outcomes: dict[str, TurnOutcome] = {}
+        self.metrics = {
+            "morrow_turn_submitted_total": 0,
+            "morrow_turn_rejected_total": 0,
+            "morrow_turn_timeout_total": 0,
+            "morrow_first_delta_latency_ms": 0.0,
+            "morrow_first_speech_command_latency_ms": 0.0,
+        }
 
     @property
     def active_request_id(self) -> str:
@@ -248,10 +256,14 @@ class MorrowTurnCoordinator:
         final_message = ""
         deadline = self.clock() + self.turn_timeout
         try:
+            self._discard_stale_connection_events()
             self.client.start_turn(request.request_id, request.prompt)
+            self.metrics["morrow_turn_submitted_total"] += 1
+            submitted_at = self.clock()
             while not self._stop.is_set():
                 timeout = deadline - self.clock()
                 if timeout <= 0:
+                    self.metrics["morrow_turn_timeout_total"] += 1
                     self._finish(outcome, "timeout")
                     return
                 try:
@@ -262,6 +274,8 @@ class MorrowTurnCoordinator:
                     event_type = str(event.data.get("type") or "")
                     text = str(event.data.get("data") or "")
                     if event_type == "text_delta":
+                        if not saw_delta:
+                            self.metrics["morrow_first_delta_latency_ms"] = (self.clock() - submitted_at) * 1000
                         saw_delta = True
                         outcome.state = "streaming"
                         self._deliver(request, outcome, segmenter.feed(text))
@@ -275,6 +289,7 @@ class MorrowTurnCoordinator:
                     self._finish(outcome, "saved")
                     return
                 if event.type == "turn_rejected":
+                    self.metrics["morrow_turn_rejected_total"] += 1
                     data = event.data if isinstance(event.data, dict) else {}
                     event_request_id = str(data.get("request_id") or "")
                     if event_request_id and event_request_id != request.request_id:
@@ -284,6 +299,10 @@ class MorrowTurnCoordinator:
                 if event.type == "error":
                     data = event.data if isinstance(event.data, dict) else {}
                     self._finish(outcome, "error", str(data.get("message") or ""))
+                    return
+                if event.type == "disconnected":
+                    data = event.data if isinstance(event.data, dict) else {}
+                    self._finish(outcome, "disconnected", str(data.get("message") or ""))
                     return
         except Exception as exc:
             self._finish(outcome, "disconnected", str(exc))
@@ -296,6 +315,8 @@ class MorrowTurnCoordinator:
         if self._is_stale(request):
             return
         for segment in segments:
+            if outcome.segment_count == 0:
+                self.metrics["morrow_first_speech_command_latency_ms"] = (self.clock() - request.created_at) * 1000
             self.segment_sink(request, segment, outcome.segment_count)
             outcome.segment_count += 1
 
@@ -303,6 +324,18 @@ class MorrowTurnCoordinator:
         with self._lock:
             generation = self._generations.get(request.device_id, 0)
         return request.generation != generation or self.clock() >= request.expires_at
+
+    def _discard_stale_connection_events(self) -> None:
+        retained: list[MorrowEvent] = []
+        while True:
+            try:
+                event = self.client.events.get_nowait()
+            except queue.Empty:
+                break
+            if event.type not in {"snapshot", "robot_notice", "disconnected"}:
+                retained.append(event)
+        for event in retained:
+            self.client.events.put_nowait(event)
 
     @staticmethod
     def _finish(outcome: TurnOutcome, state: str, message: str = "") -> None:

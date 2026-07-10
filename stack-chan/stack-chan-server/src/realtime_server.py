@@ -14,13 +14,10 @@ from urllib.parse import parse_qs, urlparse
 
 from aliyun_streaming_asr import AliyunStreamingAsrSession, build_stop_transcription, parse_asr_event
 from aliyun_streaming_tts import AliyunStreamingTtsClient, split_sentences
-from mcp_client import McpRequestTracker, command_to_mcp_calls
-from openclaw_agent import OpenClawAgent
 from opus_codec import OpusCodec, OpusUnavailableError
 from xiaozhi_protocol import (
     build_hello,
     build_llm,
-    build_mcp_tools_call,
     build_stt,
     build_tts_state,
     extract_device_id_from_hello,
@@ -180,18 +177,13 @@ class RealtimeConfig:
     speech_rate: int = 0
     pitch_rate: int = 0
     max_sentence_chars: int = 120
-    openclaw_base_url: str = ""
-    openclaw_token: str = ""
-    openclaw_model: str = "openclaw/default"
-    openclaw_backend_model: str = ""
-    openclaw_timeout: int = 45
-    openclaw_session_prefix: str = "xiaopai"
-    openclaw_max_completion_tokens: int = 512
     audio_capture_dir: str = ""
     save_audio_uploads: bool = True
     recording_callback: Callable[[dict], None] | None = None
     command_callback: Callable[[str, dict], bool] | None = None
     device_connected_callback: Callable[[str], None] | None = None
+    morrow_submit_callback: Callable[[str, str], object] | None = None
+    morrow_cancel_callback: Callable[[str], object] | None = None
     debug: bool = False
 
 
@@ -485,17 +477,7 @@ class RealtimeManager:
         self._startup_error: BaseException | None = None
         self._sessions: dict[str, RealtimeDeviceSession] = {}
         self._sessions_lock = threading.Lock()
-        self._mcp_tracker = McpRequestTracker()
         self._opus = OpusCodec(sample_rate=config.sample_rate)
-        self._openclaw = OpenClawAgent(
-            base_url=config.openclaw_base_url,
-            token=config.openclaw_token,
-            model=config.openclaw_model,
-            backend_model=config.openclaw_backend_model,
-            timeout=config.openclaw_timeout,
-            session_prefix=config.openclaw_session_prefix,
-            max_completion_tokens=config.openclaw_max_completion_tokens,
-        )
         self._pcm_bytes_per_frame = self._opus.samples_per_frame * self._opus.channels * 2
 
     @property
@@ -577,26 +559,6 @@ class RealtimeManager:
                 return True
             return bool(self._sessions and device_id in ("", "default"))
 
-    def enqueue_command(self, device_id: str, command: dict) -> bool:
-        if self._loop is None:
-            return False
-        future = asyncio.run_coroutine_threadsafe(self._send_command(device_id, command), self._loop)
-        try:
-            return bool(future.result(timeout=1.5))
-        except Exception as exc:
-            self.logger(f"实时命令分发失败: {exc}")
-            return False
-
-    def set_device_state(self, device_id: str, state: str) -> bool:
-        if self._loop is None:
-            return False
-        future = asyncio.run_coroutine_threadsafe(self._set_device_state(device_id, state), self._loop)
-        try:
-            return bool(future.result(timeout=1.5))
-        except Exception as exc:
-            self.logger(f"实时设备状态分发失败: {exc}")
-            return False
-
     def notify_asr_bridge_finished(self, device_id: str, session_id: str, bridge: RealtimeAsrBridge) -> None:
         if self._loop is None:
             return
@@ -618,57 +580,6 @@ class RealtimeManager:
             session.asr_bridge = None
             session.listen_active = False
             self.logger(f"实时 ASR 会话已清理: device={device_id} session_id={session_id}")
-
-    async def _set_device_state(self, device_id: str, state: str) -> bool:
-        session = self._select_session(device_id)
-        if session is None:
-            return False
-        await self._send_device_state(session, state)
-        return True
-
-    async def _send_command(self, device_id: str, command: dict) -> bool:
-        session = self._select_session(device_id)
-        if session is None:
-            return False
-        if command.get("interrupt"):
-            await self._abort_session_tts(session)
-        if command.get("type") in ("check_ota", "ota_check", "firmware_ota"):
-            await session.websocket.send(
-                json_dumps({"type": "command", "command": command, "session_id": session.session_id})
-            )
-            return True
-        if command.get("type") in ("state", "device_state"):
-            payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
-            state = str(payload.get("state") or payload.get("name") or "waiting")
-            await self._send_device_state(session, state)
-            return True
-        if command.get("type") == "speak":
-            payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
-            await self._speak(
-                session,
-                str(payload.get("text") or ""),
-                cache_name=str(payload.get("cache_name") or ""),
-                pause_listener=bool(payload.get("pause_listener", payload.get("pause_voice_listener", True))),
-                tts_options={
-                    key: payload[key]
-                    for key in ("voice", "sample_rate", "volume", "speech_rate", "pitch_rate")
-                    if key in payload and payload[key] not in (None, "")
-                },
-                interrupt=bool(command.get("interrupt")),
-                coalesce_key=str(command.get("coalesce_key") or "realtime_speak"),
-                ttl_seconds=float(command.get("ttl_seconds") or 8.0),
-            )
-            return True
-        return await self._send_mcp_command(session, command)
-
-    async def _send_mcp_command(self, session: RealtimeDeviceSession, command: dict) -> bool:
-        sent = False
-        for call in command_to_mcp_calls(command):
-            request_id = make_request_id("mcp")
-            self._mcp_tracker.add(request_id, device_id=session.device_id, tool_name=call.name, command_id=command.get("cmd_id", ""))
-            await session.websocket.send(json_dumps(build_mcp_tools_call(call.name, call.arguments, request_id=request_id)))
-            sent = True
-        return sent
 
     def _select_session(self, device_id: str) -> RealtimeDeviceSession | None:
         with self._sessions_lock:
@@ -834,6 +745,11 @@ class RealtimeManager:
         message_type = message.get("type")
         if message_type == "abort":
             await self._abort_session_tts(session)
+            if self.config.morrow_cancel_callback is not None:
+                try:
+                    self.config.morrow_cancel_callback(session.device_id)
+                except Exception as exc:
+                    self.logger(f"实时 stop 取消 Morrow 失败: device={session.device_id} error={exc}")
             return
         if message_type == "listen":
             state = str(message.get("state") or "")
@@ -843,11 +759,6 @@ class RealtimeManager:
             elif state == "stop":
                 session.listen_active = False
                 self._stop_asr(session)
-            return
-        if message_type == "mcp":
-            payload = message.get("payload") if isinstance(message.get("payload"), dict) else {}
-            if "id" in payload:
-                self._mcp_tracker.pop(str(payload["id"]))
             return
         if message_type == "stt":
             text = str(message.get("text") or "")
@@ -923,59 +834,15 @@ class RealtimeManager:
             self._mark(session, "dialog_sleeping_ignore")
             await self._send_device_state(session, "sleep")
             return
-        if not self._openclaw.enabled:
-            # Temporarily disabled: stay silent instead of fallback speech.
-            return
-        try:
-            self._mark(session, "openclaw_start")
-            await self._send_device_state(session, "waiting")
-            spoken = await self._speak_openclaw_stream(session, text)
-            self._mark(session, "openclaw_done")
-        except Exception as exc:
-            self.logger(f"OpenClaw 实时对话失败: {exc}")
-            # Temporarily disabled: stay silent instead of fallback speech.
-            return
-        if spoken:
-            self.logger(f"实时 Morrow 回复已加入播放队列: segments={spoken}")
-
-    def _iter_openclaw_speech_segments(self, device_id: str, text: str):
-        if hasattr(self._openclaw, "chat_stream"):
-            yield from self._openclaw.chat_stream(device_id, text)
-            return
-        reply = self._openclaw.chat(device_id, text)
-        if reply:
-            yield reply
-
-    async def _speak_openclaw_stream(self, session: RealtimeDeviceSession, text: str) -> int:
-        loop = asyncio.get_running_loop()
-        iterator = self._iter_openclaw_speech_segments(session.device_id, text)
-        done = object()
-
-        def next_segment():
+        if self.config.morrow_submit_callback is not None:
             try:
-                return next(iterator)
-            except StopIteration:
-                return done
-
-        spoken = 0
-        while True:
-            segment = await loop.run_in_executor(None, next_segment)
-            if segment is done:
-                break
-            segment_text = str(segment or "").strip()
-            if not segment_text or speech_text_is_temporarily_suppressed(segment_text):
-                continue
-            spoken += 1
-            await self._speak(
-                session,
-                segment_text,
-                interrupt=spoken == 1,
-                coalesce_key=f"realtime_morrow_speak:{session.session_id}:{spoken}",
-                ttl_seconds=60.0,
-            )
-            if spoken == 1:
-                self._mark(session, "openclaw_first_segment")
-        return spoken
+                self._mark(session, "morrow_submit")
+                await self._send_device_state(session, "waiting")
+                self.config.morrow_submit_callback(session.device_id, text)
+                self.logger(f"实时 ASR 已提交全局 Morrow 队列: device={session.device_id}")
+            except Exception as exc:
+                self.logger(f"实时 ASR 提交 Morrow 失败: {exc}")
+            return
 
     async def _speak(
         self,
@@ -1026,18 +893,7 @@ class RealtimeManager:
                     return
             except Exception as exc:
                 self.logger(f"实时语音命令回调失败: {exc}")
-        command = {
-            "cmd_id": make_request_id("cmd"),
-            "type": "sequence",
-            "payload": [
-                speak_step,
-                {"type": "face", "expression": "calm"},
-            ],
-        }
-        if await self._send_mcp_command(session, command):
-            self._mark(session, "device_speak_command_sent")
-        else:
-            self.logger(f"实时语音命令未发送: device_id={session.device_id}")
+        self.logger(f"实时语音命令未入队：HTTP command callback 不可用 device_id={session.device_id}")
 
     async def _abort_session_tts(self, session: RealtimeDeviceSession) -> None:
         task = session.tts_task

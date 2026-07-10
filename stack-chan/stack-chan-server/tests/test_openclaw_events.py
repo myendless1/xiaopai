@@ -11,14 +11,9 @@ sys.path.insert(0, str(ROOT / "src"))
 import server  # noqa: E402
 
 
-class OpenClawEventContentTest(unittest.TestCase):
-    def test_openclaw_prompt_is_voice_first(self):
-        self.assertIn("输出默认面向语音播报", server.XIAOPAI_OPENCLAW_SYSTEM_PROMPT)
-        self.assertIn("不要使用 Markdown 表格", server.XIAOPAI_OPENCLAW_SYSTEM_PROMPT)
-        self.assertIn("消化成适合朗读的总结", server.XIAOPAI_OPENCLAW_SYSTEM_PROMPT)
-
+class MorrowEventContentTest(unittest.TestCase):
     def test_speech_recognition_uses_recognized_text_as_content(self):
-        content = server.build_openclaw_event_content(
+        content = server.build_morrow_event_content(
             "44:1b:f6:e4:83:8c",
             "speech_recognition",
             {
@@ -31,10 +26,9 @@ class OpenClawEventContentTest(unittest.TestCase):
 
         self.assertEqual(content, "帮我看一下今天日程")
         self.assertNotIn("{", content)
-        self.assertNotIn("openclaw.stackchan.event.v1", content)
 
     def test_non_touch_device_event_uses_plain_text_summary(self):
-        content = server.build_openclaw_event_content(
+        content = server.build_morrow_event_content(
             "robot-001",
             "button_press",
             {
@@ -46,8 +40,8 @@ class OpenClawEventContentTest(unittest.TestCase):
         self.assertEqual(content, "小派设备事件：设备 robot-001，事件类型 button_press，事件名称 side_button。")
         self.assertNotIn("{", content)
 
-    def test_openclaw_event_content_is_plain_text(self):
-        content = server.build_openclaw_event_content(
+    def test_morrow_event_content_is_plain_text(self):
+        content = server.build_morrow_event_content(
             "robot-001",
             "speech_recognition",
             {"text": "你好", "task_id": "task-456"},
@@ -146,55 +140,32 @@ class CommandPayloadTest(unittest.TestCase):
         self.assertNotIn("sedentary_reminder_stretch", server.HEAD_TOUCH_EVENT_TEXT)
 
 
-class OpenClawWaitingStateTest(unittest.TestCase):
-    def test_send_openclaw_event_enters_waiting_before_async_call(self):
-        class FakeExecutor:
+class MorrowWaitingStateTest(unittest.TestCase):
+    def test_production_path_submits_global_morrow_coordinator(self):
+        class FakeCoordinator:
             def __init__(self):
                 self.submitted = []
 
-            def submit(self, fn):
-                self.submitted.append(fn)
+            def submit(self, content, device_id, source):
+                self.submitted.append((content, device_id, source))
+                return type("Outcome", (), {"request_id": "req-global"})()
 
-        class FakeServer:
-            openclaw_base_url = "http://openclaw"
-            openclaw_token = "token"
-            openclaw_executor = FakeExecutor()
-
+        coordinator = FakeCoordinator()
         handler = object.__new__(server.Handler)
-        handler.server = FakeServer()
-        handler._log_info = lambda _msg: None
-        handler._log_debug = lambda _msg: None
-        handler._log_error = lambda _msg: None
-        handler._enter_openclaw_waiting = lambda device_id, event_type: [f"waiting:{device_id}:{event_type}"]
-        handler._call_openclaw = lambda device_id, event_type, details: None
+        handler.server = type(
+            "FakeServer",
+            (),
+            {"morrow_coordinator": coordinator},
+        )()
+        handler._enter_morrow_waiting = lambda _device_id, _event_type: ["waiting"]
+        handler._log_info = lambda _message: None
+        handler._log_error = lambda _message: None
 
-        result = handler._send_openclaw_event("dev1", "speech_recognition", {"text": "你好"})
+        result = handler._send_morrow_event("dev1", "speech_recognition", {"text": "今天日程"})
 
-        self.assertTrue(result["openclaw_sent"])
-        self.assertEqual(result["queued_commands"], ["waiting:dev1:speech_recognition"])
-        self.assertEqual(len(handler.server.openclaw_executor.submitted), 1)
-
-    def test_call_openclaw_queues_streaming_speech_segments(self):
-        class FakeAgent:
-            def chat_stream(self, device_id, text):
-                yield "你好，"
-                yield "今天有两个安排。"
-
-        handler = object.__new__(server.Handler)
-        handler.server = type("FakeServer", (), {})()
-        queued = []
-        handler._new_openclaw_agent = lambda: FakeAgent()
-        handler._enqueue_command = lambda device_id, command: queued.append((device_id, command)) or True
-        handler._log_info = lambda _msg: None
-        handler._log_debug = lambda _msg: None
-        handler._log_error = lambda _msg: None
-
-        handler._call_openclaw("dev1", "speech_recognition", {"text": "今天有什么安排"})
-
-        self.assertEqual([item[1]["payload"]["text"] for item in queued], ["你好，", "今天有两个安排。"])
-        self.assertTrue(queued[0][1]["interrupt"])
-        self.assertFalse(queued[1][1]["interrupt"])
-        self.assertNotEqual(queued[0][1]["coalesce_key"], queued[1][1]["coalesce_key"])
+        self.assertEqual(coordinator.submitted, [("今天日程", "dev1", "voice")])
+        self.assertTrue(result["morrow_submitted"])
+        self.assertEqual(result["morrow_request_id"], "req-global")
 
 
 class CommandRoutingTest(unittest.TestCase):
@@ -245,15 +216,15 @@ class CommandRoutingTest(unittest.TestCase):
         self.assertEqual(handler.server.realtime_manager.sent, [])
         self.assertEqual(handler._queue_for(device_id).get_nowait()["cmd_id"], command["cmd_id"])
 
-    def test_realtime_device_is_used_when_http_poll_is_not_online(self):
+    def test_realtime_connected_device_still_uses_http_command_queue(self):
         handler = self.make_handler()
         device_id = "44:1b:f6:e4:83:8c"
         command = server.make_command("face", {"expression": "shy"})
 
         self.assertTrue(handler._enqueue_command(device_id, command))
 
-        self.assertEqual(handler.server.realtime_manager.sent, [(device_id, command)])
-        self.assertEqual(handler._queue_for(device_id).qsize(), 0)
+        self.assertEqual(handler.server.realtime_manager.sent, [])
+        self.assertEqual(handler._queue_for(device_id).get_nowait()["cmd_id"], command["cmd_id"])
 
     def test_http_online_device_state_uses_http_command_queue_before_realtime(self):
         handler = self.make_handler()
@@ -270,7 +241,7 @@ class CommandRoutingTest(unittest.TestCase):
 
 
 class DeviceEventForwardingTest(unittest.TestCase):
-    def make_handler(self, openclaw_enabled=True):
+    def make_handler(self, morrow_enabled=True):
         handler = object.__new__(server.Handler)
         sent_bodies = []
         enqueued_commands = []
@@ -278,18 +249,18 @@ class DeviceEventForwardingTest(unittest.TestCase):
 
         handler._send_json = lambda body, status=server.HTTPStatus.OK: sent_bodies.append((body, status))
         handler._mark_device_seen = lambda device_id: None
-        handler._openclaw_enabled = lambda: openclaw_enabled
+        handler.server = type("FakeServer", (), {"morrow_coordinator": object() if morrow_enabled else None})()
         handler._enqueue_command = lambda device_id, command: enqueued_commands.append((device_id, command))
 
-        def send_openclaw_event(device_id, event_type, details):
+        def send_morrow_event(device_id, event_type, details):
             forwarded_events.append((device_id, event_type, details))
-            return {"openclaw_enabled": True, "openclaw_sent": True, "queued_commands": []}
+            return {"morrow_enabled": True, "morrow_submitted": True, "queued_commands": []}
 
-        handler._send_openclaw_event = send_openclaw_event
+        handler._send_morrow_event = send_morrow_event
         return handler, sent_bodies, enqueued_commands, forwarded_events
 
-    def test_head_touch_uses_local_shortcut_even_when_openclaw_enabled(self):
-        handler, sent_bodies, enqueued_commands, forwarded_events = self.make_handler(openclaw_enabled=True)
+    def test_head_touch_uses_local_shortcut_even_when_morrow_enabled(self):
+        handler, sent_bodies, enqueued_commands, forwarded_events = self.make_handler(morrow_enabled=True)
 
         handler._handle_device_event(
             {"device_id": ["robot-001"], "type": ["head_touch"], "name": ["click"]},
@@ -300,12 +271,12 @@ class DeviceEventForwardingTest(unittest.TestCase):
         self.assertEqual(len(enqueued_commands), 1)
         self.assertEqual(enqueued_commands[0][1]["type"], "face")
         body, _status = sent_bodies[-1]
-        self.assertEqual(body["openclaw_skipped"], "local_head_touch_expression")
-        self.assertFalse(body["openclaw_sent"])
+        self.assertEqual(body["morrow_skipped"], "local_head_touch_expression")
+        self.assertFalse(body["morrow_submitted"])
         self.assertEqual(len(body["queued_commands"]), 1)
 
-    def test_head_touch_keeps_local_shortcut_when_openclaw_disabled(self):
-        handler, sent_bodies, enqueued_commands, forwarded_events = self.make_handler(openclaw_enabled=False)
+    def test_head_touch_keeps_local_shortcut_when_morrow_disabled(self):
+        handler, sent_bodies, enqueued_commands, forwarded_events = self.make_handler(morrow_enabled=False)
 
         handler._handle_device_event(
             {"device_id": ["robot-001"], "type": ["head_touch"], "name": ["click"]},
@@ -316,7 +287,7 @@ class DeviceEventForwardingTest(unittest.TestCase):
         self.assertEqual(len(enqueued_commands), 1)
         self.assertEqual(enqueued_commands[0][1]["type"], "face")
         body, _status = sent_bodies[-1]
-        self.assertEqual(body["openclaw_skipped"], "local_head_touch_expression")
+        self.assertEqual(body["morrow_skipped"], "local_head_touch_expression")
         self.assertEqual(len(body["queued_commands"]), 1)
 
 

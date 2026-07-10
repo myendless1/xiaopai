@@ -39,7 +39,7 @@ menu "Xiaopai settings"
 
     config STACKCHAN_TTS_VOLUME
         int "TTS volume"
-        default 180
+        default 13
         range 0 255
 
     config STACKCHAN_TTS_MAX_BYTES
@@ -79,7 +79,7 @@ menu "Xiaopai settings"
 
     config STACKCHAN_AUDIO_OUTPUT_VOLUME_DEFAULT
         int "Default output volume percent"
-        default 70
+        default 5
         range 0 100
 
     config STACKCHAN_RECORD_CHUNK_MS

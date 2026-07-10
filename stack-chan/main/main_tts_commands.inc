@@ -3,7 +3,8 @@ struct PcmPlaybackStats {
     size_t played_samples = 0;
 };
 
-static bool stream_pcm_url(const std::string& url, const char* label, bool update_tts_status)
+static bool stream_pcm_url(const std::string& url, const char* label, bool update_tts_status,
+                           const std::string* post_body = nullptr)
 {
     ESP_LOGI(TAG, "Stream PCM URL: %s", url.c_str());
     if (update_tts_status) {
@@ -12,7 +13,7 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
 
     esp_http_client_config_t config = {};
     config.url = url.c_str();
-    config.method = HTTP_METHOD_GET;
+    config.method = post_body != nullptr ? HTTP_METHOD_POST : HTTP_METHOD_GET;
     config.timeout_ms = 60000;
     config.buffer_size = kHttpBufferSize;
     config.buffer_size_tx = kHttpBufferSize;
@@ -26,7 +27,10 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
     }
 
     esp_http_client_set_header(client, "Accept", "application/octet-stream");
-    esp_err_t err = esp_http_client_open(client, 0);
+    if (post_body != nullptr) {
+        esp_http_client_set_header(client, "Content-Type", "application/json");
+    }
+    esp_err_t err = esp_http_client_open(client, post_body != nullptr ? post_body->size() : 0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Stream PCM open failed: %s", esp_err_to_name(err));
         if (update_tts_status) {
@@ -34,6 +38,16 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
         }
         esp_http_client_cleanup(client);
         return false;
+    }
+    if (post_body != nullptr) {
+        int written = esp_http_client_write(client, post_body->c_str(), post_body->size());
+        if (written != static_cast<int>(post_body->size())) {
+            ESP_LOGE(TAG, "Stream PCM POST short write: written=%d expected=%u", written,
+                     static_cast<unsigned>(post_body->size()));
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            return false;
+        }
     }
 
     int content_length = esp_http_client_fetch_headers(client);
@@ -56,7 +70,8 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
 
     PcmPlaybackStats playback;
 
-    std::vector<std::vector<int16_t>> buffers(3, std::vector<int16_t>(kTtsStreamBufferSamples));
+    // One speech task owns this fixed pool while audio_mutex is held; avoid per-stream heap churn.
+    static int16_t buffers[3][kTtsStreamBufferSamples] = {};
     int buffer_index = 0;
     size_t sample_pos = 0;
     uint8_t pending_byte = 0;
@@ -77,14 +92,14 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
                 peak_sample = abs_sample;
             }
         }
-        update_speaking_light_level(buffers[buffer_index].data(), sample_pos);
-        bool ok = audio_service_play_pcm_16k(buffers[buffer_index].data(), sample_pos,
+        update_speaking_light_level(buffers[buffer_index], sample_pos);
+        bool ok = audio_service_play_pcm_16k(buffers[buffer_index], sample_pos,
                                              AudioPlayOptions{.wait = true, .drop_oldest = false});
         if (ok) {
             ++playback.queued_chunks;
             playback.played_samples += sample_pos;
         }
-        buffer_index = (buffer_index + 1) % buffers.size();
+        buffer_index = (buffer_index + 1) % 3;
         sample_pos = 0;
         return ok;
     };
@@ -178,11 +193,24 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
 }
 
 static bool stream_tts_pcm_for_text(const char* text, const char* voice = nullptr, int sample_rate = 0, int volume = 0,
-                                    int speech_rate = 0, int pitch_rate = 0)
+                                    int speech_rate = 0, int pitch_rate = 0, const char* cmd_id = "")
 {
-    std::string url = make_stream_tts_url_for_text(text, voice, sample_rate, volume, speech_rate, pitch_rate);
-    ESP_LOGI(TAG, "Stream TTS URL: %s", url.c_str());
-    return stream_pcm_url(url, text, true);
+    std::string url = make_server_url("/v3/tts");
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "device_id", mac_address().c_str());
+    cJSON_AddStringToObject(root, "cmd_id", cmd_id != nullptr ? cmd_id : "");
+    cJSON_AddStringToObject(root, "text", text != nullptr ? text : "");
+    cJSON_AddStringToObject(root, "voice", voice != nullptr && voice[0] != '\0' ? voice : "default");
+    cJSON_AddNumberToObject(root, "sample_rate", sample_rate > 0 ? sample_rate : kTtsStreamSampleRate);
+    if (volume != 0) cJSON_AddNumberToObject(root, "volume", volume);
+    if (speech_rate != 0) cJSON_AddNumberToObject(root, "speech_rate", speech_rate);
+    if (pitch_rate != 0) cJSON_AddNumberToObject(root, "pitch_rate", pitch_rate);
+    char* encoded = cJSON_PrintUnformatted(root);
+    std::string body = encoded != nullptr ? encoded : "{}";
+    if (encoded != nullptr) cJSON_free(encoded);
+    cJSON_Delete(root);
+    ESP_LOGI(TAG, "Stream TTS POST: %s cmd_id=%s", url.c_str(), cmd_id != nullptr ? cmd_id : "");
+    return stream_pcm_url(url, text, true, &body);
 }
 
 static bool stream_cached_reply_pcm(const char* cache_name, const char* label)
@@ -360,13 +388,59 @@ static bool json_bool_value(const cJSON* root, const char* key, bool default_val
     return default_value;
 }
 
-static bool send_command_ack(const char* cmd_id, const char* status, const char* message = "")
+static const CommandDedupeEntry* command_dedupe_find(const char* cmd_id)
+{
+    if (cmd_id == nullptr || cmd_id[0] == '\0') {
+        return nullptr;
+    }
+    for (const auto& entry : command_dedupe_entries) {
+        if (entry.cmd_id[0] != '\0' && strcmp(entry.cmd_id, cmd_id) == 0) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
+static CommandDedupeEntry* command_dedupe_update(const char* cmd_id, const char* state, uint32_t attempt)
+{
+    if (cmd_id == nullptr || cmd_id[0] == '\0') {
+        return nullptr;
+    }
+    CommandDedupeEntry* target = nullptr;
+    for (auto& entry : command_dedupe_entries) {
+        if (entry.cmd_id[0] != '\0' && strcmp(entry.cmd_id, cmd_id) == 0) {
+            target = &entry;
+            break;
+        }
+        if (target == nullptr && entry.cmd_id[0] == '\0') {
+            target = &entry;
+        }
+    }
+    if (target == nullptr) {
+        target = &command_dedupe_entries[0];
+        for (auto& entry : command_dedupe_entries) {
+            if (entry.sequence < target->sequence) {
+                target = &entry;
+            }
+        }
+    }
+    snprintf(target->cmd_id, sizeof(target->cmd_id), "%s", cmd_id);
+    snprintf(target->state, sizeof(target->state), "%s", state != nullptr ? state : "received");
+    target->attempt = attempt;
+    target->sequence = ++command_dedupe_sequence;
+    target->ack_pending = true;
+    return target;
+}
+
+static bool send_command_ack(const char* cmd_id, const char* status, const char* message = "",
+                             uint32_t attempt = 0, uint32_t started_at_tick = 0)
 {
     if (xiaopai_boot_id == 0) {
         xiaopai_boot_id = esp_random();
     }
     const uint32_t ack_seq = ++command_ack_seq;
     const char* state = status != nullptr ? status : "received";
+    CommandDedupeEntry* dedupe_entry = command_dedupe_update(cmd_id, state, attempt);
     std::string v3_url = make_server_url("/v3/command_ack");
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "command_ack");
@@ -374,10 +448,10 @@ static bool send_command_ack(const char* cmd_id, const char* status, const char*
     cJSON_AddStringToObject(root, "device_id", mac_address().c_str());
     cJSON_AddNumberToObject(root, "boot_id", xiaopai_boot_id);
     cJSON_AddStringToObject(root, "cmd_id", cmd_id != nullptr ? cmd_id : "");
-    cJSON_AddNumberToObject(root, "attempt", 0);
+    cJSON_AddNumberToObject(root, "attempt", attempt);
     cJSON_AddStringToObject(root, "state", state);
     cJSON_AddStringToObject(root, "effect", strcmp(state, "rendered") == 0 ? "speech_played" : "");
-    cJSON_AddNumberToObject(root, "started_at_tick", 0);
+    cJSON_AddNumberToObject(root, "started_at_tick", started_at_tick);
     cJSON_AddNumberToObject(root, "finished_at_tick", static_cast<double>(esp_timer_get_time() / 1000));
     cJSON_AddStringToObject(root, "message", message != nullptr ? message : "");
     char* encoded = cJSON_PrintUnformatted(root);
@@ -389,22 +463,25 @@ static bool send_command_ack(const char* cmd_id, const char* status, const char*
 
     std::string v3_response;
     if (http_post_json_string(v3_url, body, &v3_response, 5000)) {
+        if (dedupe_entry != nullptr) {
+            dedupe_entry->ack_pending = false;
+        }
         return true;
     }
 
-    std::string url = make_server_url("/device/ack");
-    url += "?device_id=";
-    url += url_encode(mac_address().c_str());
-    url += "&cmd_id=";
-    url += url_encode(cmd_id != nullptr ? cmd_id : "");
-    url += "&status=";
-    url += url_encode(status != nullptr ? status : "received");
-    if (message != nullptr && message[0] != '\0') {
-        url += "&message=";
-        url += url_encode(message);
+    return false;
+}
+
+static void replay_pending_command_acks()
+{
+    for (auto& entry : command_dedupe_entries) {
+        if (!entry.ack_pending || entry.cmd_id[0] == '\0') {
+            continue;
+        }
+        ESP_LOGI(TAG, "Replaying command ACK: id=%s state=%s attempt=%u",
+                 entry.cmd_id, entry.state, entry.attempt);
+        send_command_ack(entry.cmd_id, entry.state, "ack replay", entry.attempt);
     }
-    std::string response;
-    return http_get_string(url, &response, 5000);
 }
 
 static uint8_t light_bar_level_from_abs(int32_t level, int silence_level, int full_scale_level)
@@ -513,9 +590,20 @@ static void request_speak_preempt(const char* reason)
     ESP_LOGI(TAG, "Speak preempt requested: %s", reason != nullptr ? reason : "unspecified");
 }
 
+static void advance_speech_generation(uint32_t generation)
+{
+    speech_command_generation = generation > speech_command_generation
+        ? generation
+        : speech_command_generation + 1;
+    if (speak_command_queue != nullptr) {
+        xQueueReset(speak_command_queue);
+    }
+    ESP_LOGI(TAG, "Speech generation advanced: generation=%u", speech_command_generation);
+}
+
 static bool execute_speak_command_internal(const char* text, bool pause_voice_listener, const char* cache_name,
                                            const char* voice, int sample_rate, int volume, int speech_rate,
-                                           int pitch_rate)
+                                           int pitch_rate, const char* cmd_id)
 {
     if (text == nullptr || text[0] == '\0') {
         return true;
@@ -554,7 +642,7 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
     const char* selected_cache_name = cache_name != nullptr && cache_name[0] != '\0' ? cache_name : "";
     bool ok = selected_cache_name[0] != '\0' ? stream_cached_reply_pcm(selected_cache_name, text)
                                              : stream_tts_pcm_for_text(text, voice, sample_rate, volume, speech_rate,
-                                                                       pitch_rate);
+                                                                       pitch_rate, cmd_id);
     bool current_completion = xiaopai_job_is_current(playback_job, xTaskGetTickCount());
     if (!current_completion) {
         ESP_LOGI(TAG, "Discarding stale speak completion: generation or cancellation changed");
@@ -585,14 +673,28 @@ static void wait_for_voice_recording_to_finish()
 }
 
 static bool enqueue_speak_command(const char* cmd_id, const char* text, const char* cache_name, bool pause_voice_listener,
-                                  const char* voice, int sample_rate, int volume, int speech_rate, int pitch_rate)
+                                  const char* voice, int sample_rate, int volume, int speech_rate, int pitch_rate,
+                                  uint32_t attempt, uint32_t generation, uint16_t segment_index,
+                                  uint32_t ttl_ms)
 {
     if (speak_command_queue == nullptr || text == nullptr || text[0] == '\0') {
         return false;
     }
 
     SpeakCommandItem item = {};
+    const bool server_command = cmd_id != nullptr && cmd_id[0] != '\0';
+    if (server_command && generation < speech_command_generation) {
+        ESP_LOGW(TAG, "Rejecting stale speak generation=%u current=%u", generation, speech_command_generation);
+        return false;
+    }
+    if (server_command && generation > speech_command_generation) {
+        speech_command_generation = generation;
+    }
     snprintf(item.cmd_id, sizeof(item.cmd_id), "%s", cmd_id != nullptr ? cmd_id : "");
+    item.attempt = attempt;
+    item.generation = server_command ? generation : speech_command_generation;
+    item.segment_index = segment_index;
+    item.deadline_tick = xTaskGetTickCount() + pdMS_TO_TICKS(ttl_ms);
     snprintf(item.text, sizeof(item.text), "%s", text);
     snprintf(item.cache_name, sizeof(item.cache_name), "%s", cache_name != nullptr ? cache_name : "");
     snprintf(item.voice, sizeof(item.voice), "%s", voice != nullptr ? voice : "");
@@ -618,13 +720,21 @@ static void run_speak_command_loop()
         }
 
         wait_for_voice_recording_to_finish();
+        if (static_cast<int32_t>(xTaskGetTickCount() - item.deadline_tick) >= 0) {
+            send_command_ack(item.cmd_id, "expired", "speak deadline expired", item.attempt);
+            continue;
+        }
         supervisor_set_app2_stop_requested(false, "speak command loop");
         speak_command_active = true;
+        uint32_t started_at_tick = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+        send_command_ack(item.cmd_id, "running", "", item.attempt, started_at_tick);
         bool ok = execute_speak_command_internal(item.text, item.pause_voice_listener, item.cache_name, item.voice,
-                                                 item.sample_rate, item.volume, item.speech_rate, item.pitch_rate);
+                                                 item.sample_rate, item.volume, item.speech_rate, item.pitch_rate,
+                                                 item.cmd_id);
         speak_command_active = false;
         if (item.cmd_id[0] != '\0') {
-            send_command_ack(item.cmd_id, ok ? "rendered" : "failed", ok ? "" : "speak command interrupted or failed");
+            send_command_ack(item.cmd_id, ok ? "rendered" : "failed",
+                             ok ? "" : "speak command interrupted or failed", item.attempt, started_at_tick);
         }
     }
 }

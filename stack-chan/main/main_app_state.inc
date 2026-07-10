@@ -118,10 +118,10 @@ static constexpr uint32_t kScreenTouchTaskStackBytes = 6 * 1024;
 static constexpr uint32_t kScreenTouchAudioTaskStackBytes = 16 * 1024;
 static constexpr uint32_t kSpeakCommandTaskStackBytes = 12 * 1024;
 static constexpr uint32_t kMemoryMonitorTaskStackBytes = 4 * 1024;
-static constexpr size_t kSpeakCommandMaxTextBytes = 512;
+static constexpr size_t kSpeakCommandMaxTextBytes = 768;
 static constexpr size_t kSpeakCommandCacheNameBytes = 64;
 static constexpr size_t kSpeakCommandVoiceBytes = 64;
-static constexpr int kSpeakerVolumePercentMin = 10;
+static constexpr int kSpeakerVolumePercentMin = 5;
 static constexpr int kSpeakerVolumePercentMax = 100;
 static constexpr int kSpeakerVolumeDefaultStep = 10;
 static constexpr int kVolumeDropdownOpenTouchHeight = 32;
@@ -191,8 +191,9 @@ bool servo_uart_initialized = false;
 bool servo_power_ready = false;
 float tracking_yaw_deg = 0.0f;
 float tracking_pitch_deg = kTrackingHomePitchDeg;
-int speaker_volume_percent =
-    std::max(kSpeakerVolumePercentMin, std::min(kSpeakerVolumePercentMax, (CONFIG_STACKCHAN_TTS_VOLUME * 100 + 127) / 255));
+int speaker_volume_percent = std::max(
+    kSpeakerVolumePercentMin,
+    std::min(kSpeakerVolumePercentMax, CONFIG_STACKCHAN_AUDIO_OUTPUT_VOLUME_DEFAULT));
 char client_id[37] = {};
 uint32_t xiaopai_boot_id = 0;
 uint32_t command_ack_seq = 0;
@@ -214,6 +215,17 @@ bool wifi_ap_netif_created = false;
 bool provisioning_started = false;
 bool provisioning_stop_pending = false;
 httpd_handle_t provisioning_httpd = nullptr;
+uint32_t speech_command_generation = 0;
+
+struct CommandDedupeEntry {
+    char cmd_id[40];
+    char state[16];
+    uint32_t attempt;
+    uint32_t sequence;
+    bool ack_pending;
+};
+CommandDedupeEntry command_dedupe_entries[64] = {};
+uint32_t command_dedupe_sequence = 0;
 
 enum class HeadTouchEvent : uint8_t {
     Press,
@@ -224,6 +236,10 @@ enum class HeadTouchEvent : uint8_t {
 
 struct SpeakCommandItem {
     char cmd_id[40];
+    uint32_t attempt;
+    uint32_t generation;
+    uint16_t segment_index;
+    TickType_t deadline_tick;
     char text[kSpeakCommandMaxTextBytes];
     char cache_name[kSpeakCommandCacheNameBytes];
     char voice[kSpeakCommandVoiceBytes];

@@ -74,26 +74,6 @@ def build_tts_state(state: str, *, text: str = "", session_id: str = "") -> dict
     return body
 
 
-def build_mcp_request(method: str, params: dict | None = None, *, request_id: str | int | None = None) -> dict:
-    return {
-        "type": "mcp",
-        "payload": {
-            "jsonrpc": "2.0",
-            "id": request_id or make_request_id("mcp"),
-            "method": method,
-            "params": params or {},
-        },
-    }
-
-
-def build_mcp_tools_call(name: str, arguments: dict | None = None, *, request_id: str | int | None = None) -> dict:
-    return build_mcp_request(
-        "tools/call",
-        {"name": name, "arguments": arguments or {}},
-        request_id=request_id,
-    )
-
-
 def extract_device_id_from_hello(message: dict, fallback: str = "default") -> str:
     candidates = [
         message.get("device_id"),

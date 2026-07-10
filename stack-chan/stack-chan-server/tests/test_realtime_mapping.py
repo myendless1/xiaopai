@@ -10,14 +10,6 @@ sys.path.insert(0, SRC_DIR)
 
 from aliyun_streaming_asr import parse_asr_event, wait_for_transcription_started
 from aliyun_streaming_tts import AliyunStreamingTtsClient, split_sentences
-from mcp_client import (
-    STACKCHAN_TOOL_FACE_ACTION,
-    STACKCHAN_TOOL_FACE_SET,
-    STACKCHAN_TOOL_HEAD_FIND_OWNER,
-    STACKCHAN_TOOL_HEAD_MOVE,
-    STACKCHAN_TOOL_VOLUME_SET,
-    command_to_mcp_calls,
-)
 from realtime_server import (
     REALTIME_SLEEP_REPLY_BYE_EVENTS,
     REALTIME_SLEEP_REPLY_REST_EVENTS,
@@ -43,20 +35,10 @@ from server import (
     sleep_reply_event_for_text,
     tts_request_options_from_params,
 )
-from xiaozhi_protocol import build_hello, build_mcp_tools_call, build_stt
+from xiaozhi_protocol import build_hello, build_stt
 
 
 class RealtimeMappingTest(unittest.TestCase):
-    def test_face_alias_maps_to_action(self):
-        calls = command_to_mcp_calls({"type": "face", "payload": {"expression": "爱心"}})
-        self.assertEqual(calls[0].name, STACKCHAN_TOOL_FACE_ACTION)
-        self.assertEqual(calls[0].arguments, {"action": "heart_action"})
-
-    def test_face_expression_maps_to_expression_tool(self):
-        calls = command_to_mcp_calls({"type": "face", "payload": {"expression": "thinking"}})
-        self.assertEqual(calls[0].name, STACKCHAN_TOOL_FACE_SET)
-        self.assertEqual(calls[0].arguments, {"expression": "thinking"})
-
     def test_supported_face_values_are_expression_only(self):
         self.assertEqual(
             AVAILABLE_EXPRESSIONS,
@@ -85,54 +67,12 @@ class RealtimeMappingTest(unittest.TestCase):
         payload = command_payload_from_query("face", {"expression": ["thinking"]})
         self.assertEqual(payload, {"expression": "thinking"})
 
-    def test_motion_maps_to_head_move(self):
-        calls = command_to_mcp_calls({"type": "motion", "payload": {"type": "left", "degree": 12, "duration_ms": 300}})
-        self.assertEqual(calls[0].name, STACKCHAN_TOOL_HEAD_MOVE)
-        self.assertEqual(calls[0].arguments["type"], "left")
-        self.assertEqual(calls[0].arguments["degree"], 12.0)
-
-    def test_volume_set_maps_to_volume_tool(self):
-        calls = command_to_mcp_calls({"type": "volume", "payload": {"mode": "set", "value": 80}})
-        self.assertEqual(calls[0].name, STACKCHAN_TOOL_VOLUME_SET)
-        self.assertEqual(calls[0].arguments, {"value": 80})
-
-    def test_find_owner_preserves_direct_wake_arguments(self):
-        calls = command_to_mcp_calls(
-            {
-                "type": "find_owner",
-                "payload": {
-                    "rounds": 1,
-                    "reply": "",
-                    "preserve_speech": True,
-                    "wait_for_speech": False,
-                    "gain_x": 1.2,
-                    "gain_y": 0.9,
-                    "stop_pixels": 24,
-                },
-            }
-        )
-        self.assertEqual(calls[0].name, STACKCHAN_TOOL_HEAD_FIND_OWNER)
-        self.assertEqual(
-            calls[0].arguments,
-            {
-                "rounds": 1,
-                "reply": "",
-                "preserve_speech": True,
-                "wait_for_speech": False,
-                "gain_x": 1.2,
-                "gain_y": 0.9,
-                "stop_pixels": 24.0,
-            },
-        )
-
     def test_xiaozhi_protocol_shapes(self):
         hello = build_hello("sess_1")
         self.assertEqual(hello["type"], "hello")
         self.assertEqual(hello["audio_params"]["frame_duration"], 60)
         stt = build_stt("你好", is_final=True)
         self.assertTrue(stt["is_final"])
-        mcp = build_mcp_tools_call("self.stackchan.stop", {})
-        self.assertEqual(mcp["payload"]["method"], "tools/call")
 
     def test_aliyun_asr_event_parser(self):
         event = parse_asr_event(
@@ -522,93 +462,6 @@ class RealtimeMappingTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "speech_rate"):
             tts_request_options_from_params(FakeServer, {"speech_rate": "999"})
 
-    def test_openclaw_realtime_reply_is_queued_for_http_speech(self):
-        class FakeOpenClaw:
-            enabled = True
-
-            def chat(self, device_id, text):
-                return "你好，有什么我能帮到你的？"
-
-        class FakeWebSocket:
-            def __init__(self):
-                self.sent = []
-
-            async def send(self, payload):
-                self.sent.append(payload)
-
-        async def run_case():
-            queued = []
-
-            def command_callback(device_id, command):
-                queued.append((device_id, command))
-                return True
-
-            manager = RealtimeManager(
-                RealtimeConfig(
-                    openclaw_base_url="http://openclaw",
-                    openclaw_token="token",
-                    command_callback=command_callback,
-                ),
-                logger=lambda _msg: None,
-            )
-            manager._openclaw = FakeOpenClaw()
-            websocket = FakeWebSocket()
-            session = RealtimeDeviceSession(device_id="dev1", websocket=websocket, session_id="sess1")
-            session.dialog_awake = True
-            await manager._handle_final_text(session, "今天有什么安排")
-            return queued, websocket.sent
-
-        queued, sent = asyncio.run(run_case())
-        self.assertEqual(len(queued), 1)
-        self.assertEqual(queued[0][0], "dev1")
-        self.assertEqual(queued[0][1]["type"], "speak")
-        self.assertEqual(queued[0][1]["payload"]["text"], "你好，有什么我能帮到你的？")
-        self.assertTrue(any('"type":"device_state"' in payload and '"state":"waiting"' in payload for payload in sent))
-        self.assertTrue(any('"type":"llm"' in payload for payload in sent))
-
-    def test_openclaw_realtime_stream_queues_each_segment(self):
-        class FakeOpenClaw:
-            enabled = True
-
-            def chat_stream(self, device_id, text):
-                yield "你好，"
-                yield "今天有两个安排。"
-
-        class FakeWebSocket:
-            def __init__(self):
-                self.sent = []
-
-            async def send(self, payload):
-                self.sent.append(payload)
-
-        async def run_case():
-            queued = []
-
-            def command_callback(device_id, command):
-                queued.append((device_id, command))
-                return True
-
-            manager = RealtimeManager(
-                RealtimeConfig(
-                    openclaw_base_url="http://morrow:3000",
-                    command_callback=command_callback,
-                ),
-                logger=lambda _msg: None,
-            )
-            manager._openclaw = FakeOpenClaw()
-            websocket = FakeWebSocket()
-            session = RealtimeDeviceSession(device_id="dev1", websocket=websocket, session_id="sess1")
-            session.dialog_awake = True
-            await manager._handle_final_text(session, "今天有什么安排")
-            return queued, websocket.sent
-
-        queued, sent = asyncio.run(run_case())
-        self.assertEqual([item[1]["payload"]["text"] for item in queued], ["你好，", "今天有两个安排。"])
-        self.assertTrue(queued[0][1]["interrupt"])
-        self.assertFalse(queued[1][1]["interrupt"])
-        self.assertNotEqual(queued[0][1]["coalesce_key"], queued[1][1]["coalesce_key"])
-        self.assertTrue(any('"type":"device_state"' in payload and '"state":"waiting"' in payload for payload in sent))
-
     def test_realtime_speak_only_aborts_when_interrupting(self):
         class FakeWebSocket:
             def __init__(self):
@@ -657,37 +510,19 @@ class RealtimeMappingTest(unittest.TestCase):
         self.assertEqual(connected, ["default", "dev-1"])
 
     def test_realtime_wake_from_sleep_does_not_send_find_owner(self):
-        class FakeOpenClaw:
-            enabled = True
-
-            def chat(self, device_id, text):
-                raise AssertionError("wake-only should not call OpenClaw")
-
         class FakeWebSocket:
             async def send(self, payload):
                 pass
 
         async def run_case():
-            manager = RealtimeManager(
-                RealtimeConfig(
-                    openclaw_base_url="http://openclaw",
-                    openclaw_token="token",
-                ),
-                logger=lambda _msg: None,
-            )
-            manager._openclaw = FakeOpenClaw()
+            manager = RealtimeManager(RealtimeConfig(), logger=lambda _msg: None)
             spoken = []
             commands = []
 
             async def fake_speak(_session, text):
                 spoken.append(text)
 
-            async def fake_send_mcp(_session, command):
-                commands.append(command)
-                return True
-
             manager._speak = fake_speak
-            manager._send_mcp_command = fake_send_mcp
             session = RealtimeDeviceSession(device_id="dev1", websocket=FakeWebSocket(), session_id="sess1")
             await manager._handle_final_text(session, "你好，小派。")
             first_wake_commands = list(commands)
@@ -702,12 +537,6 @@ class RealtimeMappingTest(unittest.TestCase):
         self.assertEqual(repeated_wake_commands, [])
 
     def test_realtime_sleep_sends_cached_reply_before_sleep(self):
-        class FakeOpenClaw:
-            enabled = True
-
-            def chat(self, device_id, text):
-                raise AssertionError("sleep command should not call OpenClaw")
-
         class FakeWebSocket:
             def __init__(self):
                 self.sent = []
@@ -716,18 +545,18 @@ class RealtimeMappingTest(unittest.TestCase):
                 self.sent.append(payload)
 
         async def run_case():
-            manager = RealtimeManager(
-                RealtimeConfig(openclaw_base_url="http://openclaw", openclaw_token="token"),
-                logger=lambda _msg: None,
-            )
-            manager._openclaw = FakeOpenClaw()
             commands = []
 
-            async def fake_send_mcp(_session, command):
-                commands.append(command)
+            def command_callback(device_id, command):
+                commands.append((device_id, command))
                 return True
 
-            manager._send_mcp_command = fake_send_mcp
+            manager = RealtimeManager(
+                RealtimeConfig(
+                    command_callback=command_callback,
+                ),
+                logger=lambda _msg: None,
+            )
             websocket = FakeWebSocket()
             session = RealtimeDeviceSession(device_id="dev1", websocket=websocket, session_id="sess1")
             session.dialog_awake = True
@@ -737,10 +566,10 @@ class RealtimeMappingTest(unittest.TestCase):
         awake, commands, sent = asyncio.run(run_case())
         self.assertFalse(awake)
         self.assertEqual(len(commands), 1)
-        self.assertEqual(commands[0]["type"], "sequence")
-        speak_step = commands[0]["payload"][0]
-        self.assertEqual(speak_step["type"], "speak")
-        self.assertIn((speak_step["cache_name"], speak_step["text"]), REALTIME_SLEEP_REPLY_REST_EVENTS)
+        self.assertEqual(commands[0][0], "dev1")
+        self.assertEqual(commands[0][1]["type"], "speak")
+        speak_payload = commands[0][1]["payload"]
+        self.assertIn((speak_payload["cache_name"], speak_payload["text"]), REALTIME_SLEEP_REPLY_REST_EVENTS)
         self.assertTrue(any('"type":"llm"' in payload for payload in sent))
         self.assertTrue(any('"state":"sleep"' in payload for payload in sent))
 

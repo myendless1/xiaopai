@@ -158,10 +158,23 @@ class CommandStore:
                             """
                             UPDATE commands
                                SET state=?, updated_at=?, last_message=?,
-                                   lease_expires_at=CASE WHEN ?!='' THEN ? ELSE lease_expires_at END
+                                   lease_expires_at=CASE WHEN ? != '' THEN ? ELSE lease_expires_at END
                              WHERE cmd_id=?
                             """,
                             (state, now, str(ack.get("message") or ""), lease_expires_at, lease_expires_at, cmd_id),
+                        )
+                        # Link ACK to morrow_notices state
+                        notice_state = state
+                        if state == "running":
+                            notice_state = "leased"
+                        conn.execute(
+                            """
+                            UPDATE morrow_notices
+                               SET state=?, rendered_at=CASE WHEN ?='rendered' THEN ? ELSE rendered_at END,
+                                   last_error=CASE WHEN ?='failed' THEN ? ELSE last_error END
+                             WHERE command_id=?
+                            """,
+                            (notice_state, state, now, state, str(ack.get("message") or ""), cmd_id),
                         )
                     delivery_id = str(command["delivery_id"] or "")
                     if delivery_id:
@@ -201,6 +214,17 @@ class CommandStore:
                 """,
                 (now, message, str(source_type), str(source_id)),
             )
+            # Link cancellation to morrow_notices state
+            conn.execute(
+                """
+                UPDATE morrow_notices
+                   SET state='cancelled', last_error=?
+                 WHERE state IN ('received', 'queued', 'leased') AND command_id IN (
+                     SELECT cmd_id FROM commands WHERE state='cancelled' AND source_type=? AND source_id=?
+                 )
+                """,
+                (message, str(source_type), str(source_id)),
+            )
         return int(cursor.rowcount or 0)
 
     def cancel_pending_before_generation(self, device_id: str, generation: int, message: str = "old generation") -> int:
@@ -213,6 +237,17 @@ class CommandStore:
                  WHERE device_id=? AND turn_generation < ? AND state='queued'
                 """,
                 (now, message, str(device_id), int(generation)),
+            )
+            # Link generation cancellation to morrow_notices state
+            conn.execute(
+                """
+                UPDATE morrow_notices
+                   SET state='cancelled', last_error=?
+                 WHERE state IN ('received', 'queued', 'leased') AND command_id IN (
+                     SELECT cmd_id FROM commands WHERE state='cancelled' AND device_id=? AND turn_generation < ?
+                 )
+                """,
+                (message, str(device_id), int(generation)),
             )
         return int(cursor.rowcount or 0)
 
@@ -325,6 +360,17 @@ class CommandStore:
             """,
             (now, now),
         )
+        # Link expiration to morrow_notices state
+        conn.execute(
+            """
+            UPDATE morrow_notices
+               SET state='expired', last_error='command expired'
+             WHERE state NOT IN ('rendered', 'done', 'failed', 'cancelled', 'expired')
+               AND command_id IN (
+                   SELECT cmd_id FROM commands WHERE state='expired'
+               )
+            """
+        )
         for row in rows:
             if row["delivery_id"]:
                 self._refresh_delivery_state(conn, row["delivery_id"], now)
@@ -350,6 +396,17 @@ class CommandStore:
                AND attempt >= max_attempts
             """,
             (now, now),
+        )
+        # Link failure to morrow_notices state
+        conn.execute(
+            """
+            UPDATE morrow_notices
+               SET state='failed', last_error='command max attempts reached'
+             WHERE state NOT IN ('rendered', 'done', 'failed', 'cancelled', 'expired')
+               AND command_id IN (
+                   SELECT cmd_id FROM commands WHERE state='failed'
+               )
+            """
         )
         for row in rows:
             if row["delivery_id"]:

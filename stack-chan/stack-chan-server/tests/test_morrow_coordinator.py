@@ -105,6 +105,15 @@ class CoordinatorTest(unittest.TestCase):
         self.assertEqual(self.spoken, [])
         self.assertEqual(self.client.cancelled, 1)
 
+    def test_disconnect_ends_turn_without_flushing_incomplete_tail(self):
+        outcome = self.submit("req-1")
+        self.assertTrue(self._wait(lambda: len(self.client.started) == 1))
+        self.client.events.put(event({"type": "agent_event", "data": {"event": {"type": "text_delta", "data": "完整句。未完成"}}}))
+        self.client.events.put(type("Disconnected", (), {"type": "disconnected", "data": {"message": "lost"}})())
+        self.assertTrue(outcome.finished.wait(0.3))
+        self.assertEqual(outcome.state, "disconnected")
+        self.assertEqual([item[1] for item in self.spoken], ["完整句。"])
+
     @staticmethod
     def _wait(predicate, timeout=0.3):
         done = threading.Event()

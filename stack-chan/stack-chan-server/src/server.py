@@ -23,14 +23,13 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue import Empty
 
-from openclaw_agent import OpenClawAgent
+from morrow_client import MorrowClient
+from morrow_coordinator import MorrowTurnCoordinator, command_store_segment_sink
 from realtime_server import RealtimeConfig, RealtimeManager
-from xiaopai_openclaw_prompt import XIAOPAI_OPENCLAW_SYSTEM_PROMPT
 from xiaozhi_protocol import ota_config
 from yunet_service import YunetFaceService
 from command_store import CommandStore
 from database import Database
-from delivery_coordinator import DeliveryCoordinator
 from device_registry import DeviceRegistry
 from schemas import CommandEnvelope, DEFAULT_LEASE_MS, PROTOCOL_VERSION
 
@@ -1213,14 +1212,8 @@ class AliyunVoiceServer(ThreadingHTTPServer):
     command_queue_max_size: int
     capture_dir: str
     static_dir: str
-    openclaw_base_url: str
-    openclaw_token: str
-    openclaw_model: str
-    openclaw_backend_model: str
-    openclaw_timeout: int
-    openclaw_max_completion_tokens: int
-    openclaw_session_prefix: str
-    openclaw_executor: ThreadPoolExecutor
+    morrow_client: MorrowClient | None
+    morrow_coordinator: MorrowTurnCoordinator | None
     morrow_notice_stop_event: threading.Event
     morrow_notice_thread: threading.Thread | None
     debug_log: bool
@@ -1267,8 +1260,6 @@ class AliyunVoiceServer(ThreadingHTTPServer):
     v3_database: Database
     command_store: CommandStore
     device_registry: DeviceRegistry
-    delivery_coordinator: DeliveryCoordinator
-    openclaw_agent: OpenClawAgent | None
 
     def get_token(self) -> str:
         if self.access_key_id and self.access_key_secret:
@@ -1309,7 +1300,6 @@ class Handler(BaseHTTPRequestHandler):
                     "service": "xiaopai-aliyun-voice",
                     "protocol_version": PROTOCOL_VERSION,
                     "v3": {
-                        "deliveries": "/v3/deliveries",
                         "tts": "/v3/tts",
                         "ota_manifest": "/v3/ota/manifest",
                         "control_hello": "/v3/control/hello",
@@ -1347,11 +1337,9 @@ class Handler(BaseHTTPRequestHandler):
                         "gain_y": self.server.find_owner_gain_y,
                         "stop_pixels": self.server.find_owner_stop_pixels,
                     },
-                    "openclaw": {
-                        "enabled": self._openclaw_enabled(),
-                        "base_url": self.server.openclaw_base_url,
-                        "model": self.server.openclaw_model,
-                    },
+                    "morrow": self._morrow_health(),
+                    "commands": self._command_health(),
+                    "devices": self._device_health(),
                     "realtime": self._realtime_status(),
                     "ota": self._ota_status(),
                     "debug_config": self._debug_config_body(),
@@ -1364,12 +1352,11 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
             return
+        if path == "/metrics":
+            self._handle_metrics()
+            return
         if path == "/v3/devices":
             self._handle_v3_devices()
-            return
-        if path.startswith("/v3/deliveries/"):
-            delivery_id = urllib.parse.unquote(path.split("/", 3)[-1])
-            self._handle_v3_delivery(delivery_id)
             return
         if path == "/v3/ota/manifest":
             self._handle_v3_ota_manifest()
@@ -1436,9 +1423,6 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/device/next-command":
             self._handle_next_command(query)
             return
-        if path == "/device/ack":
-            self._handle_ack(query)
-            return
         if path in ("/device/event", "/event"):
             self._handle_device_event(query)
             return
@@ -1470,9 +1454,6 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/event-audio/"):
             self._handle_event_audio(path.rsplit("/", 1)[-1])
             return
-        if path == "/stream-speak":
-            self._handle_stream_speak(query)
-            return
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self):
@@ -1481,14 +1462,6 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length > 0 else b""
         if path == "/upload":
             self._handle_upload(body)
-            return
-        if path == "/v3/deliveries":
-            payload = json.loads(body.decode("utf-8")) if body else {}
-            self._handle_v3_deliveries(payload)
-            return
-        if path.startswith("/v3/deliveries/") and path.endswith("/cancel"):
-            delivery_id = urllib.parse.unquote(path.split("/")[-2])
-            self._handle_v3_delivery_cancel(delivery_id)
             return
         if path == "/v3/control/hello":
             payload = json.loads(body.decode("utf-8")) if body else {}
@@ -1526,10 +1499,6 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(body.decode("utf-8")) if body else {}
             self._handle_device_logs(query, posted=payload)
             return
-        if path == "/device/ack":
-            payload = json.loads(body.decode("utf-8")) if body else {}
-            self._handle_ack(query, posted=payload)
-            return
         if path in ("/device/event", "/event"):
             payload = json.loads(body.decode("utf-8")) if body else {}
             self._handle_device_event(query, posted=payload)
@@ -1539,9 +1508,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/tts/debug":
             self._handle_tts_debug(query, body)
-            return
-        if path == "/stream-speak":
-            self._handle_stream_speak(query, body)
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -1589,34 +1555,6 @@ class Handler(BaseHTTPRequestHandler):
         self._mark_device_seen(device_id)
         self._send_json(body)
 
-    def _handle_v3_deliveries(self, payload: dict) -> None:
-        if not isinstance(payload, dict):
-            self._send_json({"type": "error", "message": "delivery body must be a JSON object"}, HTTPStatus.BAD_REQUEST)
-            return
-        try:
-            body = self.server.delivery_coordinator.submit(payload)
-        except Exception as exc:
-            self._log_error(f"V3 delivery 创建失败: {exc}")
-            self._send_json({"type": "error", "message": str(exc)}, HTTPStatus.BAD_REQUEST)
-            return
-        self._send_json(body, HTTPStatus.ACCEPTED)
-
-    def _handle_v3_delivery(self, delivery_id: str) -> None:
-        delivery_id = str(delivery_id or "").strip()
-        body = self.server.command_store.get_delivery(delivery_id)
-        if body is None:
-            self.send_error(HTTPStatus.NOT_FOUND, "unknown delivery")
-            return
-        self._send_json({"type": "delivery", **body})
-
-    def _handle_v3_delivery_cancel(self, delivery_id: str) -> None:
-        body = self.server.command_store.cancel_delivery(delivery_id)
-        if not body:
-            self.send_error(HTTPStatus.NOT_FOUND, "unknown delivery")
-            return
-        self._enqueue_stop_for_delivery(str(body.get("device_id") or "default"), delivery_id)
-        self._send_json({"type": "delivery", **body})
-
     def _handle_v3_command_ack(self, payload: dict) -> None:
         if not isinstance(payload, dict):
             self._send_json({"type": "error", "message": "ack body must be a JSON object"}, HTTPStatus.BAD_REQUEST)
@@ -1631,15 +1569,6 @@ class Handler(BaseHTTPRequestHandler):
                 "ts": time.time(),
             }
         self._mark_device_seen(device_id)
-        self._send_morrow_device_result(
-            {
-                "kind": "command_ack",
-                "device_id": device_id,
-                "cmd_id": result.get("cmd_id", ""),
-                "state": result.get("state", ""),
-                "ack": payload,
-            }
-        )
         self._send_json({"type": "command_ack", "device_id": device_id, **result})
 
     def _handle_v3_ota_manifest(self) -> None:
@@ -1652,18 +1581,6 @@ class Handler(BaseHTTPRequestHandler):
         body["signature_required"] = False
         body["rollback_supported"] = True
         self._send_json({"type": "ota_manifest", "firmware": body})
-
-    def _enqueue_stop_for_delivery(self, device_id: str, delivery_id: str) -> None:
-        command = make_command(
-            "stop",
-            {"reason": f"delivery_cancelled:{delivery_id}"},
-            priority=100,
-            interrupt=True,
-            ttl_seconds=5,
-            discardable=False,
-            coalesce_key=f"{delivery_id}:stop",
-        )
-        self._enqueue_command(device_id, command)
 
     def _realtime_status(self) -> dict:
         manager = getattr(self.server, "realtime_manager", None)
@@ -2088,16 +2005,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._wake_dialog(device_id, reason="dialog activity")
 
             response["dialog_awake"] = True
-            openclaw_result = self._send_openclaw_event(
+            morrow_result = self._send_morrow_event(
                 device_id,
                 "speech_recognition",
                 {"text": text, "task_id": result.get("task_id", "")},
             )
-            response.update(openclaw_result)
-            response["handled_as"] = "openclaw_forwarded" if openclaw_result.get("openclaw_sent") else "openclaw_not_sent"
+            response.update(morrow_result)
+            response["handled_as"] = "morrow_forwarded" if morrow_result.get("morrow_submitted") else "morrow_not_sent"
         else:
             response["handled_as"] = "empty"
-            self._log_info("ASR 为空，已跳过 OpenClaw")
+            self._log_info("ASR 为空，已跳过 Morrow")
             self._log_debug(f"ASR 空结果详情: device={device_id}")
         self._send_json(response)
 
@@ -2118,6 +2035,21 @@ class Handler(BaseHTTPRequestHandler):
         if text:
             details["text"] = text
 
+        if str(event_type) in ("local_stop", "stop"):
+            coordinator = getattr(self.server, "morrow_coordinator", None)
+            generation = coordinator.cancel_device(device_id) if coordinator is not None else 0
+            self._send_json(
+                {
+                    "type": "event",
+                    "device_id": device_id,
+                    "event_type": event_type,
+                    "morrow_cancelled": coordinator is not None,
+                    "generation": generation,
+                    "queued_commands": [],
+                }
+            )
+            return
+
         if str(event_type) in ("head_touch", "touch"):
             command = make_command("face", {"expression": "shy"}, priority=1, interrupt=True)
             self._enqueue_command(device_id, command)
@@ -2127,9 +2059,9 @@ class Handler(BaseHTTPRequestHandler):
                     "device_id": device_id,
                     "event_type": event_type,
                     "name": name,
-                    "openclaw_enabled": self._openclaw_enabled(),
-                    "openclaw_skipped": "local_head_touch_expression",
-                    "openclaw_sent": False,
+                    "morrow_enabled": self._morrow_enabled(),
+                    "morrow_skipped": "local_head_touch_expression",
+                    "morrow_submitted": False,
                     "queued_commands": [command["cmd_id"]],
                 }
             )
@@ -2142,17 +2074,17 @@ class Handler(BaseHTTPRequestHandler):
                     "device_id": device_id,
                     "event_type": event_type,
                     "name": name,
-                    "openclaw_enabled": self._openclaw_enabled(),
-                    "openclaw_skipped": "empty_speech_recognition",
-                    "openclaw_sent": False,
+                    "morrow_enabled": self._morrow_enabled(),
+                    "morrow_skipped": "empty_speech_recognition",
+                    "morrow_submitted": False,
                     "queued_commands": [],
                 }
             )
-            self._log_info("语音事件为空，已跳过 OpenClaw")
+            self._log_info("语音事件为空，已跳过 Morrow")
             self._log_debug(f"语音事件空结果详情: device={device_id}")
             return
 
-        result = self._send_openclaw_event(device_id, str(event_type), details)
+        result = self._send_morrow_event(device_id, str(event_type), details)
         body = {
             "type": "event",
             "device_id": device_id,
@@ -2264,9 +2196,11 @@ class Handler(BaseHTTPRequestHandler):
                 elif isinstance(step, dict) and step.get("type") == "speak":
                     step.setdefault("pause_listener", True)
         normalize_command_speech_payload(command_wire_type, payload)
-        if command_wire_type == "stop" and self._openclaw_enabled():
+        if command_wire_type == "stop" and self._morrow_enabled():
             try:
-                self._new_openclaw_agent().cancel_device_turn(device_id, reason="device_stop")
+                coordinator = getattr(self.server, "morrow_coordinator", None)
+                if coordinator is not None:
+                    coordinator.cancel_device(device_id)
             except Exception as exc:
                 self._log_error(f"Morrow turn 取消失败: device={device_id} error={exc}")
         command = make_command(
@@ -2373,39 +2307,6 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             self._send_json({"type": "noop", "device_id": device_id})
 
-    def _handle_ack(self, query: dict, posted: dict | None = None):
-        posted = posted or {}
-        device_id = self._device_id(query) if query else posted.get("device_id", "default")
-        ack = {
-            "cmd_id": first_value(query, "cmd_id") or posted.get("cmd_id", ""),
-            "status": first_value(query, "status") or posted.get("status", "received"),
-            "message": first_value(query, "message") or posted.get("message", ""),
-            "ts": time.time(),
-        }
-        with self.server.device_lock:
-            self.server.last_ack[device_id] = ack
-        command_store = getattr(self.server, "command_store", None)
-        if command_store is not None:
-            command_store.record_ack(
-                {
-                    "device_id": device_id,
-                    "cmd_id": ack["cmd_id"],
-                    "state": ack["status"],
-                    "message": ack["message"],
-                }
-            )
-        self._send_morrow_device_result(
-            {
-                "kind": "command_ack",
-                "device_id": device_id,
-                "cmd_id": ack["cmd_id"],
-                "state": ack["status"],
-                "ack": ack,
-            }
-        )
-        self._mark_device_seen(device_id)
-        self._send_json({"type": "ack", "device_id": device_id, "ack": ack})
-
     def _device_id(self, query: dict) -> str:
         device_id = first_value(query, "device_id") or self.headers.get("X-Device-Id", "") or "default"
         return safe_device_id(device_id)
@@ -2434,31 +2335,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def _enqueue_command(self, device_id: str, command: dict) -> bool:
         device_id = safe_device_id(device_id)
-        if http_device_online(self.server, device_id):
-            return self._enqueue_http_command(device_id, command)
-
-        manager = getattr(self.server, "realtime_manager", None)
-        if manager and manager.has_device(device_id):
-            sent = manager.enqueue_command(device_id, command)
-            detail = ""
-            if command.get("type") == "face" and isinstance(command.get("payload"), dict):
-                detail = f" expression={command['payload'].get('expression', '')}"
-            if sent:
-                self._log_info(f"实时命令已发送: type={command['type']}{detail} priority={command.get('priority')}")
-                self._log_debug(
-                    f"实时命令详情: device={device_id} cmd_id={command['cmd_id']} "
-                    f"type={command['type']}{detail}"
-                )
-                with self.server.device_lock:
-                    self.server.last_ack[device_id] = {
-                        "cmd_id": command.get("cmd_id", ""),
-                        "status": "sent_realtime",
-                        "message": "dispatched via xiaozhi websocket",
-                        "ts": time.time(),
-                    }
-                return True
-            self._log_info(f"实时命令回退到 HTTP 队列: type={command['type']}{detail}")
-
         return self._enqueue_http_command(device_id, command)
 
     def _enqueue_http_command(self, device_id: str, command: dict) -> bool:
@@ -2539,33 +2415,61 @@ class Handler(BaseHTTPRequestHandler):
         self._log_info("对话已休眠")
         self._log_debug(f"对话休眠详情: device={device_id} reason={reason!r}")
 
-    def _openclaw_enabled(self) -> bool:
-        return bool(self.server.openclaw_base_url)
+    def _morrow_enabled(self) -> bool:
+        return getattr(self.server, "morrow_coordinator", None) is not None
 
-    def _new_openclaw_agent(self) -> OpenClawAgent:
-        agent = getattr(self.server, "openclaw_agent", None)
-        if agent is None:
-            agent = OpenClawAgent(
-                base_url=self.server.openclaw_base_url,
-                token=self.server.openclaw_token,
-                model=self.server.openclaw_model,
-                backend_model=self.server.openclaw_backend_model,
-                timeout=self.server.openclaw_timeout,
-                session_prefix=self.server.openclaw_session_prefix,
-                max_completion_tokens=self.server.openclaw_max_completion_tokens,
-                max_segment_chars=self.server.max_sentence_chars,
-            )
-            self.server.openclaw_agent = agent
-        return agent
+    def _morrow_health(self) -> dict:
+        client = getattr(self.server, "morrow_client", None)
+        coordinator = getattr(self.server, "morrow_coordinator", None)
+        return {
+            "base_url": getattr(client, "base_url", ""),
+            "session": getattr(client, "session", "default"),
+            "connected": bool(client and client.connected),
+            "snapshot_received": bool(client and client.ready),
+            "active_request_id": coordinator.active_request_id if coordinator else "",
+            "queued_turns": coordinator.queued_turns if coordinator else 0,
+            "last_message_at": getattr(client, "last_message_at", 0),
+            "last_notice_at": getattr(client, "last_notice_at", 0),
+            "last_error": getattr(client, "last_error", ""),
+            "metrics": {**getattr(client, "metrics", {}), **getattr(coordinator, "metrics", {})},
+        }
 
-    def _send_morrow_device_result(self, payload: dict) -> None:
-        agent = getattr(self.server, "openclaw_agent", None)
-        if agent is None or not self._openclaw_enabled():
-            return
-        try:
-            agent.send_device_result(payload)
-        except Exception as exc:
-            self._log_error(f"Morrow 设备结果回传失败: {exc}")
+    def _command_health(self) -> dict:
+        with self.server.v3_database.connect() as conn:
+            return {
+                state: conn.execute("SELECT COUNT(*) FROM commands WHERE state=?", (state,)).fetchone()[0]
+                for state in ("queued", "leased", "running", "expired")
+            }
+
+    def _device_health(self) -> dict:
+        with self.server.v3_database.connect() as conn:
+            return {"online": conn.execute("SELECT COUNT(*) FROM devices WHERE online=1").fetchone()[0]}
+
+    def _handle_metrics(self) -> None:
+        client = getattr(self.server, "morrow_client", None)
+        coordinator = getattr(self.server, "morrow_coordinator", None)
+        metrics = {**getattr(client, "metrics", {}), **getattr(coordinator, "metrics", {})}
+        for name in (
+            "morrow_notice_duplicate_total",
+            "morrow_notice_rendered_total",
+            "morrow_notice_expired_total",
+            "device_command_retry_total",
+            "device_ack_replay_total",
+            "speech_queue_full_total",
+        ):
+            metrics.setdefault(name, 0)
+        with self.server.v3_database.connect() as conn:
+            for state in ("queued", "leased", "running", "expired"):
+                metrics[f"device_commands_{state}"] = conn.execute(
+                    "SELECT COUNT(*) FROM commands WHERE state=?", (state,)
+                ).fetchone()[0]
+            metrics["devices_online"] = conn.execute("SELECT COUNT(*) FROM devices WHERE online=1").fetchone()[0]
+        data = ("\n".join(f"{name} {value}" for name, value in sorted(metrics.items())) + "\n").encode()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def _send_device_state_command(self, device_id: str, state: str, reason: str = "") -> list[str]:
         device_id = safe_device_id(device_id)
@@ -2581,22 +2485,15 @@ class Handler(BaseHTTPRequestHandler):
             discardable=True,
             coalesce_key="device_state",
         )
-        if not http_device_online(self.server, device_id):
-            manager = getattr(self.server, "realtime_manager", None)
-            if manager and manager.has_device(device_id) and manager.set_device_state(device_id, state):
-                self._log_info(f"实时设备状态已发送: state={state}")
-                self._log_debug(f"实时设备状态详情: device={device_id} state={state} reason={reason!r}")
-                return []
-
         if self._enqueue_command(device_id, command):
             return [command["cmd_id"]]
         return []
 
-    def _enter_openclaw_waiting(self, device_id: str, event_type: str) -> list[str]:
-        queued_commands = self._send_device_state_command(device_id, "waiting", reason=f"openclaw:{event_type}")
+    def _enter_morrow_waiting(self, device_id: str, event_type: str) -> list[str]:
+        queued_commands = self._send_device_state_command(device_id, "waiting", reason=f"morrow:{event_type}")
         command = make_command(
             "face",
-            {"expression": "thinking", "reason": f"openclaw:{event_type}"},
+            {"expression": "thinking", "reason": f"morrow:{event_type}"},
             priority=89,
             interrupt=True,
             ttl_seconds=8,
@@ -2607,60 +2504,39 @@ class Handler(BaseHTTPRequestHandler):
             queued_commands.append(command["cmd_id"])
         return queued_commands
 
-    def _send_openclaw_event(self, device_id: str, event_type: str, details: dict) -> dict:
-        if not self._openclaw_enabled():
-            return {"openclaw_enabled": False, "openclaw_sent": False, "queued_commands": []}
+    def _send_morrow_event(self, device_id: str, event_type: str, details: dict) -> dict:
+        if not self._morrow_enabled():
+            return {"morrow_enabled": False, "morrow_submitted": False, "queued_commands": []}
 
-        queued_commands = self._enter_openclaw_waiting(device_id, event_type)
+        queued_commands = self._enter_morrow_waiting(device_id, event_type)
 
-        def run_event() -> None:
+        coordinator = getattr(self.server, "morrow_coordinator", None)
+        if coordinator is not None:
+            content = build_morrow_event_content(device_id, event_type, details)
+            source = "voice" if event_type == "speech_recognition" else "system"
             try:
-                self._call_openclaw(device_id, event_type, details)
+                outcome = coordinator.submit(content, device_id, source=source)
             except Exception as exc:
-                self._log_error(f"OpenClaw 事件发送失败: {exc}")
-                self._log_debug(f"OpenClaw 事件失败详情: device={device_id} event={event_type} error={exc}")
+                self._log_error(f"Morrow 请求入队失败: device={device_id} event={event_type} error={exc}")
+                return {
+                    "morrow_enabled": True,
+                    "morrow_submitted": False,
+                    "queued_commands": queued_commands,
+                    "error": str(exc),
+                }
+            self._log_info(f"Morrow 请求已进入全局队列: request_id={outcome.request_id} event={event_type}")
+            return {
+                "morrow_enabled": True,
+                "morrow_submitted": True,
+                "morrow_request_id": outcome.request_id,
+                "queued_commands": queued_commands,
+            }
 
-        self.server.openclaw_executor.submit(run_event)
-        self._log_info(f"OpenClaw 事件已提交: event={event_type}")
         return {
-            "openclaw_enabled": True,
-            "openclaw_sent": True,
-            "openclaw_async": True,
+            "morrow_enabled": False,
+            "morrow_submitted": False,
             "queued_commands": queued_commands,
         }
-
-    def _call_openclaw(self, device_id: str, event_type: str, details: dict) -> None:
-        event_content = build_openclaw_event_content(device_id, event_type, details)
-        agent = self._new_openclaw_agent()
-        stream_id = f"morrow:{uuid.uuid4().hex[:8]}"
-        queued_count = 0
-        started = time.perf_counter()
-        try:
-            for raw_segment in agent.chat_stream(device_id, event_content):
-                text = normalize_speech_text_for_voice(str(raw_segment or ""))
-                if not text or speech_text_is_temporarily_suppressed(text):
-                    continue
-                queued_count += 1
-                command = make_command(
-                    "speak",
-                    {"text": text, "pause_listener": True},
-                    priority=30,
-                    interrupt=queued_count == 1,
-                    ttl_seconds=60,
-                    discardable=False,
-                    coalesce_key=f"{stream_id}:{queued_count}",
-                )
-                self._enqueue_command(device_id, command)
-                self._log_info(f"Morrow 流式播报已入队: index={queued_count} text={text!r}")
-        finally:
-            elapsed_ms = (time.perf_counter() - started) * 1000
-            self._log_info(
-                f"Morrow 响应流结束: device={device_id} event={event_type} "
-                f"segments={queued_count} elapsed_ms={elapsed_ms:.0f}"
-            )
-
-        if queued_count == 0:
-            self._log_info(f"Morrow 未产生可播报文本: device={device_id} event={event_type}")
 
     def _handle_tts_voices(self) -> None:
         self._send_json(
@@ -3257,7 +3133,7 @@ class Handler(BaseHTTPRequestHandler):
             or path.startswith("/command/")
             or path.startswith("/action/")
             or path.startswith("/expression/")
-            or path in ("/device/event", "/event", "/device/ack")
+            or path in ("/device/event", "/event")
         ):
             return
         if self._debug_enabled():
@@ -3266,10 +3142,6 @@ class Handler(BaseHTTPRequestHandler):
                 f"method={self.command} path={self.path!r} status={int(status)} "
                 f"body={compact_log_json(body)}"
             )
-            return
-        if path in ("/device/ack",):
-            ack = body.get("ack") if isinstance(body.get("ack"), dict) else {}
-            self._log_info(f"API 确认: status={ack.get('status', 'unknown')}")
             return
         if path == "/command" or path.startswith("/command/"):
             command = body.get("command") if isinstance(body.get("command"), dict) else {}
@@ -3456,7 +3328,7 @@ def reset_device_logs_for_reconnect(server, device_id: str, *, reason: str = "�
         log_print(f"设备日志重置失败: device={device_id} error={exc}")
 
 
-def build_openclaw_event_text(device_id: str, event_type: str, details: dict) -> str:
+def build_morrow_event_text(device_id: str, event_type: str, details: dict) -> str:
     device_id = safe_device_id(device_id)
     source_event_type = str(event_type or "event").strip() or "event"
     compact_details = {str(key): value for key, value in (details or {}).items() if value not in (None, "")}
@@ -3486,8 +3358,8 @@ def build_openclaw_event_text(device_id: str, event_type: str, details: dict) ->
     return message + "。"
 
 
-def build_openclaw_event_content(device_id: str, event_type: str, details: dict) -> str:
-    return build_openclaw_event_text(device_id, event_type, details)
+def build_morrow_event_content(device_id: str, event_type: str, details: dict) -> str:
+    return build_morrow_event_text(device_id, event_type, details)
 
 
 def optional_env(*names: str) -> str:
@@ -3784,7 +3656,7 @@ def connected_device_ids(server) -> list[str]:
     return device_ids
 
 
-def enqueue_server_command(server, device_id: str, command: dict, *, realtime_fallback: bool = True, persist: bool = True) -> bool:
+def enqueue_server_command(server, device_id: str, command: dict, *, persist: bool = True) -> bool:
     device_id = safe_device_id(device_id)
     if is_placeholder_device_id(device_id):
         return False
@@ -3805,14 +3677,8 @@ def enqueue_server_command(server, device_id: str, command: dict, *, realtime_fa
     with server.device_lock:
         queue = server.device_queues.get(device_id)
         if queue is None:
-            queue = DeviceCommandQueue(server.command_queue_max_size)
+            queue = DeviceCommandQueue(getattr(server, "command_queue_max_size", COMMAND_QUEUE_MAX_SIZE))
             server.device_queues[device_id] = queue
-    if realtime_fallback and not http_device_online(server, device_id):
-        manager = getattr(server, "realtime_manager", None)
-        if manager and manager.has_device(device_id) and manager.enqueue_command(device_id, command):
-            log_print(f"周期命令已通过实时通道发送: type={command.get('type')} device={device_id}")
-            return True
-
     stats = queue.put(command)
     if stats.get("queued"):
         log_print(f"周期命令已入队: type={command.get('type')} device={device_id}")
@@ -3879,31 +3745,43 @@ def make_command(
     }
 
 
-def enqueue_morrow_notice_speech(server, notice_text: str) -> int:
-    text = normalize_speech_text_for_voice(str(notice_text or ""))
-    if not text or speech_text_is_temporarily_suppressed(text):
-        return 0
-    return submit_morrow_notice_text(server, text)
-
-
-def save_morrow_notice_outbox(server, text: str, message: str = "waiting for device") -> str:
-    notice_id = f"notice_{uuid.uuid4().hex[:16]}"
-    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+def save_morrow_notice(server, notice: dict) -> bool:
+    notice_id = notice.get("id")
+    if not notice_id:
+        return False
     with server.v3_database.connect() as conn:
+        row = conn.execute("SELECT state FROM morrow_notices WHERE notice_id=?", (notice_id,)).fetchone()
+        if row is not None:
+            # Already exists, de-duplicate!
+            return False
+
+        kind = notice.get("kind", "unknown") or "unknown"
+        text = notice.get("text", "") or ""
+        timestamp_ms = int(notice.get("timestamp_ms") or 0)
+        
+        # Priority and TTL mapping
+        if kind == "meeting_reminder":
+            ttl_seconds = 600
+        elif kind == "fieldwork_reminder":
+            ttl_seconds = 1800
+        elif kind == "travel_reminder":
+            ttl_seconds = 21600
+        else:
+            ttl_seconds = 1800
+            
+        now = _dt.datetime.now(_dt.timezone.utc)
+        expires_at = (now + _dt.timedelta(seconds=ttl_seconds)).isoformat()
+        received_at = now.isoformat()
+        
         conn.execute(
             """
-            INSERT INTO morrow_notices(notice_id, text, state, attempts, created_at, updated_at, next_attempt_at, last_message)
-            VALUES (?, ?, 'pending', 0, ?, ?, ?, ?)
+            INSERT INTO morrow_notices (
+              notice_id, kind, timestamp_ms, text, state, expires_at, received_at
+            ) VALUES (?, ?, ?, ?, 'received', ?, ?)
             """,
-            (notice_id, text, now, now, now, message),
+            (notice_id, kind, timestamp_ms, text, expires_at, received_at),
         )
-    agent = getattr(server, "openclaw_agent", None)
-    if agent is not None:
-        try:
-            agent.send_device_result({"kind": "notice_outbox", "notice_id": notice_id, "state": "pending", "message": message})
-        except Exception:
-            pass
-    return notice_id
+        return True
 
 
 def mark_morrow_notice_state(server, notice_id: str, state: str, message: str = "") -> None:
@@ -3913,25 +3791,45 @@ def mark_morrow_notice_state(server, notice_id: str, state: str, message: str = 
             "UPDATE morrow_notices SET state=?, updated_at=?, last_message=? WHERE notice_id=?",
             (state, now, message, notice_id),
         )
-    agent = getattr(server, "openclaw_agent", None)
-    if agent is not None:
-        try:
-            agent.send_device_result({"kind": "notice_outbox", "notice_id": notice_id, "state": state, "message": message})
-        except Exception:
-            pass
 
 
-def submit_morrow_notice_text(server, text: str, *, notice_id: str = "") -> int:
+def submit_morrow_notice_text(server, notice_id: str) -> bool:
+    with server.v3_database.connect() as conn:
+        row = conn.execute("SELECT * FROM morrow_notices WHERE notice_id=?", (notice_id,)).fetchone()
+        if not row:
+            return False
+        kind = row["kind"]
+        text = row["text"]
+        expires_at = row["expires_at"]
+        state = row["state"]
+        
+    now_dt = _dt.datetime.now(_dt.timezone.utc)
+    expires_dt = _dt.datetime.fromisoformat(expires_at)
+    if now_dt > expires_dt:
+        mark_morrow_notice_state(server, notice_id, "expired", "expired before queuing")
+        return False
+        
     device_ids = connected_device_ids(server)
     if not device_ids:
-        saved_id = notice_id or save_morrow_notice_outbox(server, text)
-        log_print(f"Morrow 主动提醒已保存到 outbox: notice_id={saved_id}")
-        return 0
-
+        return False
+        
     device_id = device_ids[0]
-    stream_id = notice_id or f"morrow_notice:{uuid.uuid4().hex[:8]}"
+    
+    if kind == "meeting_reminder":
+        prio = 80
+    elif kind == "fieldwork_reminder":
+        prio = 70
+    elif kind == "travel_reminder":
+        prio = 60
+    else:
+        prio = 50
+        
+    remaining_ttl = int(max(10, (expires_dt - now_dt).total_seconds()))
+    stream_id = notice_id
     queued_count = 0
     segment_index = 0
+    last_cmd_id = ""
+    
     for raw_segment in split_sentences(text, int(getattr(server, "max_sentence_chars", 120) or 120)):
         segment = normalize_speech_text_for_voice(str(raw_segment or ""))
         if not segment or speech_text_is_temporarily_suppressed(segment):
@@ -3940,20 +3838,33 @@ def submit_morrow_notice_text(server, text: str, *, notice_id: str = "") -> int:
         command = make_command(
             "speak",
             {"text": segment, "pause_listener": True},
-            priority=35,
+            priority=prio,
             interrupt=segment_index == 1,
-            ttl_seconds=120,
+            ttl_seconds=remaining_ttl,
             discardable=False,
             coalesce_key=f"{stream_id}:{segment_index}",
         )
+        command["source_type"] = "morrow_notice"
+        command["source_id"] = notice_id
+        command["segment_index"] = segment_index
+        last_cmd_id = command.get("cmd_id", "")
         if enqueue_server_command(server, device_id, command):
             queued_count += 1
-
-    if queued_count:
-        log_print(f"Morrow 主动提醒已入队: device={device_id} segments={queued_count}")
-        if notice_id:
-            mark_morrow_notice_state(server, notice_id, "submitted", f"queued to {device_id}")
-    return queued_count
+            
+    if queued_count > 0:
+        log_print(f"Morrow 主动提醒已入队: device={device_id} segments={queued_count} last_cmd={last_cmd_id}")
+        now_str = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        with server.v3_database.connect() as conn:
+            conn.execute(
+                """
+                UPDATE morrow_notices
+                   SET state='queued', command_id=?, updated_at=?, last_message=?
+                 WHERE notice_id=?
+                """,
+                (last_cmd_id, now_str, f"queued to {device_id}", notice_id),
+            )
+        return True
+    return False
 
 
 def run_morrow_notice_outbox_loop(server) -> None:
@@ -3961,46 +3872,64 @@ def run_morrow_notice_outbox_loop(server) -> None:
         time.sleep(5)
         if not connected_device_ids(server):
             continue
-        now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        now_dt = _dt.datetime.now(_dt.timezone.utc)
+        now_str = now_dt.isoformat()
+        
+        # 1. Update expired ones that are still in received state
         with server.v3_database.connect() as conn:
+            conn.execute(
+                """
+                UPDATE morrow_notices
+                   SET state='expired', last_error='expired before queuing'
+                 WHERE state='received' AND expires_at < ?
+                """,
+                (now_str,),
+            )
+            
+            # 2. Get non-expired received notices to submit
             rows = conn.execute(
                 """
-                SELECT notice_id, text FROM morrow_notices
-                 WHERE state='pending' AND (next_attempt_at='' OR next_attempt_at <= ?)
-                 ORDER BY created_at ASC
+                SELECT notice_id FROM morrow_notices
+                 WHERE state='received' AND expires_at >= ?
+                 ORDER BY received_at ASC
                  LIMIT 8
                 """,
-                (now,),
+                (now_str,),
             ).fetchall()
-            for row in rows:
-                conn.execute(
-                    "UPDATE morrow_notices SET attempts=attempts+1, updated_at=? WHERE notice_id=?",
-                    (now, row["notice_id"]),
-                )
+            
         for row in rows:
-            submit_morrow_notice_text(server, row["text"], notice_id=row["notice_id"])
+            submit_morrow_notice_text(server, row["notice_id"])
 
 
 def run_morrow_notice_listener(server) -> None:
-    if not server.openclaw_base_url:
+    client = getattr(server, "morrow_client", None)
+    if client is None:
         return
 
     stop_event = server.morrow_notice_stop_event
-    agent = server.openclaw_agent
-    backoff_seconds = 1.0
+    backoff_seconds = 0.5
+    
+    log_print("Morrow 主动提醒监听线程已启动，正在消费 client.notices Queue...")
     while not stop_event.is_set():
         try:
-            log_print("Morrow 主动提醒监听复用长期对话流")
-            for notice_text in agent.morrow_robot_notice_stream(stop_event=stop_event):
-                if stop_event.is_set():
-                    break
-                enqueue_morrow_notice_speech(server, notice_text)
-            backoff_seconds = 1.0
+            try:
+                notice = client.notices.get(timeout=1.0)
+            except Empty:
+                continue
+                
+            log_print(f"收到 Morrow 主动提醒 WebSocket 消息: {notice}")
+            
+            # Save and de-duplicate
+            if save_morrow_notice(server, notice):
+                notice_id = notice.get("id")
+                # Attempt immediate submission if device is online
+                submit_morrow_notice_text(server, notice_id)
+                
+            backoff_seconds = 0.5
         except Exception as exc:
             if stop_event.is_set():
                 break
-            log_print(f"Morrow 主动提醒监听断开: {exc}", file=sys.stderr)
-        if not stop_event.is_set():
+            log_print(f"Morrow 主动提醒监听线程异常: {exc}", file=sys.stderr)
             stop_event.wait(backoff_seconds)
             backoff_seconds = min(backoff_seconds * 2, 30.0)
 
@@ -4431,18 +4360,13 @@ def main():
         default=32.0,
         help="Stop moving when the detected face center is within this many pixels of frame center.",
     )
-    parser.add_argument("--openclaw-base-url", default=optional_env("STACKCHAN_OPENCLAW_BASE_URL", "OPENCLAW_BASE_URL"))
-    parser.add_argument("--openclaw-token", default=optional_env("STACKCHAN_OPENCLAW_GATEWAY_TOKEN", "OPENCLAW_GATEWAY_TOKEN"))
-    parser.add_argument("--openclaw-model", default=os.environ.get("STACKCHAN_OPENCLAW_MODEL", "openclaw/default"))
-    parser.add_argument("--openclaw-backend-model", default=os.environ.get("STACKCHAN_OPENCLAW_BACKEND_MODEL", ""))
-    parser.add_argument("--openclaw-timeout", type=int, default=int(os.environ.get("STACKCHAN_OPENCLAW_TIMEOUT", "45")))
-    parser.add_argument("--openclaw-workers", type=int, default=int(os.environ.get("STACKCHAN_OPENCLAW_WORKERS", "4")))
-    parser.add_argument(
-        "--openclaw-max-completion-tokens",
-        type=int,
-        default=int(os.environ.get("STACKCHAN_OPENCLAW_MAX_COMPLETION_TOKENS", "512")),
-    )
-    parser.add_argument("--openclaw-session-prefix", default=os.environ.get("STACKCHAN_OPENCLAW_SESSION_PREFIX", "xiaopai"))
+    parser.add_argument("--morrow-base-url", default=os.environ.get("MORROW_BASE_URL", "http://127.0.0.1:3000"))
+    parser.add_argument("--morrow-session", default=os.environ.get("MORROW_SESSION", "default"))
+    parser.add_argument("--morrow-auth-token", default=os.environ.get("MORROW_AUTH_TOKEN", ""))
+    parser.add_argument("--morrow-connect-timeout", type=float, default=float(os.environ.get("MORROW_CONNECT_TIMEOUT_SECONDS", "10")))
+    parser.add_argument("--morrow-turn-timeout", type=float, default=float(os.environ.get("MORROW_TURN_TIMEOUT_SECONDS", "120")))
+    parser.add_argument("--morrow-reconnect-min", type=float, default=float(os.environ.get("MORROW_RECONNECT_MIN_SECONDS", "1")))
+    parser.add_argument("--morrow-reconnect-max", type=float, default=float(os.environ.get("MORROW_RECONNECT_MAX_SECONDS", "30")))
     parser.add_argument(
         "--realtime-enabled",
         action=argparse.BooleanOptionalAction,
@@ -4559,14 +4483,6 @@ def main():
     httpd.find_owner_gain_x = args.find_owner_gain_x
     httpd.find_owner_gain_y = args.find_owner_gain_y
     httpd.find_owner_stop_pixels = args.find_owner_stop_pixels
-    httpd.openclaw_base_url = args.openclaw_base_url
-    httpd.openclaw_token = args.openclaw_token
-    httpd.openclaw_model = args.openclaw_model
-    httpd.openclaw_backend_model = args.openclaw_backend_model
-    httpd.openclaw_timeout = args.openclaw_timeout
-    httpd.openclaw_max_completion_tokens = args.openclaw_max_completion_tokens
-    httpd.openclaw_session_prefix = args.openclaw_session_prefix
-    httpd.openclaw_executor = ThreadPoolExecutor(max_workers=max(1, args.openclaw_workers), thread_name_prefix="openclaw")
     httpd.realtime_manager = None
     httpd.xiaozhi_ws_path = args.xiaozhi_ws_path
     httpd.xiaozhi_ws_port = args.xiaozhi_ws_port or (args.port + 1)
@@ -4594,10 +4510,30 @@ def main():
     httpd.morrow_notice_stop_event = threading.Event()
     httpd.morrow_notice_thread = None
 
-    def enqueue_v3_delivery_command(device_id: str, command: dict) -> bool:
-        return enqueue_server_command(httpd, device_id, command, realtime_fallback=True, persist=False)
+    def enqueue_morrow_command(device_id: str, command: dict) -> bool:
+        return enqueue_server_command(httpd, device_id, command, persist=False)
 
-    httpd.delivery_coordinator = DeliveryCoordinator(httpd.command_store, enqueue=enqueue_v3_delivery_command)
+    httpd.morrow_client = MorrowClient(
+        base_url=args.morrow_base_url,
+        session=args.morrow_session,
+        auth_token=args.morrow_auth_token,
+        connect_timeout=args.morrow_connect_timeout,
+        reconnect_min=args.morrow_reconnect_min,
+        reconnect_max=args.morrow_reconnect_max,
+    ) if args.morrow_base_url else None
+    httpd.morrow_coordinator = MorrowTurnCoordinator(
+        httpd.morrow_client,
+        command_store_segment_sink(httpd.command_store, ttl_ms=60_000, enqueue=enqueue_morrow_command),
+        cancel_sink=lambda device_id, generation: httpd.command_store.cancel_pending_before_generation(device_id, generation),
+        queue_size=8,
+        request_ttl=60,
+        turn_timeout=args.morrow_turn_timeout,
+        max_segment_chars=args.max_sentence_chars,
+    ) if httpd.morrow_client else None
+    if httpd.morrow_coordinator:
+        if not httpd.morrow_client.check_status():
+            log_print(f"Morrow 启动检查失败，将后台持续重连: {httpd.morrow_client.last_error}", file=sys.stderr)
+        httpd.morrow_coordinator.start()
 
     def record_realtime_capture(metadata: dict) -> None:
         item = dict(metadata or {})
@@ -4608,7 +4544,7 @@ def main():
                 del httpd.recording_cache[: len(httpd.recording_cache) - DEVICE_RECORDING_MAX_ITEMS]
 
     def enqueue_realtime_http_command(device_id: str, command: dict) -> bool:
-        return enqueue_server_command(httpd, device_id, command, realtime_fallback=False)
+        return enqueue_server_command(httpd, device_id, command)
 
     def record_realtime_device_connected(device_id: str) -> None:
         reset_device_logs_for_reconnect(httpd, device_id)
@@ -4632,13 +4568,14 @@ def main():
             speech_rate=args.speech_rate,
             pitch_rate=args.pitch_rate,
             max_sentence_chars=args.max_sentence_chars,
-            openclaw_base_url=args.openclaw_base_url,
-            openclaw_token=args.openclaw_token,
-            openclaw_model=args.openclaw_model,
-            openclaw_backend_model=args.openclaw_backend_model,
-            openclaw_timeout=args.openclaw_timeout,
-            openclaw_session_prefix=args.openclaw_session_prefix,
-            openclaw_max_completion_tokens=args.openclaw_max_completion_tokens,
+            morrow_submit_callback=(
+                (lambda device_id, text: httpd.morrow_coordinator.submit(text, device_id, source="voice"))
+                if httpd.morrow_coordinator else None
+            ),
+            morrow_cancel_callback=(
+                (lambda device_id: httpd.morrow_coordinator.cancel_device(device_id))
+                if httpd.morrow_coordinator else None
+            ),
             audio_capture_dir=httpd.audio_capture_dir,
             save_audio_uploads=httpd.save_audio_uploads,
             recording_callback=record_realtime_capture,
@@ -4653,28 +4590,11 @@ def main():
             httpd.realtime_manager = None
             log_print(f"实时语音服务启动失败: {exc}", file=sys.stderr)
 
-    httpd.openclaw_agent = OpenClawAgent(
-        base_url=httpd.openclaw_base_url,
-        token=httpd.openclaw_token,
-        model=httpd.openclaw_model,
-        backend_model=httpd.openclaw_backend_model,
-        timeout=httpd.openclaw_timeout,
-        session_prefix=httpd.openclaw_session_prefix,
-        max_completion_tokens=httpd.openclaw_max_completion_tokens,
-        max_segment_chars=httpd.max_sentence_chars,
-    ) if httpd.openclaw_base_url else None
-
-    if httpd.openclaw_base_url:
-        httpd.morrow_notice_thread = threading.Thread(
-            target=run_morrow_notice_listener,
-            args=(httpd,),
-            name="morrow-notice",
-            daemon=True,
-        )
-        httpd.morrow_notice_thread.start()
 
     threading.Thread(target=run_periodic_ota_check_loop, args=(httpd,), name="ota-check", daemon=True).start()
     threading.Thread(target=run_morrow_notice_outbox_loop, args=(httpd,), name="morrow-outbox", daemon=True).start()
+    if httpd.morrow_client:
+        threading.Thread(target=run_morrow_notice_listener, args=(httpd,), name="morrow-notice-listener", daemon=True).start()
 
     log_print("小派服务已就绪")
     log_print(f"  人脸检测: {args.face_detector}")
@@ -4692,7 +4612,7 @@ def main():
     log_print(f"  设备日志文件: {httpd.device_log_dir}")
     log_print(f"  视觉跟踪: {'启用' if args.visual_tracking_enabled else '禁用'}")
     log_print(f"  命令队列: max_size={args.command_queue_max_size}")
-    log_print(f"  OpenClaw: {'启用' if httpd.openclaw_base_url and httpd.openclaw_token else '禁用'}")
+    log_print(f"  Morrow: {'启用' if httpd.morrow_coordinator else '禁用'} session={args.morrow_session}")
     ota_firmware = find_latest_ota_firmware(httpd.ota_firmware_file, httpd.ota_firmware_dir)
     log_print(
         "  OTA 固件: "
@@ -4733,8 +4653,7 @@ def main():
             f"  找人详情: gain_x={args.find_owner_gain_x} gain_y={args.find_owner_gain_y} "
             f"stop={args.find_owner_stop_pixels}px"
         )
-        log_print(f"  OpenClaw 详情: {httpd.openclaw_base_url or ''}")
-        log_print(f"  OpenClaw 工作线程: {args.openclaw_workers}")
+        log_print(f"  Morrow 详情: {args.morrow_base_url or ''} session={args.morrow_session}")
         if httpd.realtime_manager and httpd.realtime_manager.enabled:
             log_print(f"  小智 OTA: http://{args.host}:{args.port}/xiaozhi/ota")
             log_print(f"  小智 WS:  ws://{args.host}:{httpd.xiaozhi_ws_port}{args.xiaozhi_ws_path}")
@@ -4749,8 +4668,10 @@ def main():
         httpd.morrow_notice_stop_event.set()
         if httpd.realtime_manager:
             httpd.realtime_manager.stop()
-        if getattr(httpd, "openclaw_agent", None):
-            httpd.openclaw_agent.close()
+        if getattr(httpd, "morrow_coordinator", None):
+            httpd.morrow_coordinator.stop()
+        if getattr(httpd, "morrow_client", None):
+            httpd.morrow_client.stop()
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ InboundType = Literal[
     "turn_saved",
     "turn_rejected",
     "error",
+    "disconnected",
     "unknown",
 ]
 

@@ -6,7 +6,7 @@ Local bridge server for the Xiaopai firmware in this repository. It keeps cloud 
 
 - Aliyun NLS speech-to-text upload for recorded WAV/PCM audio.
 - Aliyun NLS text-to-speech as streaming `pcm_s16le` audio.
-- OpenClaw event bridge: speech recognition text and device events can be sent to OpenClaw; OpenClaw controls Xiaopai through the HTTP command API.
+- Morrow robot agent bridge: final speech recognition text is serialized through the default Morrow session.
 - Camera upload receiver for Xiaopai RGB565 frames.
 - Optional RGB565 conversion to PNG and BMP. The Xiaopai camera data is decoded as big-endian RGB565.
 - Local CPU face/head detection using OpenCV YuNet. Detected boxes are returned in the `/upload-image` response; visualizations are saved only in debug capture mode.
@@ -25,9 +25,9 @@ cat > .env <<'EOF'
 ALIYUN_AK_ID='your-access-key-id'
 ALIYUN_AK_SECRET='your-access-key-secret'
 ALIYUN_NLS_APPKEY='your-nls-appkey'
-OPENCLAW_BASE_URL='http://127.0.0.1:3000'
-# Optional, only if your morrow/OpenClaw endpoint requires bearer auth.
-OPENCLAW_GATEWAY_TOKEN=''
+MORROW_BASE_URL='http://127.0.0.1:3000'
+MORROW_SESSION='default'
+MORROW_AUTH_TOKEN=''
 EOF
 ./start.sh
 ```
@@ -129,7 +129,7 @@ Device ACK endpoint.
 
 `GET /device/event?device_id=...&type=head_touch&name=click`
 
-Device event endpoint. `head_touch` and `touch` are handled locally: the server queues `face: shy`, reports `openclaw_sent: false`, and returns without forwarding to OpenClaw. Other configured events can be forwarded to OpenClaw as short plain-text event descriptions; OpenClaw can then call `xiaopaiControl.execute` or the HTTP command endpoints to queue actions consumed by `/device/next-command`.
+Device event endpoint. `head_touch` and `touch` are handled locally. Business-language events are submitted to the global Morrow coordinator; device commands are consumed only through `/v3/device/next-command`.
 
 `GET /command/<type>`
 
@@ -191,7 +191,7 @@ also contains `最`, `声音最大` sets 100 and `声音最小` sets 10. The dev
 
 Audio upload endpoint for speech recognition. The body can be WAV or raw PCM. WAV sample rate is detected from the header; raw PCM defaults to `STACKCHAN_ALIYUN_SAMPLE_RATE` or `16000`.
 
-When Morrow/OpenClaw is configured, the recognized final ASR text is sent as a Morrow `start_turn` prompt over the session WebSocket. The server consumes streaming `text_delta` / `agent_message` output, splits speech on punctuation, queues each segment as a Xiaopai `speak` command, and the device plays it through `/stream-speak`. Legacy OpenAI-compatible `/v1/chat/completions` URLs remain supported as a non-streaming fallback.
+Final ASR text is sent as a Morrow `start_turn` prompt over the default session WebSocket. Streaming output is segmented and persisted as `speak` commands, and the device synthesizes it through `POST /v3/tts`.
 
 At server startup, Morrow WebSocket mode also opens a long-lived listener on `/api/sessions/default/ws` for proactive `robot_notice` messages. Each `robot_notice.data.text` is queued as Xiaopai speech for the currently online device; this listener is independent of user-triggered ASR turns.
 
@@ -202,7 +202,7 @@ Alias for `/upload`. The firmware uses this route in background listening mode.
 Response:
 
 ```json
-{"type": "stt", "text": "...", "task_id": "...", "handled_as": "openclaw_forwarded", "openclaw_sent": true}
+{"type": "stt", "text": "...", "task_id": "...", "handled_as": "morrow_forwarded", "morrow_submitted": true}
 ```
 
 `GET /stream-speak?text=...`
@@ -381,14 +381,13 @@ Environment variables:
 | `STACKCHAN_YUNET_SCORE_THRESHOLD` | `0.45` | YuNet confidence threshold |
 | `STACKCHAN_YUNET_NMS_THRESHOLD` | `0.3` | YuNet non-maximum suppression threshold |
 | `STACKCHAN_YUNET_TOP_K` | `5000` | YuNet pre-NMS top-k candidate limit |
-| `OPENCLAW_BASE_URL` / `STACKCHAN_OPENCLAW_BASE_URL` | empty | Morrow robot server base URL, for example `http://127.0.0.1:3000`; legacy `/v1` chat-completions URLs remain supported |
-| `OPENCLAW_GATEWAY_TOKEN` / `STACKCHAN_OPENCLAW_GATEWAY_TOKEN` | empty | Optional bearer token if the Morrow/OpenClaw endpoint requires auth |
-| `STACKCHAN_OPENCLAW_MODEL` | `openclaw/default` | Legacy OpenAI-compatible target; ignored by Morrow WebSocket mode |
-| `STACKCHAN_OPENCLAW_BACKEND_MODEL` | empty | Legacy optional `x-openclaw-model` override |
-| `STACKCHAN_OPENCLAW_TIMEOUT` | `45` | Morrow/OpenClaw request timeout in seconds |
-| `STACKCHAN_OPENCLAW_WORKERS` | `4` | Background Morrow/OpenClaw event forwarding workers |
-| `STACKCHAN_OPENCLAW_MAX_COMPLETION_TOKENS` | `512` | Legacy max OpenClaw output tokens |
-| `STACKCHAN_OPENCLAW_SESSION_PREFIX` | `default` | Morrow chat session selector. `default` uses `/api/sessions/default/ws`; other values create per-device chat sessions with that prefix. Proactive `robot_notice` is always consumed from the Morrow `default` session listener |
+| `MORROW_BASE_URL` | `http://127.0.0.1:3000` | Morrow robot server base URL |
+| `MORROW_SESSION` | `default` | Fixed Morrow session used for dialogue and proactive notices |
+| `MORROW_AUTH_TOKEN` | empty | Optional proxy bearer token |
+| `MORROW_CONNECT_TIMEOUT_SECONDS` | `10` | Startup and WebSocket connection timeout |
+| `MORROW_TURN_TIMEOUT_SECONDS` | `120` | Maximum duration of one serialized turn |
+| `MORROW_RECONNECT_MIN_SECONDS` | `1` | Initial reconnect delay |
+| `MORROW_RECONNECT_MAX_SECONDS` | `30` | Maximum reconnect delay |
 
 ## Firmware URLs
 

@@ -12,6 +12,7 @@ import queue
 import threading
 import time
 import urllib.parse
+import urllib.request
 from typing import Any, Callable
 
 from morrow_protocol import (
@@ -78,6 +79,7 @@ class MorrowClient:
         self.last_message_at = 0.0
         self.last_notice_at = 0.0
         self.last_error = ""
+        self.metrics = {"morrow_ws_reconnect_total": 0, "morrow_notice_received_total": 0}
 
     @property
     def connected(self) -> bool:
@@ -118,6 +120,19 @@ class MorrowClient:
     def wait_ready(self, timeout: float | None = None) -> bool:
         self.start()
         return self._ready.wait(timeout)
+
+    def check_status(self) -> bool:
+        """Perform the deployment startup probe without making availability fatal."""
+        parsed = urllib.parse.urlparse(self.base_url)
+        scheme = "https" if parsed.scheme == "wss" else "http" if parsed.scheme == "ws" else parsed.scheme
+        url = urllib.parse.urlunparse((scheme or "http", parsed.netloc, "/api/status", "", "", ""))
+        request = urllib.request.Request(url, headers={"Authorization": f"Bearer {self.auth_token}"} if self.auth_token else {})
+        try:
+            with urllib.request.urlopen(request, timeout=self.connect_timeout) as response:
+                return 200 <= int(response.status) < 300
+        except Exception as exc:
+            self.last_error = f"status check failed: {exc}"
+            return False
 
     def start_turn(self, request_id: str, prompt: str) -> None:
         self._send(build_start_turn(request_id, prompt))
@@ -163,8 +178,13 @@ class MorrowClient:
                 if not self._stop.is_set():
                     raise RuntimeError("Morrow WebSocket closed")
             except Exception as exc:
+                self.metrics["morrow_ws_reconnect_total"] += 1
                 self.last_error = str(exc)
                 LOGGER.warning("Morrow connection failed: %s", exc)
+                try:
+                    self.events.put_nowait(MorrowEvent("disconnected", {"message": str(exc)}, {}))
+                except queue.Full:
+                    pass
             finally:
                 self._connected.clear()
                 self._ready.clear()
@@ -197,6 +217,7 @@ class MorrowClient:
                     self._morrow_turn_id = snapshot_running_turn_id(event.data)
                 self._ready.set()
             elif event.type == "robot_notice":
+                self.metrics["morrow_notice_received_total"] += 1
                 notice = event.data if isinstance(event.data, dict) else {}
                 self.last_notice_at = self.last_message_at
                 try:
