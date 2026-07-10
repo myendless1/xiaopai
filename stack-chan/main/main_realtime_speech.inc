@@ -268,10 +268,10 @@ static void* create_opus_encoder(int& frame_size_samples, int& outbuf_size)
     cfg.sample_rate = ESP_AUDIO_SAMPLE_RATE_16K;
     cfg.channel = ESP_AUDIO_MONO;
     cfg.bits_per_sample = ESP_AUDIO_BIT16;
-    cfg.bitrate = ESP_OPUS_BITRATE_AUTO;
+    cfg.bitrate = 48000;
     cfg.frame_duration = ESP_OPUS_ENC_FRAME_DURATION_60_MS;
     cfg.application_mode = ESP_OPUS_ENC_APPLICATION_AUDIO;
-    cfg.complexity = 0;
+    cfg.complexity = 3;
     cfg.enable_fec = false;
     cfg.enable_dtx = true;
     cfg.enable_vbr = true;
@@ -1020,6 +1020,7 @@ static void run_realtime_speech_loop()
     set_light_strip_listening();
     std::vector<int16_t> probe(kVoiceProbeSamples);
     uint32_t last_status_ms = 0;
+    uint32_t waiting_started_ms = 0;
     bool got_hello = true;
     std::string stt_text;
     while (!app1_stop_requested) {
@@ -1042,6 +1043,28 @@ static void run_realtime_speech_loop()
                     !reconnect_ws("websocket read failed while paused")) {
                     break;
                 }
+                LocalVoiceState current_state = xiaopai_state_get().state;
+                if (current_state == LocalVoiceState::Waiting) {
+                    uint32_t now_ms = M5.millis();
+                    if (waiting_started_ms == 0) {
+                        waiting_started_ms = now_ms;
+                    } else if (static_cast<uint32_t>(now_ms - waiting_started_ms) >= kWaitingReplyTimeoutMs) {
+                        ESP_LOGE(TAG,
+                                 "Waiting for Morrow timed out after %u ms; cancelling turn and resuming listening",
+                                 static_cast<unsigned>(kWaitingReplyTimeoutMs));
+                        std::string abort_message = std::string("{\"session_id\":\"") + realtime_config.session_id +
+                                                    "\",\"type\":\"abort\",\"reason\":\"waiting_timeout\"}";
+                        if (!send_ws_text(ws, abort_message, "waiting timeout abort")) {
+                            ESP_LOGW(TAG, "Failed to notify server about waiting timeout");
+                        }
+                        xiaopai_state_set(LocalVoiceState::Listening, "Morrow waiting timeout");
+                        expression_state_set(kDefaultExpression);
+                        waiting_started_ms = 0;
+                        break;
+                    }
+                } else {
+                    waiting_started_ms = 0;
+                }
                 vTaskDelay(pdMS_TO_TICKS(20));
             }
             if (app1_stop_requested) {
@@ -1051,6 +1074,7 @@ static void run_realtime_speech_loop()
                 continue;
             }
             last_status_ms = 0;
+            waiting_started_ms = 0;
             stt_text.clear();
             xiaopai_state_apply_outputs(xiaopai_state_get().state);
             if (xiaopai_state_get().state == LocalVoiceState::Idle) {
@@ -1136,7 +1160,7 @@ void run_realtime_speech()
     ESP_LOGI(TAG, "Starting realtime speech loop over WebSocket");
     set_app1_status("Realtime", "Preparing streaming speech", "Waiting for local server", "", true, false);
     ensure_client_id();
-    if (!ensure_network_ready()) {
+    if (!wait_for_network_ready()) {
         return;
     }
     if (!request_local_ota_config() && !configure_local_websocket()) {

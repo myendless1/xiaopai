@@ -876,7 +876,11 @@ def parse_int_range(value, *, default: int, name: str, min_value: int, max_value
 
 
 def tts_request_options_from_params(server, params: dict) -> TtsRequestOptions:
-    voice = str(params.get("voice") or getattr(server, "voice", DEFAULT_TTS_VOICE) or DEFAULT_TTS_VOICE).strip()
+    configured_voice = str(getattr(server, "voice", DEFAULT_TTS_VOICE) or DEFAULT_TTS_VOICE).strip()
+    requested_voice = str(params.get("voice") or "").strip()
+    # Firmware sends the sentinel "default" when no explicit voice was
+    # selected. It is not an Aliyun voice ID; resolve it locally.
+    voice = configured_voice if not requested_voice or requested_voice.lower() == "default" else requested_voice
     if not voice:
         raise ValueError("voice must not be empty")
     audio_format = str(params.get("format") or params.get("audio_format") or "pcm").strip().lower().lstrip(".")

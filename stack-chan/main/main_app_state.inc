@@ -12,6 +12,7 @@ enum class AppId {
 static constexpr const char* TAG = "Xiaopai";
 static constexpr int kWifiConnectedBit = BIT0;
 static constexpr int kWifiFailedBit = BIT1;
+static constexpr int kNetworkReadyBit = BIT2;
 static constexpr int kHttpBufferSize = 4096;
 static constexpr int kAudioUploadTimeoutMs = 60000;
 static constexpr int kAudioSampleRate = 16000;
@@ -22,11 +23,12 @@ static constexpr int kRecordChunkMs = CONFIG_STACKCHAN_RECORD_CHUNK_MS;
 static constexpr int kVoiceProbeSamples = kRecordSampleRate * kRecordChunkMs / 1000;
 static constexpr int kPreRollMs = CONFIG_STACKCHAN_PREROLL_MS;
 static constexpr int kPreRollSamples = kRecordSampleRate * kPreRollMs / 1000;
-static constexpr int kVoiceStartThreshold = CONFIG_STACKCHAN_VOICE_START_THRESHOLD;
+static constexpr int kVoiceStartThreshold = 2000;
 static constexpr int kVoiceStopThreshold = CONFIG_STACKCHAN_VOICE_STOP_THRESHOLD;
 static constexpr int kRecordMaxMs = CONFIG_STACKCHAN_RECORD_MAX_MS;
 static constexpr int kSilenceStopMs = CONFIG_STACKCHAN_SILENCE_STOP_MS;
 static constexpr int kRealtimeSttDrainTimeoutMs = 1800;
+static constexpr uint32_t kWaitingReplyTimeoutMs = 30 * 1000;
 static constexpr int kTtsStreamSampleRate = 16000;
 static constexpr size_t kTtsStreamBufferSamples = 1024;
 static constexpr int kSpeakerDmaTailDrainMs = 384;
@@ -34,7 +36,7 @@ static constexpr int kPostSpeechEchoGuardMs = 400;
 static constexpr int kLauncherAppCount = 5;
 static constexpr bool kShowAppStatusScreens = false;
 static constexpr uint32_t kWifiTaskStackBytes = 8 * 1024;
-static constexpr uint32_t kApp1TaskStackBytes = 28 * 1024;
+static constexpr uint32_t kApp1TaskStackBytes = 22 * 1024;
 static constexpr uint32_t kApp2TaskStackBytes = 16 * 1024;
 static constexpr uint32_t kCommandTaskStackBytes = 8 * 1024;
 static constexpr uint32_t kWifiDebugTaskStackBytes = 10 * 1024;
@@ -135,6 +137,16 @@ std::atomic<AppId> current_app{AppId::Launcher};
 int selected_menu = 0;
 TaskHandle_t wifi_task_handle = nullptr;
 TaskHandle_t realtime_task_handle = nullptr;
+
+static_assert(kApp1TaskStackBytes % sizeof(StackType_t) == 0, "Stack size must align to StackType_t");
+DRAM_ATTR static StackType_t s_realtime_stack[kApp1TaskStackBytes / sizeof(StackType_t)];
+DRAM_ATTR static StaticTask_t s_realtime_tcb;
+std::atomic<bool> realtime_task_active{false};
+
+static_assert(kCommandTaskStackBytes % sizeof(StackType_t) == 0, "Stack size must align to StackType_t");
+DRAM_ATTR static StackType_t s_command_stack[kCommandTaskStackBytes / sizeof(StackType_t)];
+DRAM_ATTR static StaticTask_t s_command_tcb;
+
 TaskHandle_t stream_tts_task_handle = nullptr;
 TaskHandle_t camera_upload_task_handle = nullptr;
 TaskHandle_t tracking_task_handle = nullptr;
@@ -151,6 +163,7 @@ TaskHandle_t heartbeat_task_handle = nullptr;
 EventGroupHandle_t wifi_event_group = nullptr;
 SemaphoreHandle_t m5_mutex = nullptr;
 SemaphoreHandle_t audio_mutex = nullptr;
+SemaphoreHandle_t provisioning_mutex = nullptr;
 QueueHandle_t head_touch_event_queue = nullptr;
 QueueHandle_t speak_command_queue = nullptr;
 int wifi_retry_count = 0;
@@ -213,6 +226,13 @@ static constexpr uint32_t kProvisioningStopDelayMs = 700;
 static constexpr uint32_t kProvisioningStopTaskStackBytes = 4 * 1024;
 bool wifi_sta_netif_created = false;
 bool wifi_ap_netif_created = false;
+enum class ProvisioningState : uint8_t {
+    Stopped,
+    Starting,
+    Running,
+    Stopping,
+};
+ProvisioningState provisioning_state = ProvisioningState::Stopped;
 bool provisioning_started = false;
 bool provisioning_stop_pending = false;
 httpd_handle_t provisioning_httpd = nullptr;
@@ -1072,12 +1092,12 @@ void enter_app(AppId app)
     if (app == AppId::VoiceDemo) {
         supervisor_set_app1_stop_requested(false, "start voice demo");
         set_app1_status("Starting", "Local recording upload");
-        if (realtime_task_handle == nullptr) {
-            xTaskCreatePinnedToCore([](void*) {
-                ::run_realtime_speech();
-                realtime_task_handle = nullptr;
-                vTaskDelete(nullptr);
-            }, "realtime_audio_task", kApp1TaskStackBytes, nullptr, 5, &realtime_task_handle, 0);
+        if (!realtime_task_active.load()) {
+            if (realtime_task_handle != nullptr) {
+                xTaskNotifyGive(realtime_task_handle);
+            } else {
+                set_app1_status("Error", "Static task not initialized");
+            }
         } else {
             set_app1_status("Running", "Probe task is already running");
         }

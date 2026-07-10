@@ -462,6 +462,18 @@ class RealtimeMappingTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "speech_rate"):
             tts_request_options_from_params(FakeServer, {"speech_rate": "999"})
 
+    def test_tts_default_voice_sentinel_uses_server_voice(self):
+        class FakeServer:
+            voice = "zhimiao_emo"
+            sample_rate = 16000
+            volume = 80
+            speech_rate = 0
+            pitch_rate = 0
+
+        options = tts_request_options_from_params(FakeServer, {"voice": "default"})
+
+        self.assertEqual(options.voice, "zhimiao_emo")
+
     def test_realtime_speak_only_aborts_when_interrupting(self):
         class FakeWebSocket:
             def __init__(self):

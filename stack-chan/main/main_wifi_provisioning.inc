@@ -12,6 +12,9 @@ static void wifi_event_handler(void*, esp_event_base_t event_base, int32_t event
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         auto* event = static_cast<wifi_event_sta_disconnected_t*>(event_data);
         ESP_LOGW(TAG, "WiFi disconnected, reason=%d", event ? event->reason : -1);
+        if (wifi_event_group != nullptr) {
+            xEventGroupClearBits(wifi_event_group, kNetworkReadyBit);
+        }
         if (wifi_manual_switching) {
             return;
         }
@@ -219,6 +222,17 @@ static bool load_saved_server_base(std::string& base)
 
 static void stop_provisioning_portal()
 {
+    if (provisioning_mutex == nullptr ||
+        xSemaphoreTake(provisioning_mutex, portMAX_DELAY) != pdTRUE) {
+        ESP_LOGE(TAG, "Could not lock provisioning service for stop");
+        return;
+    }
+    if (provisioning_state == ProvisioningState::Stopped) {
+        provisioning_stop_pending = false;
+        xSemaphoreGive(provisioning_mutex);
+        return;
+    }
+    provisioning_state = ProvisioningState::Stopping;
     httpd_handle_t httpd = provisioning_httpd;
     provisioning_httpd = nullptr;
     provisioning_started = false;
@@ -241,6 +255,8 @@ static void stop_provisioning_portal()
     } else {
         ESP_LOGI(TAG, "Provisioning portal stopped without STA connection");
     }
+    provisioning_state = ProvisioningState::Stopped;
+    xSemaphoreGive(provisioning_mutex);
 }
 
 static void schedule_stop_provisioning_portal()
@@ -708,10 +724,19 @@ static esp_err_t provisioning_connect_handler(httpd_req_t* req)
 
 static bool start_provisioning_portal()
 {
-    if (provisioning_started) {
+    if (provisioning_mutex == nullptr ||
+        xSemaphoreTake(provisioning_mutex, portMAX_DELAY) != pdTRUE) {
+        ESP_LOGE(TAG, "Could not lock provisioning service for start");
+        return false;
+    }
+    if (provisioning_state == ProvisioningState::Running) {
+        xSemaphoreGive(provisioning_mutex);
         return true;
     }
+    provisioning_state = ProvisioningState::Starting;
     if (!ensure_wifi_stack_started()) {
+        provisioning_state = ProvisioningState::Stopped;
+        xSemaphoreGive(provisioning_mutex);
         return false;
     }
 
@@ -740,7 +765,15 @@ static bool start_provisioning_portal()
         httpd_config_t config = HTTPD_DEFAULT_CONFIG();
         config.lru_purge_enable = true;
         config.stack_size = 6144;
-        ESP_ERROR_CHECK(httpd_start(&provisioning_httpd, &config));
+        esp_err_t httpd_err = httpd_start(&provisioning_httpd, &config);
+        if (httpd_err != ESP_OK) {
+            provisioning_httpd = nullptr;
+            provisioning_started = false;
+            provisioning_state = ProvisioningState::Stopped;
+            ESP_LOGE(TAG, "Provisioning HTTP server start failed: %s", esp_err_to_name(httpd_err));
+            xSemaphoreGive(provisioning_mutex);
+            return false;
+        }
 
         httpd_uri_t index_uri = {
             .uri = "/",
@@ -766,6 +799,8 @@ static bool start_provisioning_portal()
     }
 
     provisioning_started = true;
+    provisioning_state = ProvisioningState::Running;
+    xSemaphoreGive(provisioning_mutex);
     {
         M5Lock lock;
         draw_wifi_setup_steps(ap_ssid.c_str());
@@ -967,12 +1002,17 @@ static bool try_saved_network_ready()
 
 static bool ensure_network_ready()
 {
-    if (!provisioning_started && !start_provisioning_portal()) {
+    if (wifi_event_group != nullptr) {
+        xEventGroupClearBits(wifi_event_group, kNetworkReadyBit);
+    }
+    // Idempotent and serialized: callers never perform a check-then-start race.
+    if (!start_provisioning_portal()) {
         set_current_network_status("Setup", "Could not start portal", "", "", false, false);
         return false;
     }
 
     if (try_saved_network_ready()) {
+        xEventGroupSetBits(wifi_event_group, kNetworkReadyBit);
         return true;
     }
 
@@ -980,5 +1020,25 @@ static bool ensure_network_ready()
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 
+    xEventGroupSetBits(wifi_event_group, kNetworkReadyBit);
     return true;
+}
+
+static bool wait_for_network_ready()
+{
+    ESP_LOGI(TAG, "Realtime speech waiting for network supervisor");
+    while (!app1_stop_requested.load()) {
+        EventGroupHandle_t events = wifi_event_group;
+        if (events != nullptr) {
+            EventBits_t bits = xEventGroupWaitBits(events, kNetworkReadyBit, pdFALSE, pdTRUE,
+                                                   pdMS_TO_TICKS(500));
+            if ((bits & kNetworkReadyBit) != 0) {
+                return true;
+            }
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+    }
+    ESP_LOGI(TAG, "Realtime speech stopped while waiting for network supervisor");
+    return false;
 }

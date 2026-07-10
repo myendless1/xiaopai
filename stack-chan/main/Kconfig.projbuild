@@ -54,6 +54,13 @@ menu "Xiaopai settings"
         bool "Enable full-duplex CoreS3 audio service"
         default y
 
+    config STACKCHAN_AUDIO_TX_ENABLED
+        bool "Enable CoreS3 speaker I2S TX"
+        default y
+        help
+            Disable this for microphone-only diagnostics. When disabled, the
+            AW88298 speaker output and I2S TX channel are not initialized.
+
     config STACKCHAN_AUDIO_DEVICE_AEC
         bool "Enable device-side AEC with ESP-SR AFE"
         default n
@@ -96,11 +103,11 @@ menu "Xiaopai settings"
 
     config STACKCHAN_VOICE_STOP_THRESHOLD
         int "Voice stop threshold"
-        default 1800
+        default 800
 
     config STACKCHAN_MIC_MAGNIFICATION
         int "Microphone magnification"
-        default 8
+        default 1
 
     config STACKCHAN_DJI_MIC_USB_INPUT
         bool "Enable DJI Mic receiver USB input auto-switch"

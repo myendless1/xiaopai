@@ -81,6 +81,8 @@
 #endif
 
 void run_realtime_speech();
+bool create_realtime_task_early();
+bool create_command_task_early();
 bool check_and_apply_firmware_ota_once();
 void run_stream_tts_demo();
 void run_wifi_connect_app();
@@ -327,12 +329,19 @@ static void schedule_dji_mic_after_boot()
 extern "C" void app_main(void)
 {
     ESP_ERROR_CHECK(init_nvs_once());
+    create_realtime_task_early();
+    create_command_task_early();
     install_wifi_debug_log_sink();
     esp_reset_reason_t reset_reason = esp_reset_reason();
     ESP_LOGW(TAG, "Boot reset reason: %s (%d)", reset_reason_name(reset_reason), static_cast<int>(reset_reason));
     force_core_s3_display_board();
     m5_mutex = xSemaphoreCreateMutex();
     audio_mutex = xSemaphoreCreateMutex();
+    provisioning_mutex = xSemaphoreCreateMutex();
+    if (m5_mutex == nullptr || audio_mutex == nullptr || provisioning_mutex == nullptr) {
+        ESP_LOGE(TAG, "Failed to create required service mutexes");
+        return;
+    }
     xiaopai_state_init({
         set_light_strip_sleeping,
         set_listening_outputs,

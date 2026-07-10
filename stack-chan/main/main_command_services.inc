@@ -548,6 +548,41 @@ static void run_command_http_loop()
     }
 }
 
+static void command_task_entry(void*)
+{
+    ESP_LOGI(TAG, "Static HTTP command long-poll task started, waiting for network...");
+    while (true) {
+        run_command_http_loop();
+        ESP_LOGE(TAG, "HTTP command long-poll loop exited unexpectedly; retrying in 1 second");
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+bool create_command_task_early()
+{
+    if (!kUseHttpCommandLongPoll || command_task_handle != nullptr) {
+        return true;
+    }
+
+    command_task_handle = xTaskCreateStaticPinnedToCore(
+        command_task_entry,
+        "control_transport_task",
+        sizeof(s_command_stack),
+        nullptr,
+        5,
+        s_command_stack,
+        &s_command_tcb,
+        0
+    );
+    if (command_task_handle == nullptr) {
+        ESP_LOGE(TAG, "Failed to create static HTTP command long-poll task");
+        return false;
+    }
+    ESP_LOGI(TAG, "Static HTTP command long-poll task created, stack=%u bytes",
+             static_cast<unsigned>(sizeof(s_command_stack)));
+    return true;
+}
+
 static void log_task_stack_watermark(const char* name, TaskHandle_t handle)
 {
     if (handle == nullptr) {
@@ -625,6 +660,48 @@ static void start_memory_monitor_service()
     }
 }
 
+static void realtime_task_entry(void*)
+{
+    ESP_LOGI(TAG, "Static realtime task entry started, waiting for notification...");
+    while (true) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        ESP_LOGI(TAG, "Static realtime task notified, starting speech loop...");
+        realtime_task_active.store(true);
+
+        run_realtime_speech();
+
+        realtime_task_active.store(false);
+        ESP_LOGI(TAG, "Static realtime task speech loop finished, waiting again...");
+    }
+}
+
+bool create_realtime_task_early()
+{
+    if (realtime_task_handle != nullptr) {
+        return true;
+    }
+
+    realtime_task_handle = xTaskCreateStaticPinnedToCore(
+        realtime_task_entry,
+        "realtime_audio_task",
+        sizeof(s_realtime_stack),
+        nullptr,
+        5,
+        s_realtime_stack,
+        &s_realtime_tcb,
+        0
+    );
+
+    if (realtime_task_handle == nullptr) {
+        ESP_LOGE(TAG, "Failed to create static realtime voice task");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Static realtime task created, stack=%u bytes",
+             static_cast<unsigned>(sizeof(s_realtime_stack)));
+    return true;
+}
+
 static void start_background_services()
 {
     supervisor_set_current_app(AppId::WifiConnect, "wifi provisioning command");
@@ -671,37 +748,23 @@ static void start_background_services()
         // start_sedentary_find_owner_service();
         log_memory_snapshot("after helper tasks");
 
-        if (realtime_task_handle == nullptr) {
+        if (!realtime_task_active.load()) {
             supervisor_set_app1_stop_requested(false, "command starts voice demo");
-            log_memory_snapshot("before bg_voice create");
-            BaseType_t created = xTaskCreatePinnedToCore([](void*) {
-                run_realtime_speech();
-                realtime_task_handle = nullptr;
-                vTaskDelete(nullptr);
-            }, "realtime_audio_task", kApp1TaskStackBytes, nullptr, 5, &realtime_task_handle, 0);
-            if (created == pdPASS) {
-                ESP_LOGI(TAG, "Realtime voice task created");
+            log_memory_snapshot("before bg_voice notify");
+            if (realtime_task_handle != nullptr) {
+                xTaskNotifyGive(realtime_task_handle);
+                ESP_LOGI(TAG, "Realtime voice task notified");
             } else {
-                realtime_task_handle = nullptr;
-                ESP_LOGE(TAG, "Failed to create realtime voice task");
+                ESP_LOGE(TAG, "Static realtime task not initialized");
             }
-            log_memory_snapshot("after bg_voice create");
+            log_memory_snapshot("after bg_voice notify");
         }
 
         start_memory_monitor_service();
 
         if (kUseHttpCommandLongPoll && command_task_handle == nullptr) {
-            BaseType_t created = xTaskCreatePinnedToCore([](void*) {
-                run_command_http_loop();
-                command_task_handle = nullptr;
-                vTaskDelete(nullptr);
-            }, "control_transport_task", kCommandTaskStackBytes, nullptr, 5, &command_task_handle, 0);
-            if (created == pdPASS) {
-                ESP_LOGI(TAG, "HTTP command long-poll task created");
-            } else {
-                command_task_handle = nullptr;
-                ESP_LOGE(TAG, "Failed to create HTTP command long-poll task");
-            }
+            ESP_LOGW(TAG, "HTTP command task missing after early boot; retrying static creation");
+            create_command_task_early();
         }
 
         boot_task_handle = nullptr;

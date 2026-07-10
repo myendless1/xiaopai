@@ -694,7 +694,7 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
         return false;
     }
     JobHeader playback_job = xiaopai_make_job_header("", xiaopai_boot_id, 0);
-    bool should_pause_listener = pause_voice_listener || realtime_task_handle != nullptr;
+    bool should_pause_listener = pause_voice_listener || realtime_task_active.load();
     VoiceListenerPauseGuard* voice_pause =
         should_pause_listener ? new VoiceListenerPauseGuard("speak command") : nullptr;
 

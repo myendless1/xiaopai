@@ -40,6 +40,9 @@
 #ifndef CONFIG_STACKCHAN_AUDIO_FULL_DUPLEX
 #define CONFIG_STACKCHAN_AUDIO_FULL_DUPLEX 1
 #endif
+#ifndef CONFIG_STACKCHAN_AUDIO_TX_ENABLED
+#define CONFIG_STACKCHAN_AUDIO_TX_ENABLED 1
+#endif
 #ifndef CONFIG_STACKCHAN_AUDIO_DEVICE_AEC
 #define CONFIG_STACKCHAN_AUDIO_DEVICE_AEC 0
 #endif
@@ -94,7 +97,8 @@ static constexpr int kOpusFrameDurationMs = 60;
 static constexpr int kProtocolFrameSamples = kProtocolSampleRate * kOpusFrameDurationMs / 1000;
 static constexpr bool kDeviceAecEnabled = CONFIG_STACKCHAN_AUDIO_DEVICE_AEC && CONFIG_STACKCHAN_AUDIO_INPUT_REFERENCE;
 static constexpr int kInputChannels = 2;
-static constexpr uint16_t kRawInputChannelMask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0);
+static constexpr uint16_t kRawInputChannelMask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0) |
+                                                 ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
 static constexpr uint16_t kAecInputChannelMask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0) |
                                                 ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
 static constexpr uint16_t kEs7210MicChannelMask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0) |
@@ -1379,6 +1383,14 @@ private:
 
     bool ensure_output_started(const char* reason)
     {
+#if !CONFIG_STACKCHAN_AUDIO_TX_ENABLED
+        static std::atomic<bool> disabled_logged{false};
+        if (!disabled_logged.exchange(true)) {
+            ESP_LOGW(TAG, "扬声器I2S TX已通过CONFIG_STACKCHAN_AUDIO_TX_ENABLED关闭: reason=%s",
+                     reason != nullptr ? reason : "-");
+        }
+        return true;
+#else
         if (codec_output_started_.load()) {
             return true;
         }
@@ -1389,6 +1401,7 @@ private:
         codec_output_started_ = true;
         ESP_LOGI(TAG, "扬声器输出已启动: reason=%s", reason != nullptr ? reason : "-");
         return true;
+#endif
     }
 
     bool ensure_internal_input_started(const char* reason)
