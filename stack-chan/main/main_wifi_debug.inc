@@ -243,15 +243,21 @@ static void run_wifi_debug_loop()
 
 static void start_wifi_debug_service()
 {
+#if !CONFIG_STACKCHAN_WIFI_DEBUG
+    ESP_LOGI(TAG, "WiFi debug log task is disabled by Kconfig");
+    return;
+#endif
     if (wifi_debug_task_handle != nullptr) {
         return;
     }
     BaseType_t created = xTaskCreatePinnedToCore([](void*) {
         run_wifi_debug_loop();
         wifi_debug_task_handle = nullptr;
+        audio_service_register_wifi_debug_task(nullptr);
         vTaskDelete(nullptr);
     }, "wifi_debug", kWifiDebugTaskStackBytes, nullptr, 3, &wifi_debug_task_handle, 0);
     if (created == pdPASS) {
+        audio_service_register_wifi_debug_task(wifi_debug_task_handle);
         ESP_LOGI(TAG, "WiFi debug log task created");
     } else {
         wifi_debug_task_handle = nullptr;

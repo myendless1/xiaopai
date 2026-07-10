@@ -10,6 +10,8 @@ managed_components/
 .component_hash
 .component_manager_hash
 sdkconfig.old
+sdkconfig.local.defaults
+sdkconfig.backup
 .env
 stack-chan-server/.env
 *.a

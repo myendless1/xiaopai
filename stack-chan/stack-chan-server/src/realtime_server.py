@@ -949,6 +949,9 @@ class RealtimeManager:
         threading.Thread(target=produce_pcm, name=f"tts-{session.device_id}", daemon=True).start()
 
         pcm_buffer = bytearray()
+        first_frame = True
+        frame_duration = self._opus.samples_per_frame / self.config.sample_rate
+        next_send_at = loop.time()
         try:
             while True:
                 item = await loop.run_in_executor(None, queue.get)
@@ -962,12 +965,28 @@ class RealtimeManager:
                 while len(pcm_buffer) >= self._pcm_bytes_per_frame:
                     pcm_frame = bytes(pcm_buffer[: self._pcm_bytes_per_frame])
                     del pcm_buffer[: self._pcm_bytes_per_frame]
+                    
+                    if not first_frame:
+                        next_send_at += frame_duration
+                        now = loop.time()
+                        if now < next_send_at:
+                            await asyncio.sleep(next_send_at - now)
+                        elif now - next_send_at > frame_duration:
+                            next_send_at = now
+                    
                     await session.websocket.send(self._opus.encode(pcm_frame))
                     if "tts_first_opus_sent" not in session.latency_marks:
                         self._mark(session, "tts_first_opus_sent")
-                    await asyncio.sleep(0)
+                    first_frame = False
             if pcm_buffer:
                 pcm_frame = bytes(pcm_buffer).ljust(self._pcm_bytes_per_frame, b"\x00")
+                if not first_frame:
+                    next_send_at += frame_duration
+                    now = loop.time()
+                    if now < next_send_at:
+                        await asyncio.sleep(next_send_at - now)
+                    elif now - next_send_at > frame_duration:
+                        next_send_at = now
                 await session.websocket.send(self._opus.encode(pcm_frame))
                 if "tts_first_opus_sent" not in session.latency_marks:
                     self._mark(session, "tts_first_opus_sent")

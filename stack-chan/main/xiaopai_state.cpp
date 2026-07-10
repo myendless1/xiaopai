@@ -479,6 +479,11 @@ void xiaopai_state_init(const LocalVoiceStateHooks& voice_hooks)
     xiaopai_system_mode_set(SystemMode::Active, "init");
 }
 
+TaskHandle_t xiaopai_supervisor_get_task_handle()
+{
+    return supervisor_task_handle;
+}
+
 XiaopaiStateSnapshot xiaopai_state_get()
 {
     return state_snapshot_unlocked();

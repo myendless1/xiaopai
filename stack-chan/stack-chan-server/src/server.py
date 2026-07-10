@@ -2940,6 +2940,8 @@ class Handler(BaseHTTPRequestHandler):
             params = self._tts_request_params(query, body)
             params["format"] = "pcm"
             options = tts_request_options_from_params(self.server, params)
+            if options.sample_rate != 16000:
+                raise ValueError("device TTS only supports 16000 Hz PCM")
         except (json.JSONDecodeError, ValueError) as exc:
             self._send_json({"type": "error", "message": str(exc)}, HTTPStatus.BAD_REQUEST)
             return

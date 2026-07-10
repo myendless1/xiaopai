@@ -74,7 +74,15 @@
 #define CONFIG_STACKCHAN_DJI_MIC_START_DELAY_MS 5000
 #endif
 
+extern "C" {
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+}
+
 namespace {
+
+class XiaopaiAudioService;
+static XiaopaiAudioService* g_audio_service_ptr = nullptr;
 
 static constexpr const char* TAG = "XiaopaiAudio";
 static constexpr i2s_port_t kAudioI2sPort = I2S_NUM_0;
@@ -122,6 +130,7 @@ static constexpr uint8_t kAw9523BoostPowerMask = 0b10000000;
 
 struct AudioBlock {
     size_t samples = 0;
+    bool in_use = false;
     int16_t data[1];
 };
 
@@ -176,29 +185,17 @@ static int clamp_volume_percent(int percent)
     return std::max(0, std::min(100, percent));
 }
 
-static AudioBlock* allocate_block(size_t samples)
-{
-    if (samples == 0) {
-        return nullptr;
-    }
-    const size_t bytes = sizeof(AudioBlock) + (samples - 1) * sizeof(int16_t);
-    void* mem = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (mem == nullptr) {
-        mem = heap_caps_malloc(bytes, MALLOC_CAP_8BIT);
-    }
-    auto* block = static_cast<AudioBlock*>(mem);
-    if (block != nullptr) {
-        block->samples = samples;
-    }
-    return block;
-}
+struct AudioBlockPool {
+    AudioBlock** blocks = nullptr;
+    QueueHandle_t free_queue = nullptr;
+    size_t block_capacity = 0;
+    size_t num_blocks = 0;
+    std::atomic<uint32_t> allocation_count{0};
+    std::atomic<uint32_t> exhaustion_count{0};
+};
 
-static void free_block(AudioBlock* block)
-{
-    if (block != nullptr) {
-        heap_caps_free(block);
-    }
-}
+static AudioBlock* allocate_block(size_t samples, bool is_play = false);
+static void free_block(AudioBlock* block);
 
 static int peak_abs_sample(const int16_t* data, size_t samples)
 {
@@ -960,11 +957,141 @@ private:
 
 class XiaopaiAudioService {
 public:
+    XiaopaiAudioService()
+    {
+        g_audio_service_ptr = this;
+    }
+
+    bool init_block_pools()
+    {
+        if (play_pool_.free_queue != nullptr) {
+            return true;
+        }
+
+        // 1. Play Pool: 12 blocks, 1024 samples each
+        play_pool_.block_capacity = 1024;
+        play_pool_.num_blocks = 12;
+        play_pool_.free_queue = xQueueCreate(play_pool_.num_blocks, sizeof(AudioBlock*));
+        if (play_pool_.free_queue == nullptr) {
+            return false;
+        }
+
+        const size_t play_block_bytes = sizeof(AudioBlock) + (play_pool_.block_capacity - 1) * sizeof(int16_t);
+        play_pool_.blocks = static_cast<AudioBlock**>(heap_caps_malloc(play_pool_.num_blocks * sizeof(AudioBlock*), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (play_pool_.blocks == nullptr) {
+            return false;
+        }
+
+        for (size_t i = 0; i < play_pool_.num_blocks; ++i) {
+            void* mem = heap_caps_malloc(play_block_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (mem == nullptr) {
+                return false;
+            }
+            auto* block = static_cast<AudioBlock*>(mem);
+            block->samples = 0;
+            block->in_use = false;
+            play_pool_.blocks[i] = block;
+            xQueueSend(play_pool_.free_queue, &block, 0);
+        }
+
+        // 2. Recording Pool: 36 blocks, 640 samples each
+        rec_pool_.block_capacity = 640;
+        rec_pool_.num_blocks = 36;
+        rec_pool_.free_queue = xQueueCreate(rec_pool_.num_blocks, sizeof(AudioBlock*));
+        if (rec_pool_.free_queue == nullptr) {
+            return false;
+        }
+
+        const size_t rec_block_bytes = sizeof(AudioBlock) + (rec_pool_.block_capacity - 1) * sizeof(int16_t);
+        rec_pool_.blocks = static_cast<AudioBlock**>(heap_caps_malloc(rec_pool_.num_blocks * sizeof(AudioBlock*), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (rec_pool_.blocks == nullptr) {
+            return false;
+        }
+
+        for (size_t i = 0; i < rec_pool_.num_blocks; ++i) {
+            void* mem = heap_caps_malloc(rec_block_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (mem == nullptr) {
+                return false;
+            }
+            auto* block = static_cast<AudioBlock*>(mem);
+            block->samples = 0;
+            block->in_use = false;
+            rec_pool_.blocks[i] = block;
+            xQueueSend(rec_pool_.free_queue, &block, 0);
+        }
+
+        return true;
+    }
+
+    AudioBlock* lease_block(size_t samples, bool is_play)
+    {
+        AudioBlockPool& pool = is_play ? play_pool_ : rec_pool_;
+        if (samples > pool.block_capacity) {
+            ESP_LOGE(TAG, "Requested block size %u exceeds pool capacity %u", samples, pool.block_capacity);
+            return nullptr;
+        }
+
+        AudioBlock* block = nullptr;
+        if (xQueueReceive(pool.free_queue, &block, 0) == pdTRUE) {
+            block->samples = samples;
+            block->in_use = true;
+            pool.allocation_count++;
+            return block;
+        }
+
+        pool.exhaustion_count++;
+        return nullptr;
+    }
+
+    void release_block(AudioBlock* block)
+    {
+        if (block == nullptr) {
+            return;
+        }
+
+        bool returned = false;
+        for (size_t i = 0; i < play_pool_.num_blocks; ++i) {
+            if (play_pool_.blocks[i] == block) {
+                if (!block->in_use) {
+                    ESP_LOGE(TAG, "Double-return detected on play block %p!", block);
+                    return;
+                }
+                block->in_use = false;
+                xQueueSend(play_pool_.free_queue, &block, 0);
+                returned = true;
+                break;
+            }
+        }
+
+        if (!returned) {
+            for (size_t i = 0; i < rec_pool_.num_blocks; ++i) {
+                if (rec_pool_.blocks[i] == block) {
+                    if (!block->in_use) {
+                        ESP_LOGE(TAG, "Double-return detected on rec block %p!", block);
+                        return;
+                    }
+                    block->in_use = false;
+                    xQueueSend(rec_pool_.free_queue, &block, 0);
+                    returned = true;
+                    break;
+                }
+            }
+        }
+
+        if (!returned) {
+            ESP_LOGE(TAG, "Attempted to release block %p that does not belong to any pool!", block);
+        }
+    }
+
     bool init()
     {
         std::lock_guard<std::mutex> lock(init_mutex_);
         if (initialized_) {
             return true;
+        }
+        if (!init_block_pools()) {
+            ESP_LOGE(TAG, "failed to initialize audio block pools");
+            return false;
         }
         play_queue_ = xQueueCreate(kPlayQueueDepth, sizeof(AudioBlock*));
         clean_queue_ = xQueueCreate(kCleanQueueDepth, sizeof(AudioBlock*));
@@ -1017,6 +1144,7 @@ public:
 
     bool start()
     {
+        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
         if (!init()) {
             return false;
         }
@@ -1034,22 +1162,54 @@ public:
         running_ = true;
         abort_generation_++;
 
-        if (input_task_ == nullptr) {
-            xTaskCreatePinnedToCore(
+        BaseType_t input_ok = pdPASS;
+        TaskHandle_t temp_input = nullptr;
+        if (input_task_.load() == nullptr) {
+            input_ok = xTaskCreatePinnedToCore(
                 [](void* arg) {
                     static_cast<XiaopaiAudioService*>(arg)->input_task();
                     vTaskDelete(nullptr);
                 },
-                "audio_input_task", 6144, this, 6, &input_task_, 1);
+                "audio_input_task", 6144, this, 6, &temp_input, 1);
+            if (input_ok == pdPASS) {
+                input_task_.store(temp_input);
+            }
         }
-        if (output_task_ == nullptr) {
-            xTaskCreate(
+
+        BaseType_t output_ok = pdPASS;
+        TaskHandle_t temp_output = nullptr;
+        if (output_task_.load() == nullptr) {
+            output_ok = xTaskCreate(
                 [](void* arg) {
                     static_cast<XiaopaiAudioService*>(arg)->output_task();
                     vTaskDelete(nullptr);
                 },
-                "audio_output_hw", 4096, this, 5, &output_task_);
+                "audio_output_hw", 4096, this, 5, &temp_output);
+            if (output_ok == pdPASS) {
+                output_task_.store(temp_output);
+            }
         }
+
+        if (input_ok != pdPASS || output_ok != pdPASS) {
+            ESP_LOGE(TAG, "failed to create audio tasks: input_ok=%d output_ok=%d, rolling back...",
+                     static_cast<int>(input_ok), static_cast<int>(output_ok));
+            running_ = false;
+            abort_generation_++;
+            if (output_task_.load() != nullptr && play_queue_ != nullptr) {
+                AudioBlock* sentinel = nullptr;
+                xQueueSend(play_queue_, &sentinel, 0);
+            }
+            TickType_t start_ticks = xTaskGetTickCount();
+            while ((input_task_.load() != nullptr || output_task_.load() != nullptr) &&
+                   (xTaskGetTickCount() - start_ticks) < pdMS_TO_TICKS(500)) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            if (input_task_.load() != nullptr || output_task_.load() != nullptr) {
+                ESP_LOGE(TAG, "Audio task cleanup timeout during start failure rollback!");
+            }
+            return false;
+        }
+
 #if CONFIG_STACKCHAN_AUDIO_DEVICE_AEC
         ensure_afe_started("audio service start");
         ensure_afe_fetch_task_started();
@@ -1061,6 +1221,7 @@ public:
 
     void stop()
     {
+        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
         if (!running_) {
             return;
         }
@@ -1070,6 +1231,26 @@ public:
         if (play_queue_ != nullptr) {
             xQueueSend(play_queue_, &sentinel, 0);
         }
+        TickType_t start_ticks = xTaskGetTickCount();
+        while ((input_task_.load() != nullptr || output_task_.load() != nullptr) &&
+               (xTaskGetTickCount() - start_ticks) < pdMS_TO_TICKS(500)) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        if (input_task_.load() != nullptr || output_task_.load() != nullptr) {
+            ESP_LOGE(TAG, "Audio task cleanup timeout during stop!");
+        }
+    }
+
+    void log_diagnostics();
+
+    void register_heartbeat_task(TaskHandle_t handle)
+    {
+        heartbeat_task_handle_.store(handle);
+    }
+
+    void register_wifi_debug_task(TaskHandle_t handle)
+    {
+        wifi_debug_task_handle_.store(handle);
     }
 
     void set_volume(int percent)
@@ -1093,7 +1274,7 @@ public:
             ESP_LOGW(TAG, "播放请求已拒绝: 内部扬声器输出不可用");
             return false;
         }
-        AudioBlock* block = allocate_block(count);
+        AudioBlock* block = allocate_block(count, true);
         if (block == nullptr) {
             ESP_LOGE(TAG, "failed to allocate playback block: samples=%u", static_cast<unsigned>(count));
             return false;
@@ -1114,6 +1295,7 @@ public:
                     decrement_pending_play_blocks();
                 }
                 free_block(old);
+                play_dropped_count_++;
                 ESP_LOGW(TAG, "playback queue full; dropped oldest PCM block");
                 wait_ticks = 0;
                 continue;
@@ -1134,7 +1316,6 @@ public:
             return false;
         }
 
-        std::vector<uint8_t> decode_bytes(kProtocolFrameSamples * sizeof(int16_t));
         esp_audio_dec_in_raw_t raw = {};
         raw.buffer = const_cast<uint8_t*>(data);
         raw.len = static_cast<uint32_t>(len);
@@ -1142,8 +1323,8 @@ public:
         raw.frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE;
 
         esp_audio_dec_out_frame_t out_frame = {};
-        out_frame.buffer = decode_bytes.data();
-        out_frame.len = decode_bytes.size();
+        out_frame.buffer = opus_decode_buffer_;
+        out_frame.len = sizeof(opus_decode_buffer_);
         out_frame.needed_size = 0;
         out_frame.decoded_size = 0;
         esp_audio_dec_info_t info = {};
@@ -1152,19 +1333,14 @@ public:
         {
             std::lock_guard<std::mutex> lock(opus_decoder_mutex_);
             ret = esp_opus_dec_decode(opus_decoder_, &raw, &out_frame, &info);
-            if (ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH && out_frame.needed_size > out_frame.len) {
-                decode_bytes.resize(out_frame.needed_size);
-                out_frame.buffer = decode_bytes.data();
-                out_frame.len = decode_bytes.size();
-                out_frame.needed_size = 0;
-                out_frame.decoded_size = 0;
-                raw.buffer = const_cast<uint8_t*>(data);
-                raw.len = static_cast<uint32_t>(len);
-                raw.consumed = 0;
-                ret = esp_opus_dec_decode(opus_decoder_, &raw, &out_frame, &info);
+            if (ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
+                ESP_LOGE(TAG, "unexpected opus decode size: needed=%u capacity=%u",
+                         out_frame.needed_size, static_cast<unsigned>(sizeof(opus_decode_buffer_)));
+                return false;
             }
         }
         if (ret != ESP_AUDIO_ERR_OK || out_frame.decoded_size == 0) {
+            opus_decode_failed_count_++;
             ESP_LOGW(TAG, "Opus decode failed: ret=%d decoded=%u consumed=%u len=%u", ret,
                      static_cast<unsigned>(out_frame.decoded_size), static_cast<unsigned>(raw.consumed),
                      static_cast<unsigned>(len));
@@ -1598,7 +1774,7 @@ private:
                 push_mono_from_interleaved(in16.data(), in16.size() / kInputChannels, kInputChannels);
             }
         }
-        input_task_ = nullptr;
+        input_task_.store(nullptr);
         ESP_LOGW(TAG, "audio input task stopped");
     }
 
@@ -1799,7 +1975,7 @@ private:
             decrement_pending_play_blocks();
             playing_ = false;
         }
-        output_task_ = nullptr;
+        output_task_.store(nullptr);
         playing_ = false;
         ESP_LOGW(TAG, "audio output task stopped");
     }
@@ -1816,7 +1992,7 @@ private:
             ++clean_idle_drop_count_;
             return;
         }
-        AudioBlock* block = allocate_block(frames);
+        AudioBlock* block = allocate_block(frames, false);
         if (block == nullptr) {
             return;
         }
@@ -1835,7 +2011,7 @@ private:
 
         update_energy_vad(data, samples);
 
-        AudioBlock* block = allocate_block(samples);
+        AudioBlock* block = allocate_block(samples, false);
         if (block == nullptr) {
             return;
         }
@@ -2025,15 +2201,23 @@ private:
 
     XiaopaiAudioCodec codec_;
     std::mutex init_mutex_;
+    std::mutex lifecycle_mutex_;
+    AudioBlockPool play_pool_;
+    AudioBlockPool rec_pool_;
+    uint8_t opus_decode_buffer_[1920] = {};
     QueueHandle_t play_queue_ = nullptr;
     QueueHandle_t clean_queue_ = nullptr;
     SemaphoreHandle_t read_mutex_ = nullptr;
     AudioBlock* read_block_ = nullptr;
     size_t read_offset_ = 0;
-    TaskHandle_t input_task_ = nullptr;
-    TaskHandle_t output_task_ = nullptr;
+    std::atomic<TaskHandle_t> input_task_{nullptr};
+    std::atomic<TaskHandle_t> output_task_{nullptr};
+    std::atomic<TaskHandle_t> heartbeat_task_handle_{nullptr};
+    std::atomic<TaskHandle_t> wifi_debug_task_handle_{nullptr};
     void* opus_decoder_ = nullptr;
     std::mutex opus_decoder_mutex_;
+    std::atomic<uint32_t> play_dropped_count_{0};
+    std::atomic<uint32_t> opus_decode_failed_count_{0};
     std::atomic<bool> initialized_{false};
     std::atomic<bool> running_{false};
     std::atomic<bool> playing_{false};
@@ -2076,6 +2260,71 @@ private:
     size_t afe_feed_samples_ = 0;
 #endif
 };
+
+#include "xiaopai_state.h"
+
+void XiaopaiAudioService::log_diagnostics()
+{
+    auto log_watermark = [](const char* name, TaskHandle_t handle) {
+        if (handle != nullptr) {
+            UBaseType_t watermark = uxTaskGetStackHighWaterMark(handle);
+            ESP_LOGI("XiaopaiDiag", "Task %s watermark: %u words (%u bytes)", name,
+                     static_cast<unsigned>(watermark), static_cast<unsigned>(watermark * sizeof(StackType_t)));
+        } else {
+            ESP_LOGI("XiaopaiDiag", "Task %s is not running", name);
+        }
+    };
+
+    log_watermark("audio_input_task", input_task_.load());
+    log_watermark("audio_output_hw", output_task_.load());
+    log_watermark("supervisor_task", xiaopai_supervisor_get_task_handle());
+    log_watermark("heartbeat_task", heartbeat_task_handle_.load());
+#if CONFIG_STACKCHAN_WIFI_DEBUG
+    log_watermark("wifi_debug", wifi_debug_task_handle_.load());
+#endif
+#if CONFIG_STACKCHAN_AUDIO_DEVICE_AEC
+    log_watermark("AFE fetch task", afe_task_);
+#endif
+
+    UBaseType_t play_free = play_queue_ != nullptr ? uxQueueMessagesWaiting(play_queue_) : 0;
+    UBaseType_t clean_free = clean_queue_ != nullptr ? uxQueueMessagesWaiting(clean_queue_) : 0;
+
+    UBaseType_t play_pool_free = play_pool_.free_queue != nullptr ? uxQueueMessagesWaiting(play_pool_.free_queue) : 0;
+    UBaseType_t rec_pool_free = rec_pool_.free_queue != nullptr ? uxQueueMessagesWaiting(rec_pool_.free_queue) : 0;
+
+    ESP_LOGI("XiaopaiDiag", "Play pool free: %u/%u (exhausted: %u)",
+             static_cast<unsigned>(play_pool_free), static_cast<unsigned>(play_pool_.num_blocks),
+             static_cast<unsigned>(play_pool_.exhaustion_count.load()));
+    ESP_LOGI("XiaopaiDiag", "Rec pool free: %u/%u (exhausted: %u)",
+             static_cast<unsigned>(rec_pool_free), static_cast<unsigned>(rec_pool_.num_blocks),
+             static_cast<unsigned>(rec_pool_.exhaustion_count.load()));
+
+    ESP_LOGI("XiaopaiDiag", "Play queue depth: %u, Clean queue depth: %u",
+             static_cast<unsigned>(play_free), static_cast<unsigned>(clean_free));
+
+    ESP_LOGI("XiaopaiDiag", "Dropped play blocks: %u", static_cast<unsigned>(play_dropped_count_.load()));
+    ESP_LOGI("XiaopaiDiag", "Dropped clean blocks: %u, idle dropped: %u",
+             static_cast<unsigned>(clean_drop_count_.load()), static_cast<unsigned>(clean_idle_drop_count_.load()));
+    ESP_LOGI("XiaopaiDiag", "Opus decode failed: %u", static_cast<unsigned>(opus_decode_failed_count_.load()));
+    ESP_LOGI("XiaopaiDiag", "Total internal free: %u, largest free block: %u",
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+}
+
+static AudioBlock* allocate_block(size_t samples, bool is_play)
+{
+    if (g_audio_service_ptr == nullptr) {
+        return nullptr;
+    }
+    return g_audio_service_ptr->lease_block(samples, is_play);
+}
+
+static void free_block(AudioBlock* block)
+{
+    if (block != nullptr && g_audio_service_ptr != nullptr) {
+        g_audio_service_ptr->release_block(block);
+    }
+}
 
 XiaopaiAudioService g_audio_service;
 
@@ -2164,4 +2413,19 @@ bool audio_service_is_playing()
 bool audio_service_wait_playback_idle(TickType_t timeout)
 {
     return g_audio_service.wait_playback_idle(timeout);
+}
+
+void audio_service_log_diagnostics()
+{
+    g_audio_service.log_diagnostics();
+}
+
+void audio_service_register_heartbeat_task(TaskHandle_t handle)
+{
+    g_audio_service.register_heartbeat_task(handle);
+}
+
+void audio_service_register_wifi_debug_task(TaskHandle_t handle)
+{
+    g_audio_service.register_wifi_debug_task(handle);
 }

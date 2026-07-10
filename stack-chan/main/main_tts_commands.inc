@@ -64,6 +64,31 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
         return false;
     }
 
+    char* header_format = nullptr;
+    char* header_rate = nullptr;
+    if (esp_http_client_get_header(client, "X-Audio-Format", &header_format) == ESP_OK && header_format != nullptr && header_format[0] != '\0') {
+        if (strcasecmp(header_format, "pcm_s16le") != 0 && strcasecmp(header_format, "pcm") != 0 && strcasecmp(header_format, "wav") != 0) {
+            ESP_LOGE(TAG, "Refusing playback: unsupported format '%s'", header_format);
+            if (update_tts_status) {
+                set_tts_status("Format Err", "Unsupported format", header_format, "", false, false);
+            }
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            return false;
+        }
+    }
+    if (esp_http_client_get_header(client, "X-Sample-Rate", &header_rate) == ESP_OK && header_rate != nullptr && header_rate[0] != '\0') {
+        if (strcmp(header_rate, "16000") != 0) {
+            ESP_LOGE(TAG, "Refusing playback: unsupported sample rate '%s' (expected 16000)", header_rate);
+            if (update_tts_status) {
+                set_tts_status("Rate Err", "Expected 16000 Hz", header_rate, "", false, false);
+            }
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            return false;
+        }
+    }
+
     if (update_tts_status) {
         set_tts_status("Playing", "Receiving pcm_s16le", "16kHz mono stream", "");
     }
@@ -201,7 +226,7 @@ static bool stream_tts_pcm_for_text(const char* text, const char* voice = nullpt
     cJSON_AddStringToObject(root, "cmd_id", cmd_id != nullptr ? cmd_id : "");
     cJSON_AddStringToObject(root, "text", text != nullptr ? text : "");
     cJSON_AddStringToObject(root, "voice", voice != nullptr && voice[0] != '\0' ? voice : "default");
-    cJSON_AddNumberToObject(root, "sample_rate", sample_rate > 0 ? sample_rate : kTtsStreamSampleRate);
+    cJSON_AddNumberToObject(root, "sample_rate", 16000);
     if (volume != 0) cJSON_AddNumberToObject(root, "volume", volume);
     if (speech_rate != 0) cJSON_AddNumberToObject(root, "speech_rate", speech_rate);
     if (pitch_rate != 0) cJSON_AddNumberToObject(root, "pitch_rate", pitch_rate);

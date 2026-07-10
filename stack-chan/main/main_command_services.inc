@@ -507,9 +507,13 @@ static bool send_v3_control_heartbeat()
 static void run_heartbeat_loop()
 {
     ESP_LOGI(TAG, "Heartbeat task started");
+    uint32_t count = 0;
     while (true) {
         if (wifi_is_connected() && active_server_selected) {
             send_v3_control_heartbeat();
+        }
+        if (++count % 30 == 0) {
+            audio_service_log_diagnostics();
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
@@ -632,32 +636,6 @@ static void log_memory_snapshot(const char* reason)
     log_task_stack_watermark("ui_task", head_touch_task_handle);
     log_task_stack_watermark("touch_audio", head_touch_audio_task_handle);
     log_task_stack_watermark("vision_health_task", sedentary_task_handle);
-    log_task_stack_watermark("mem_mon", memory_monitor_task_handle);
-}
-
-static void run_memory_monitor_loop()
-{
-    ESP_LOGI(TAG, "Memory monitor started");
-    while (true) {
-        log_memory_snapshot("periodic");
-        vTaskDelay(pdMS_TO_TICKS(10000));
-    }
-}
-
-static void start_memory_monitor_service()
-{
-    if (memory_monitor_task_handle != nullptr) {
-        return;
-    }
-    BaseType_t created = xTaskCreatePinnedToCore([](void*) {
-        run_memory_monitor_loop();
-    }, "mem_mon", kMemoryMonitorTaskStackBytes, nullptr, 1, &memory_monitor_task_handle, 0);
-    if (created == pdPASS) {
-        ESP_LOGI(TAG, "Memory monitor task created");
-    } else {
-        memory_monitor_task_handle = nullptr;
-        ESP_LOGE(TAG, "Failed to create memory monitor task");
-    }
 }
 
 static void realtime_task_entry(void*)
@@ -741,8 +719,12 @@ static void start_background_services()
             xTaskCreatePinnedToCore([](void*) {
                 run_heartbeat_loop();
                 heartbeat_task_handle = nullptr;
+                audio_service_register_heartbeat_task(nullptr);
                 vTaskDelete(nullptr);
             }, "heartbeat_task", 4 * 1024, nullptr, 1, &heartbeat_task_handle, 0);
+            if (heartbeat_task_handle != nullptr) {
+                audio_service_register_heartbeat_task(heartbeat_task_handle);
+            }
         }
         // Temporarily disabled: periodic sedentary find-owner checks.
         // start_sedentary_find_owner_service();
@@ -759,8 +741,6 @@ static void start_background_services()
             }
             log_memory_snapshot("after bg_voice notify");
         }
-
-        start_memory_monitor_service();
 
         if (kUseHttpCommandLongPoll && command_task_handle == nullptr) {
             ESP_LOGW(TAG, "HTTP command task missing after early boot; retrying static creation");

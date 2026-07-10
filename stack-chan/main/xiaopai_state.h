@@ -1,5 +1,7 @@
 #pragma once
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "voice_state.h"
 
 #include <stdint.h>
@@ -92,3 +94,4 @@ bool xiaopai_supervisor_admit(SupervisorJobKind kind, SupervisorSafetyClass safe
 bool xiaopai_supervisor_run(SupervisorCallback callback, uintptr_t arg,
                             SupervisorSafetyClass safety_class = SupervisorSafetyClass::Normal,
                             const char* reason = nullptr);
+TaskHandle_t xiaopai_supervisor_get_task_handle();

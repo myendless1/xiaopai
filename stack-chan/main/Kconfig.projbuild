@@ -99,11 +99,15 @@ menu "Xiaopai settings"
 
     config STACKCHAN_VOICE_START_THRESHOLD
         int "Voice start threshold"
-        default 5000
+        default 2000
 
     config STACKCHAN_VOICE_STOP_THRESHOLD
         int "Voice stop threshold"
         default 800
+
+    config STACKCHAN_WIFI_DEBUG
+        bool "Enable WiFi debug log task"
+        default n
 
     config STACKCHAN_MIC_MAGNIFICATION
         int "Microphone magnification"
