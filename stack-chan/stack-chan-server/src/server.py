@@ -3634,21 +3634,23 @@ def enqueue_morrow_notice_speech(server, notice_text: str) -> int:
     device_id = device_ids[0]
     stream_id = f"morrow_notice:{uuid.uuid4().hex[:8]}"
     queued_count = 0
+    segment_index = 0
     for raw_segment in split_sentences(text, int(getattr(server, "max_sentence_chars", 120) or 120)):
         segment = normalize_speech_text_for_voice(str(raw_segment or ""))
         if not segment or speech_text_is_temporarily_suppressed(segment):
             continue
-        queued_count += 1
+        segment_index += 1
         command = make_command(
             "speak",
             {"text": segment, "pause_listener": True},
             priority=35,
-            interrupt=queued_count == 1,
+            interrupt=segment_index == 1,
             ttl_seconds=120,
             discardable=False,
-            coalesce_key=f"{stream_id}:{queued_count}",
+            coalesce_key=f"{stream_id}:{segment_index}",
         )
-        enqueue_server_command(server, device_id, command)
+        if enqueue_server_command(server, device_id, command):
+            queued_count += 1
 
     if queued_count:
         log_print(f"Morrow 主动提醒已入队: device={device_id} segments={queued_count}")
