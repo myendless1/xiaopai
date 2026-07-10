@@ -20,6 +20,15 @@ __pycache__/
 
 # ESP-IDF and build artifacts
 build/
+build*/
+managed_components/
+.idf_component_manager/
+.component_hash
+.component_manager_hash
+sdkconfig.old
+*.elf
+*.map
+*.bin
 .espressif/
 esp-idf/
 

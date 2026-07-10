@@ -4,6 +4,15 @@
 .espressif/
 esp-idf/
 build/
+build*/
+managed_components/
+.idf_component_manager/
+.component_hash
+.component_manager_hash
+sdkconfig.old
 .env
 stack-chan-server/.env
 *.a
+*.elf
+*.map
+*.bin
