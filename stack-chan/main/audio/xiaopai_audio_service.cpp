@@ -47,10 +47,10 @@
 #define CONFIG_STACKCHAN_AUDIO_DEVICE_AEC 0
 #endif
 #ifndef CONFIG_STACKCHAN_AUDIO_HW_SAMPLE_RATE
-#define CONFIG_STACKCHAN_AUDIO_HW_SAMPLE_RATE 16000
+#define CONFIG_STACKCHAN_AUDIO_HW_SAMPLE_RATE 24000
 #endif
 #ifndef CONFIG_STACKCHAN_AUDIO_PROTOCOL_SAMPLE_RATE
-#define CONFIG_STACKCHAN_AUDIO_PROTOCOL_SAMPLE_RATE 16000
+#define CONFIG_STACKCHAN_AUDIO_PROTOCOL_SAMPLE_RATE 24000
 #endif
 #ifndef CONFIG_STACKCHAN_AUDIO_INPUT_REFERENCE
 #define CONFIG_STACKCHAN_AUDIO_INPUT_REFERENCE 0
@@ -59,7 +59,7 @@
 #define CONFIG_STACKCHAN_AUDIO_INPUT_GAIN 60
 #endif
 #ifndef CONFIG_STACKCHAN_AUDIO_OUTPUT_VOLUME_DEFAULT
-#define CONFIG_STACKCHAN_AUDIO_OUTPUT_VOLUME_DEFAULT 5
+#define CONFIG_STACKCHAN_AUDIO_OUTPUT_VOLUME_DEFAULT 70
 #endif
 #ifndef CONFIG_STACKCHAN_MIC_MAGNIFICATION
 #define CONFIG_STACKCHAN_MIC_MAGNIFICATION 1
@@ -101,6 +101,8 @@ static constexpr int kCoreS3InternalI2cSda = 12;
 static constexpr int kCoreS3InternalI2cScl = 11;
 static constexpr int kHwSampleRate = CONFIG_STACKCHAN_AUDIO_HW_SAMPLE_RATE;
 static constexpr int kProtocolSampleRate = CONFIG_STACKCHAN_AUDIO_PROTOCOL_SAMPLE_RATE;
+static_assert(kHwSampleRate == kProtocolSampleRate,
+              "Direct PCM playback requires matching hardware and protocol sample rates");
 static constexpr int kOpusFrameDurationMs = 60;
 static constexpr int kProtocolFrameSamples = kProtocolSampleRate * kOpusFrameDurationMs / 1000;
 static constexpr bool kDeviceAecEnabled = CONFIG_STACKCHAN_AUDIO_DEVICE_AEC && CONFIG_STACKCHAN_AUDIO_INPUT_REFERENCE;
@@ -257,17 +259,6 @@ static void log_aw88298_reg_direct(uint8_t reg)
     }
 }
 
-static uint16_t aw88298_i2sctrl_for_sample_rate(int sample_rate)
-{
-    static constexpr uint8_t rate_table[] = {4, 5, 6, 8, 10, 11, 15, 20, 22, 44};
-    size_t rate_index = 0;
-    size_t rate = static_cast<size_t>(std::max(8000, sample_rate) + 1102) / 2205;
-    while (rate_index + 1 < sizeof(rate_table) && rate > rate_table[rate_index]) {
-        ++rate_index;
-    }
-    return static_cast<uint16_t>(0x14c0 | rate_index);
-}
-
 static int16_t apply_mic_magnification(int16_t sample)
 {
     if (CONFIG_STACKCHAN_MIC_MAGNIFICATION <= 1) {
@@ -311,10 +302,10 @@ static bool dji_receiver_should_own_input(const DjiMicReceiverStatus& dji)
 
 static void restore_aw88298_playback_registers(int sample_rate)
 {
+    (void)sample_rate;
     write_aw88298_reg_direct(0x61, 0x0673, "AW88298 restore boost");
     write_aw88298_reg_direct(0x04, 0x4040, "AW88298 restore sysctrl");
     write_aw88298_reg_direct(0x05, 0x0008, "AW88298 restore unmute");
-    write_aw88298_reg_direct(0x06, aw88298_i2sctrl_for_sample_rate(sample_rate), "AW88298 restore i2sctrl");
 }
 
 static AudioI2cPresence scan_core_s3_audio_i2c()
@@ -468,34 +459,6 @@ static void init_m5_i2c_ctrl(M5I2cCodecCtrl* ctrl, uint8_t addr)
         .bus_handle = nullptr,
     };
     ctrl->base.open(&ctrl->base, &i2c_cfg, sizeof(i2c_cfg));
-}
-
-static void resample_linear_mono(const int16_t* in, size_t in_samples, int src_rate, std::vector<int16_t>& out,
-                                 int dst_rate)
-{
-    if (in == nullptr || in_samples == 0 || src_rate <= 0 || dst_rate <= 0) {
-        out.clear();
-        return;
-    }
-    if (src_rate == dst_rate) {
-        out.assign(in, in + in_samples);
-        return;
-    }
-    const size_t out_samples = static_cast<size_t>((static_cast<uint64_t>(in_samples) * dst_rate + src_rate - 1) / src_rate);
-    out.resize(out_samples);
-    for (size_t i = 0; i < out_samples; ++i) {
-        const uint64_t pos_num = static_cast<uint64_t>(i) * src_rate;
-        size_t idx = static_cast<size_t>(pos_num / dst_rate);
-        const uint32_t frac = static_cast<uint32_t>(pos_num % dst_rate);
-        if (idx + 1 >= in_samples) {
-            out[i] = in[in_samples - 1];
-            continue;
-        }
-        int32_t a = in[idx];
-        int32_t b = in[idx + 1];
-        int32_t sample = a + static_cast<int32_t>((static_cast<int64_t>(b - a) * frac) / dst_rate);
-        out[i] = static_cast<int16_t>(std::max<int32_t>(-32768, std::min<int32_t>(32767, sample)));
-    }
 }
 
 static void resample_linear_interleaved(const int16_t* in, size_t in_frames, int channels, int src_rate,
@@ -804,10 +767,11 @@ private:
             .allow_pd = false,
             .intr_priority = 0,
         };
-        esp_err_t err = i2s_new_channel(&chan_cfg, &tx_handle_, nullptr);
+        esp_err_t err = i2s_new_channel(&chan_cfg, &tx_handle_, &rx_handle_);
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "i2s_new_channel tx failed: %s", esp_err_to_name(err));
+            ESP_LOGE(TAG, "i2s_new_channel duplex failed: %s", esp_err_to_name(err));
             tx_handle_ = nullptr;
+            rx_handle_ = nullptr;
             return false;
         }
 
@@ -850,18 +814,23 @@ private:
             ESP_LOGE(TAG, "i2s_channel_init_std_mode tx failed: %s", esp_err_to_name(err));
             return false;
         }
+        // CoreS3 shares MCLK/BCLK/WS between its standard TX and TDM RX.
+        // Initialize the paired RX before enabling TX, matching the upstream board driver.
+        if (!create_rx_channel()) {
+            return false;
+        }
         err = i2s_channel_enable(tx_handle_);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "i2s_channel_enable tx failed: %s", esp_err_to_name(err));
             return false;
         }
-        ESP_LOGI(TAG, "I2S0 TX channel created for speaker output");
+        ESP_LOGI(TAG, "I2S0 duplex channels created with shared speaker/microphone clock");
         return true;
     }
 
     bool create_rx_channel()
     {
-        if (rx_handle_ != nullptr) {
+        if (rx_channel_initialized_) {
             return true;
         }
 
@@ -869,21 +838,24 @@ private:
                  static_cast<int>(kAudioMclkPin), static_cast<int>(kAudioBclkPin),
                  static_cast<int>(kAudioWsPin), static_cast<int>(kAudioDinPin));
 
-        i2s_chan_config_t chan_cfg = {
-            .id = kAudioI2sPort,
-            .role = I2S_ROLE_MASTER,
-            .dma_desc_num = kDmaDescNum,
-            .dma_frame_num = kDmaFrameNum,
-            .auto_clear_after_cb = true,
-            .auto_clear_before_cb = false,
-            .allow_pd = false,
-            .intr_priority = 0,
-        };
-        esp_err_t err = i2s_new_channel(&chan_cfg, nullptr, &rx_handle_);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "i2s_new_channel rx failed: %s", esp_err_to_name(err));
-            rx_handle_ = nullptr;
-            return false;
+        esp_err_t err = ESP_OK;
+        if (rx_handle_ == nullptr) {
+            i2s_chan_config_t chan_cfg = {
+                .id = kAudioI2sPort,
+                .role = I2S_ROLE_MASTER,
+                .dma_desc_num = kDmaDescNum,
+                .dma_frame_num = kDmaFrameNum,
+                .auto_clear_after_cb = true,
+                .auto_clear_before_cb = false,
+                .allow_pd = false,
+                .intr_priority = 0,
+            };
+            err = i2s_new_channel(&chan_cfg, nullptr, &rx_handle_);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "i2s_new_channel rx failed: %s", esp_err_to_name(err));
+                rx_handle_ = nullptr;
+                return false;
+            }
         }
 
         i2s_tdm_config_t tdm_cfg = {
@@ -933,7 +905,8 @@ private:
             ESP_LOGE(TAG, "i2s_channel_enable rx failed: %s", esp_err_to_name(err));
             return false;
         }
-        ESP_LOGI(TAG, "I2S0 RX channel created for late ES7210 input");
+        rx_channel_initialized_ = true;
+        ESP_LOGI(TAG, "I2S0 RX channel initialized for ES7210 input");
         return true;
     }
 
@@ -948,6 +921,7 @@ private:
     esp_codec_dev_handle_t input_dev_ = nullptr;
     i2s_chan_handle_t tx_handle_ = nullptr;
     i2s_chan_handle_t rx_handle_ = nullptr;
+    bool rx_channel_initialized_ = false;
     int volume_percent_ = CONFIG_STACKCHAN_AUDIO_OUTPUT_VOLUME_DEFAULT;
     bool output_initialized_ = false;
     bool input_initialized_ = false;
@@ -968,8 +942,8 @@ public:
             return true;
         }
 
-        // 1. Play Pool: 12 blocks, 1024 samples each
-        play_pool_.block_capacity = 1024;
+        // One block must hold a complete 60 ms Opus frame (1440 samples at 24 kHz).
+        play_pool_.block_capacity = kProtocolFrameSamples;
         play_pool_.num_blocks = 12;
         play_pool_.free_queue = xQueueCreate(play_pool_.num_blocks, sizeof(AudioBlock*));
         if (play_pool_.free_queue == nullptr) {
@@ -1640,7 +1614,7 @@ private:
     bool init_opus_decoder()
     {
         esp_opus_dec_cfg_t opus_cfg = {};
-        opus_cfg.sample_rate = ESP_AUDIO_SAMPLE_RATE_16K;
+        opus_cfg.sample_rate = ESP_AUDIO_SAMPLE_RATE_24K;
         opus_cfg.channel = ESP_AUDIO_MONO;
         opus_cfg.frame_duration = ESP_OPUS_DEC_FRAME_DURATION_60_MS;
         opus_cfg.self_delimited = false;
@@ -1934,7 +1908,6 @@ private:
 
     void output_task()
     {
-        std::vector<int16_t> out24;
         uint32_t local_generation = abort_generation_.load();
         while (true) {
             AudioBlock* block = nullptr;
@@ -1954,19 +1927,18 @@ private:
 
             playing_ = true;
             local_generation = abort_generation_.load();
-            resample_linear_mono(block->data, block->samples, kProtocolSampleRate, out24, kHwSampleRate);
             uint32_t counter = ++playback_log_counter_;
             if ((counter % 12) == 1) {
-                ESP_LOGI(TAG, "playback block: in_samples=%u out_samples=%u peak=%d pending=%u",
-                         static_cast<unsigned>(block->samples), static_cast<unsigned>(out24.size()),
-                         peak_abs_sample(out24.data(), out24.size()),
+                ESP_LOGI(TAG, "direct playback block: samples=%u rate=%d peak=%d pending=%u",
+                         static_cast<unsigned>(block->samples), kHwSampleRate,
+                         peak_abs_sample(block->data, block->samples),
                          static_cast<unsigned>(pending_play_blocks_.load()));
             }
             const size_t chunk = static_cast<size_t>(kHwSampleRate / 50);
             size_t offset = 0;
-            while (offset < out24.size() && running_ && local_generation == abort_generation_.load()) {
-                const size_t to_write = std::min(chunk, out24.size() - offset);
-                if (!codec_.write(out24.data() + offset, to_write)) {
+            while (offset < block->samples && running_ && local_generation == abort_generation_.load()) {
+                const size_t to_write = std::min(chunk, block->samples - offset);
+                if (!codec_.write(block->data + offset, to_write)) {
                     break;
                 }
                 offset += to_write;
@@ -2204,7 +2176,7 @@ private:
     std::mutex lifecycle_mutex_;
     AudioBlockPool play_pool_;
     AudioBlockPool rec_pool_;
-    uint8_t opus_decode_buffer_[1920] = {};
+    uint8_t opus_decode_buffer_[kProtocolFrameSamples * sizeof(int16_t)] = {};
     QueueHandle_t play_queue_ = nullptr;
     QueueHandle_t clean_queue_ = nullptr;
     SemaphoreHandle_t read_mutex_ = nullptr;

@@ -189,7 +189,7 @@ also contains `最`, `声音最大` sets 100 and `声音最小` sets 10. The dev
 
 `POST /upload`
 
-Audio upload endpoint for speech recognition. The body can be WAV or raw PCM. WAV sample rate is detected from the header; raw PCM defaults to `STACKCHAN_ALIYUN_SAMPLE_RATE` or `16000`.
+Audio upload endpoint for speech recognition. The body can be WAV or raw PCM. WAV sample rate is detected from the header; raw PCM defaults to `STACKCHAN_ALIYUN_SAMPLE_RATE` or `24000`.
 
 Final ASR text is sent as a Morrow `start_turn` prompt over the default session WebSocket. Streaming output is segmented and persisted as `speak` commands, and the device synthesizes it through `POST /v3/tts`.
 
@@ -369,7 +369,7 @@ Environment variables:
 | `STACKCHAN_ALIYUN_REGION` | `shanghai` | Aliyun NLS region: `shanghai`, `beijing`, or `shenzhen` |
 | `STACKCHAN_ALIYUN_TTS_URL` | empty | Override TTS URL |
 | `STACKCHAN_ALIYUN_VOICE` | `zhimiao_emo` | Aliyun TTS voice |
-| `STACKCHAN_ALIYUN_SAMPLE_RATE` | `16000` | ASR raw PCM and TTS sample rate |
+| `STACKCHAN_ALIYUN_SAMPLE_RATE` | `24000` | ASR raw PCM and TTS sample rate |
 | `STACKCHAN_ALIYUN_VOLUME` | `80` | TTS volume |
 | `STACKCHAN_ALIYUN_SPEECH_RATE` | `0` | TTS speech rate |
 | `STACKCHAN_ALIYUN_PITCH_RATE` | `0` | TTS pitch rate |

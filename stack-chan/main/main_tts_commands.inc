@@ -226,7 +226,7 @@ static bool stream_tts_pcm_for_text(const char* text, const char* voice = nullpt
     cJSON_AddStringToObject(root, "cmd_id", cmd_id != nullptr ? cmd_id : "");
     cJSON_AddStringToObject(root, "text", text != nullptr ? text : "");
     cJSON_AddStringToObject(root, "voice", voice != nullptr && voice[0] != '\0' ? voice : "default");
-    cJSON_AddNumberToObject(root, "sample_rate", 16000);
+    cJSON_AddNumberToObject(root, "sample_rate", sample_rate > 0 ? sample_rate : kTtsStreamSampleRate);
     if (volume != 0) cJSON_AddNumberToObject(root, "volume", volume);
     if (speech_rate != 0) cJSON_AddNumberToObject(root, "speech_rate", speech_rate);
     if (pitch_rate != 0) cJSON_AddNumberToObject(root, "pitch_rate", pitch_rate);

@@ -172,7 +172,7 @@ class RealtimeConfig:
     aliyun_asr_ws_url: str = ""
     aliyun_tts_ws_url: str = ""
     voice: str = "zhimiao_emo"
-    sample_rate: int = 16000
+    sample_rate: int = 24000
     volume: int = 80
     speech_rate: int = 0
     pitch_rate: int = 0

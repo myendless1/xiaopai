@@ -3,7 +3,7 @@ class OpusUnavailableError(RuntimeError):
 
 
 class OpusCodec:
-    def __init__(self, *, sample_rate: int = 16000, channels: int = 1, frame_duration_ms: int = 60) -> None:
+    def __init__(self, *, sample_rate: int = 24000, channels: int = 1, frame_duration_ms: int = 60) -> None:
         self.sample_rate = int(sample_rate)
         self.channels = int(channels)
         self.frame_duration_ms = int(frame_duration_ms)

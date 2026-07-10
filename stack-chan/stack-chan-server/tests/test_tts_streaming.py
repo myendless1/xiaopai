@@ -32,7 +32,7 @@ class TtsStreamingTest(unittest.TestCase):
     def make_handler(self):
         class FakeServer:
             voice = "zhimiao_emo"
-            sample_rate = 16000
+            sample_rate = 24000
             volume = 80
             speech_rate = 0
             pitch_rate = 0

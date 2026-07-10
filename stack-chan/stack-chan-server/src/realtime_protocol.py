@@ -7,7 +7,7 @@ PROTOCOL_VERSION = 1
 DEFAULT_TRANSPORT = "websocket"
 DEFAULT_AUDIO_PARAMS = {
     "format": "opus",
-    "sample_rate": 16000,
+    "sample_rate": 24000,
     "channels": 1,
     "frame_duration": 60,
 }

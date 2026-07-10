@@ -210,6 +210,8 @@ static void run_wifi_debug_loop()
     ESP_LOGI(TAG, "WiFi debug log task started");
 
     uint32_t last_config_ms = M5.millis();
+    std::vector<std::string> pending_events;
+    pending_events.reserve(8);
     while (true) {
         if (!wifi_is_connected() || !active_server_selected) {
             vTaskDelay(pdMS_TO_TICKS(1000));
@@ -222,21 +224,27 @@ static void run_wifi_debug_loop()
             last_config_ms = now;
         }
 
-        std::vector<std::string> events;
-        events.reserve(8);
-        for (int i = 0; i < 8; ++i) {
-            DebugEventItem item;
-            TickType_t timeout = events.empty() ? pdMS_TO_TICKS(wifi_debug_post_interval_ms) : 0;
-            if (!debug_events_pop(&item, timeout)) {
-                break;
-            }
-            std::string event_json;
-            if (wifi_debug_event_to_json(item, &event_json)) {
-                events.push_back(event_json);
+        if (pending_events.empty()) {
+            for (int i = 0; i < 8; ++i) {
+                DebugEventItem item;
+                TickType_t timeout = pending_events.empty() ? pdMS_TO_TICKS(wifi_debug_post_interval_ms) : 0;
+                if (!debug_events_pop(&item, timeout)) {
+                    break;
+                }
+                std::string event_json;
+                if (wifi_debug_event_to_json(item, &event_json)) {
+                    pending_events.push_back(event_json);
+                }
             }
         }
-        if (!events.empty()) {
-            wifi_debug_post_batch(events);
+        if (!pending_events.empty()) {
+            if (wifi_debug_post_batch(pending_events)) {
+                pending_events.clear();
+            } else {
+                // Keep this batch until the server acknowledges it. Previously a
+                // transient HTTP/server failure silently discarded every popped log.
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
         }
     }
 }

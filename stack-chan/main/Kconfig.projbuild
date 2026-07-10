@@ -67,12 +67,12 @@ menu "Xiaopai settings"
 
     config STACKCHAN_AUDIO_HW_SAMPLE_RATE
         int "Hardware codec sample rate"
-        default 16000
+        default 24000
         range 16000 48000
 
     config STACKCHAN_AUDIO_PROTOCOL_SAMPLE_RATE
         int "Protocol sample rate"
-        default 16000
+        default 24000
         range 8000 48000
 
     config STACKCHAN_AUDIO_INPUT_REFERENCE
@@ -107,7 +107,7 @@ menu "Xiaopai settings"
 
     config STACKCHAN_WIFI_DEBUG
         bool "Enable WiFi debug log task"
-        default n
+        default y
 
     config STACKCHAN_MIC_MAGNIFICATION
         int "Microphone magnification"

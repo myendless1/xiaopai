@@ -592,6 +592,10 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     if (stt_text.empty()) {
         set_app1_status("No STT", "No text returned yet", "Try speaking louder/longer", "", false, false);
         ESP_LOGW(TAG, "Recognition completed without STT text");
+        // Ending a recording moves the interaction state to WaitingReply.  When
+        // ASR returns no text there will be no downstream reply to move it back
+        // to Monitoring, so explicitly re-arm microphone sampling here.
+        xiaopai_state_set(LocalVoiceState::Listening, "ASR completed without STT text");
     } else {
         set_app1_status("Recognized", stt_text.c_str(), "Listening again...", "", false, true);
     }
@@ -1043,8 +1047,9 @@ static void run_realtime_speech_loop()
                     !reconnect_ws("websocket read failed while paused")) {
                     break;
                 }
-                LocalVoiceState current_state = xiaopai_state_get().state;
-                if (current_state == LocalVoiceState::Waiting) {
+                XiaopaiStateSnapshot current = xiaopai_state_get();
+                if (current.state == LocalVoiceState::Waiting ||
+                    current.interaction_state == InteractionState::WaitingReply) {
                     uint32_t now_ms = M5.millis();
                     if (waiting_started_ms == 0) {
                         waiting_started_ms = now_ms;

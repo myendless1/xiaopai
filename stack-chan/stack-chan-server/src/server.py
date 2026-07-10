@@ -892,7 +892,7 @@ def tts_request_options_from_params(server, params: dict) -> TtsRequestOptions:
         voice=voice,
         sample_rate=parse_int_range(
             params.get("sample_rate"),
-            default=int(getattr(server, "sample_rate", 16000)),
+            default=int(getattr(server, "sample_rate", 24000)),
             name="sample_rate",
             min_value=8000,
             max_value=48000,
@@ -2940,8 +2940,8 @@ class Handler(BaseHTTPRequestHandler):
             params = self._tts_request_params(query, body)
             params["format"] = "pcm"
             options = tts_request_options_from_params(self.server, params)
-            if options.sample_rate != 16000:
-                raise ValueError("device TTS only supports 16000 Hz PCM")
+            if options.sample_rate != 24000:
+                raise ValueError("device TTS only supports 24000 Hz PCM")
         except (json.JSONDecodeError, ValueError) as exc:
             self._send_json({"type": "error", "message": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
@@ -4202,7 +4202,7 @@ def main():
     parser.add_argument("--region", choices=sorted(ASR_URLS), default=os.environ.get("STACKCHAN_ALIYUN_REGION", "shanghai"))
     parser.add_argument("--tts-url", default=os.environ.get("STACKCHAN_ALIYUN_TTS_URL", ""))
     parser.add_argument("--voice", default=os.environ.get("STACKCHAN_ALIYUN_VOICE", DEFAULT_TTS_VOICE))
-    parser.add_argument("--sample-rate", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_SAMPLE_RATE", "16000")))
+    parser.add_argument("--sample-rate", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_SAMPLE_RATE", "24000")))
     parser.add_argument("--volume", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_VOLUME", "80")))
     parser.add_argument("--speech-rate", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_SPEECH_RATE", "0")))
     parser.add_argument("--pitch-rate", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_PITCH_RATE", "0")))
