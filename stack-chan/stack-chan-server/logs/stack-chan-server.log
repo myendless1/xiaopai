@@ -1,301 +1,438 @@
----- stack-chan-server start 2026-07-11 01:45:14 ----
-[2026-07-11 01:45:15.633] 小智实时 WebSocket 已就绪: ws://0.0.0.0:8092/ws
-[2026-07-11 01:45:15.634] 周期 OTA 检查命令已启用: 间隔=300s
-[2026-07-11 01:45:15.635] Morrow 主动提醒监听线程已启动，正在消费 client.notices Queue...[2026-07-11 01:45:15.635] 小派服务已就绪
+---- stack-chan-server start 2026-07-11 02:42:12 ----
+[2026-07-11 02:42:12.945] 小智实时 WebSocket 已就绪: ws://0.0.0.0:8092/ws
+[2026-07-11 02:42:12.946] 周期 OTA 检查命令已启用: 间隔=300s
+[2026-07-11 02:42:12.947] Morrow 主动提醒监听线程已启动，正在消费 client.notices Queue...[2026-07-11 02:42:12.947] 小派服务已就绪
 
-[2026-07-11 01:45:15.635]   人脸检测: yunet
-[2026-07-11 01:45:15.635]   截图保存模式: none
-[2026-07-11 01:45:15.635]   音频保存: captures/audio
-[2026-07-11 01:45:15.635]   设备调试: wifi_logs=启用 usb_serial=启用 state_events=启用
-[2026-07-11 01:45:15.635]   设备日志文件: captures/device-logs
-[2026-07-11 01:45:15.635]   视觉跟踪: 启用
-[2026-07-11 01:45:15.635]   命令队列: max_size=24
-[2026-07-11 01:45:15.635]   Morrow: 启用 session=default
-[2026-07-11 01:45:15.642]   OTA 固件: 0.3.1 /home/myendless/xiaopai/stack-chan/stack-chan-server/static/firmware/xiaopai-0.3.1.bin
-[2026-07-11 01:45:15.642]   OTA 检查命令: 每 300s
-[2026-07-11 01:45:15.642]   实时语音: 启用 ws://0.0.0.0:8092/ws
-[2026-07-11 01:45:15.642]   调试: 启用
-[2026-07-11 01:45:15.642]   健康检查: http://127.0.0.1:8091/health
-[2026-07-11 01:45:15.642]   ASR:    http://0.0.0.0:8091/upload
-[2026-07-11 01:45:15.642]   TTS:    http://0.0.0.0:8091/stream-speak?text=...
-[2026-07-11 01:45:15.642]   事件音频: http://0.0.0.0:8091/head-touch-events -> static/event-audio
-[2026-07-11 01:45:15.642]   图片上传: http://0.0.0.0:8091/upload-image -> captures
-[2026-07-11 01:45:15.642]   OTA:    http://0.0.0.0:8091/ota
-[2026-07-11 01:45:15.642]   人脸检测详情: yunet /home/myendless/xiaopai/stack-chan/stack-chan-server/models/face_detection_yunet_2023mar.onnx
-[2026-07-11 01:45:15.642]   视觉跟踪详情: deadzone=20.0px gain_x=1.0 gain_y=1.0 max_step=12.0deg invert_x=False invert_y=False
-[2026-07-11 01:45:15.642]   找人详情: gain_x=1.0 gain_y=0.8 stop=32.0px
-[2026-07-11 01:45:15.642]   Morrow 详情: http://127.0.0.1:3000 session=default
-[2026-07-11 01:45:15.642]   OTA:     http://0.0.0.0:8091/ota
-[2026-07-11 01:45:15.642]   实时 WS: ws://0.0.0.0:8092/ws
-[2026-07-11 01:45:15.642]   TTS 尾部静音: 0ms
-[2026-07-11 01:45:15.643]   通过 HTTP 长轮询推送命令:
-[2026-07-11 01:45:15.643]           设备拉取: GET http://0.0.0.0:8091/device/next-command?device_id=...
-[2026-07-11 01:45:15.643]           发送命令: GET http://0.0.0.0:8091/command/speak?device_id=...&text=...
-[2026-07-11 01:45:15.643]   语音:  zhimiao_emo, pcm_s16le 16000Hz mono
-[2026-07-11 01:45:15.646] 实时语音配置: host_header='192.168.21.15:8091' ws_url=ws://192.168.21.15:8092/ws
-[2026-07-11 01:45:15.651] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:15.655] OTA 固件已下发: version=0.3.1 file=xiaopai-0.3.1.bin size=1774224
-[2026-07-11 01:45:15.655] HTTP 请求: client=172.24.64.1 raw="GET /ota HTTP/1.1" 200 -
-[2026-07-11 01:45:15.657] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3384840005 mode=waiting face=calm heap_internal=14039 heap_psram=8175668 queue_depth=0
-[2026-07-11 01:45:15.657] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:45:15.693] HTTP 请求: client=172.24.64.1 raw="GET /device/config?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:15.693] 小智实时 WebSocket 已接入: path='/ws' query=''
-[2026-07-11 01:45:15.693] 小智设备已连接: 44:1b:f6:df:5d:b8
-[2026-07-11 01:45:15.694] 小智实时服务端 hello 已发送: device_id=44:1b:f6:df:5d:b8 bytes=171
-[2026-07-11 01:45:15.742] 小智实时 hello 已收到: device_id=44:1b:f6:df:5d:b8 type='hello'
-[2026-07-11 01:45:15.742] 小智实时服务端 hello 已在设备 hello 后重发: device_id=44:1b:f6:df:5d:b8 bytes=171
-[2026-07-11 01:45:15.793] 设备状态事件: device=44:1b:f6:df:5d:b8 source=xiaopai-state state=listening->waiting reason=websocket read failed while paused
-[2026-07-11 01:45:15.793] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:15.902] 设备状态事件: device=44:1b:f6:df:5d:b8 source=expression-state state=calm_blink->calm reason=calm
-[2026-07-11 01:45:15.902] 设备状态事件: device=44:1b:f6:df:5d:b8 source=xiaopai-state state=waiting->listening reason=websocket connected
-[2026-07-11 01:45:15.902] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:16.080] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:16.829] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3384840005 mode=listening face=calm heap_internal=28711 heap_psram=8171704 queue_depth=0
-[2026-07-11 01:45:16.829] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:45:16.857] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:17.111] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:17.592] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:17.983] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3384840005 mode=listening face=calm heap_internal=28711 heap_psram=8171704 queue_depth=0
-[2026-07-11 01:45:17.983] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:45:18.074] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:18.325] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:19.069] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:19.116] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3384840005 mode=listening face=calm heap_internal=14399 heap_psram=8171568 queue_depth=0
-[2026-07-11 01:45:19.117] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:45:19.183] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:19.816] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:20.214] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:20.263] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3384840005 mode=listening face=calm heap_internal=13951 heap_psram=8171568 queue_depth=0
-[2026-07-11 01:45:20.263] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:45:20.380] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:20.550] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:20.653] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=3384840005&timeout=5 HTTP/1.1" 200 -
-[2026-07-11 01:45:20.740] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:20.924] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:20.942] HTTP 请求: client=172.24.64.1 raw="GET /device/config?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:21.232] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:21.410] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3384840005 mode=listening face=calm heap_internal=20439 heap_psram=8179904 queue_depth=0
-[2026-07-11 01:45:21.411] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:45:21.503] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:22.058] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:22.264] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:22.579] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3384840005 mode=listening face=calm heap_internal=20439 heap_psram=8179904 queue_depth=0
-[2026-07-11 01:45:22.579] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:45:22.687] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:23.292] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:23.516] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:23.723] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3384840005 mode=listening face=calm heap_internal=20439 heap_psram=8179904 queue_depth=0
-[2026-07-11 01:45:23.723] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:45:23.816] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:24.280] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:24.906] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3384840005 mode=listening face=calm heap_internal=20439 heap_psram=8179904 queue_depth=0
-[2026-07-11 01:45:24.906] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:45:25.005] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:25.338] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:25.685] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=3384840005&timeout=5 HTTP/1.1" 200 -
-[2026-07-11 01:45:25.735] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:26.070] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3384840005 mode=listening face=calm heap_internal=20419 heap_psram=8179904 queue_depth=0
-[2026-07-11 01:45:26.070] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:45:26.168] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:26.194] HTTP 请求: client=172.24.64.1 raw="GET /device/config?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:26.373] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:26.486] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:27.218] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3384840005 mode=listening face=calm heap_internal=20419 heap_psram=8179904 queue_depth=0
-[2026-07-11 01:45:27.218] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:45:27.235] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:27.402] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:27.953] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:28.368] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3384840005 mode=listening face=calm heap_internal=20419 heap_psram=8179904 queue_depth=0
-[2026-07-11 01:45:28.368] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:45:28.466] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:28.699] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:29.439] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:29.540] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3384840005 mode=listening face=calm heap_internal=10259 heap_psram=8175668 queue_depth=0
-[2026-07-11 01:45:29.540] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:45:29.634] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:30.175] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:30.511] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:30.694] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3384840005 mode=listening face=calm heap_internal=20419 heap_psram=8179904 queue_depth=0
-[2026-07-11 01:45:30.694] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:45:30.711] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=3384840005&timeout=5 HTTP/1.1" 200 -
-[2026-07-11 01:45:30.793] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:30.037] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:30.325] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:30.644] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:30.671] HTTP 请求: client=172.24.64.1 raw="GET /device/config?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:30.770] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:30.990] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3384840005 mode=listening face=calm heap_internal=20415 heap_psram=8179904 queue_depth=0
-[2026-07-11 01:45:30.990] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:45:31.087] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:31.525] HTTP 请求: client=172.24.64.1 raw="POST /device/logs?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8 HTTP/1.1" 200 -
-[2026-07-11 01:45:34.854] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=3384840005&timeout=5 HTTP/1.1" 200 -
-[2026-07-11 01:45:55.525] HTTP 请求: client=172.24.64.1 raw="GET /health HTTP/1.1" 200 -
-[2026-07-11 01:45:55.577] 实时语音配置: host_header='192.168.21.15:8091' ws_url=ws://192.168.21.15:8092/ws
-[2026-07-11 01:45:55.581] OTA 固件已下发: version=0.3.1 file=xiaopai-0.3.1.bin size=1774224
-[2026-07-11 01:45:55.582] HTTP 请求: client=172.24.64.1 raw="GET /ota HTTP/1.1" 200 -
-[2026-07-11 01:45:56.101] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/hello HTTP/1.1" 200 -
-[2026-07-11 01:45:57.074] 实时语音配置: host_header='192.168.21.15:8091' ws_url=ws://192.168.21.15:8092/ws
-[2026-07-11 01:45:57.086] OTA 固件已下发: version=0.3.1 file=xiaopai-0.3.1.bin size=1774224
-[2026-07-11 01:45:57.091] HTTP 请求: client=172.24.64.1 raw="GET /ota HTTP/1.1" 200 -
-[2026-07-11 01:45:57.143] 实时语音配置: host_header='192.168.21.15:8091' ws_url=ws://192.168.21.15:8092/ws
-[2026-07-11 01:45:57.148] OTA 固件已下发: version=0.3.1 file=xiaopai-0.3.1.bin size=1774224
-[2026-07-11 01:45:57.148] HTTP 请求: client=172.24.64.1 raw="GET /ota HTTP/1.1" 200 -
-[2026-07-11 01:45:57.169] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=idle face=calm heap_internal=29539 heap_psram=8132800 queue_depth=0
-[2026-07-11 01:45:57.169] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:45:57.189] 小智实时 WebSocket 已接入: path='/ws' query=''
-[2026-07-11 01:45:57.189] 小智旧实时会话已被替换: device_id=44:1b:f6:df:5d:b8 session_id=sess_159a2b04de74 reason=device reconnected: 44:1b:f6:df:5d:b8
-[2026-07-11 01:45:57.189] 小智设备已连接: 44:1b:f6:df:5d:b8
-[2026-07-11 01:45:57.191] 小智实时服务端 hello 已发送: device_id=44:1b:f6:df:5d:b8 bytes=171
-[2026-07-11 01:45:57.207] 小智实时会话已结束: sent 1000 (OK) device reconnected: 44:1b:f6:df:5d:b8; no close frame received
-[2026-07-11 01:45:57.207] 小智设备已断开: 44:1b:f6:df:5d:b8
-[2026-07-11 01:45:57.249] 小智实时 hello 已收到: device_id=44:1b:f6:df:5d:b8 type='hello'
-[2026-07-11 01:45:57.250] 小智实时服务端 hello 已在设备 hello 后重发: device_id=44:1b:f6:df:5d:b8 bytes=171
-[2026-07-11 01:45:58.366] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=34607 heap_psram=8108220 queue_depth=0
-[2026-07-11 01:45:58.366] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:45:59.516] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=34607 heap_psram=8108220 queue_depth=0
-[2026-07-11 01:45:59.516] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:00.677] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=34607 heap_psram=8108220 queue_depth=0
-[2026-07-11 01:46:00.678] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:01.145] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=3582152710&timeout=5 HTTP/1.1" 200 -
-[2026-07-11 01:46:01.838] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=34599 heap_psram=8108220 queue_depth=0
-[2026-07-11 01:46:01.838] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:02.141] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=34599 heap_psram=8108220 queue_depth=0
-[2026-07-11 01:46:02.142] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:03.297] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=34599 heap_psram=8108220 queue_depth=0
-[2026-07-11 01:46:03.297] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:04.442] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=34599 heap_psram=8108220 queue_depth=0
-[2026-07-11 01:46:04.442] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:05.333] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=3582152710&timeout=5 HTTP/1.1" 200 -
-[2026-07-11 01:46:05.610] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=34623 heap_psram=8108220 queue_depth=0[2026-07-11 01:46:05.611] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_start elapsed_ms=0
+[2026-07-11 02:42:12.948]   人脸检测: yunet
+[2026-07-11 02:42:12.948]   截图保存模式: none
+[2026-07-11 02:42:12.948]   音频保存: captures/audio
+[2026-07-11 02:42:12.948]   设备调试: wifi_logs=启用 usb_serial=启用 state_events=启用
+[2026-07-11 02:42:12.948]   设备日志文件: captures/device-logs
+[2026-07-11 02:42:12.948]   视觉跟踪: 启用
+[2026-07-11 02:42:12.948]   命令队列: max_size=24
+[2026-07-11 02:42:12.948]   Morrow: 启用 session=default
+[2026-07-11 02:42:12.955]   OTA 固件: 0.3.1 /home/myendless/xiaopai/stack-chan/stack-chan-server/static/firmware/xiaopai-0.3.1.bin
+[2026-07-11 02:42:12.955]   OTA 检查命令: 每 300s
+[2026-07-11 02:42:12.955]   实时语音: 启用 ws://0.0.0.0:8092/ws
+[2026-07-11 02:42:12.955]   调试: 启用
+[2026-07-11 02:42:12.955]   健康检查: http://127.0.0.1:8091/health
+[2026-07-11 02:42:12.955]   ASR:    http://0.0.0.0:8091/upload
+[2026-07-11 02:42:12.955]   TTS:    http://0.0.0.0:8091/stream-speak?text=...
+[2026-07-11 02:42:12.955]   事件音频: http://0.0.0.0:8091/head-touch-events -> static/event-audio
+[2026-07-11 02:42:12.955]   图片上传: http://0.0.0.0:8091/upload-image -> captures
+[2026-07-11 02:42:12.955]   OTA:    http://0.0.0.0:8091/ota
+[2026-07-11 02:42:12.955]   人脸检测详情: yunet /home/myendless/xiaopai/stack-chan/stack-chan-server/models/face_detection_yunet_2023mar.onnx
+[2026-07-11 02:42:12.955]   视觉跟踪详情: deadzone=20.0px gain_x=1.0 gain_y=1.0 max_step=12.0deg invert_x=False invert_y=False
+[2026-07-11 02:42:12.955]   找人详情: gain_x=1.0 gain_y=0.8 stop=32.0px
+[2026-07-11 02:42:12.955]   Morrow 详情: http://127.0.0.1:3000 session=default
+[2026-07-11 02:42:12.955]   OTA:     http://0.0.0.0:8091/ota
+[2026-07-11 02:42:12.955]   实时 WS: ws://0.0.0.0:8092/ws
+[2026-07-11 02:42:12.955]   TTS 尾部静音: 0ms
+[2026-07-11 02:42:12.955]   通过 HTTP 长轮询推送命令:
+[2026-07-11 02:42:12.955]           设备拉取: GET http://0.0.0.0:8091/device/next-command?device_id=...
+[2026-07-11 02:42:12.956]           发送命令: GET http://0.0.0.0:8091/command/speak?device_id=...&text=...
+[2026-07-11 02:42:12.956]   语音:  zhimiao_emo, pcm_s16le 16000Hz mono
+[2026-07-11 02:42:12.960] 实时语音配置: host_header='192.168.21.15:8091' ws_url=ws://192.168.21.15:8092/ws
+[2026-07-11 02:42:12.965] OTA 固件已下发: version=0.3.1 file=xiaopai-0.3.1.bin size=1774224[2026-07-11 02:42:12.967] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=waiting face=calm heap_internal=35759 heap_psram=8105144 queue_depth=0
 
-[2026-07-11 01:46:05.611] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:05.872] 实时 ASR 已连接: device=44:1b:f6:df:5d:b8 task_id=8b4507f75f034fb1b6b9afb938934028
-[2026-07-11 01:46:06.215] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='好呀，小'
-[2026-07-11 01:46:06.215] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_first_partial elapsed_ms=604
-[2026-07-11 01:46:06.717] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=29715 heap_psram=8108220 queue_depth=0
-[2026-07-11 01:46:06.717] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:07.006] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='好呀，小麦可以'
-[2026-07-11 01:46:07.436] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='好呀，小麦可以听到'
-[2026-07-11 01:46:07.881] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=29675 heap_psram=8108220 queue_depth=0
-[2026-07-11 01:46:07.881] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:07.981] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='好呀，小麦可以听到吗？你好'
-[2026-07-11 01:46:08.438] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='好呀，小麦可以听到吗？你好呀，小太'
-[2026-07-11 01:46:08.981] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='好呀，小麦可以听到吗？你好呀，小肽可以听'
-[2026-07-11 01:46:09.048] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=27891 heap_psram=8108220 queue_depth=0
-[2026-07-11 01:46:09.049] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:09.414] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='好呀，小麦可以听到吗？你好呀，小肽可以听到吗？你'
-[2026-07-11 01:46:09.956] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='好呀，小麦可以听到吗？你好呀，小肽可以听到吗？你好，杨'
-[2026-07-11 01:46:10.229] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=28059 heap_psram=8108220 queue_depth=0
-[2026-07-11 01:46:10.229] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:10.383] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=3582152710&timeout=5 HTTP/1.1" 200 -
-[2026-07-11 01:46:10.455] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='好呀，小麦可以听到吗？你好呀，小肽可以听到吗？你好，杨小派'
-[2026-07-11 01:46:10.922] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='好呀，小麦可以听到吗？你好呀，小肽可以听到吗？你好，杨小派可以听到'
-[2026-07-11 01:46:11.337] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=True text='好呀，小蔡可以听到吗？你好呀，小蔡可以听到吗？你好呀，小蔡可以听到吗？'
-[2026-07-11 01:46:11.339] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_final elapsed_ms=5728
-[2026-07-11 01:46:11.339] 实时 ASR 音频已保存: device=44:1b:f6:df:5d:b8 path=captures/audio/realtime-44_1b_f6_df_5d_b8-20260711-014605-613958.wav pcm_bytes=180480
-[2026-07-11 01:46:11.340] 实时 ASR 已关闭: device=44:1b:f6:df:5d:b8 queued_frames=94 sent_frames=94
-[2026-07-11 01:46:11.381] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=28023 heap_psram=8108220 queue_depth=0
-[2026-07-11 01:46:11.381] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:11.390] 延迟统计: device=44:1b:f6:df:5d:b8 stage=morrow_submit elapsed_ms=5779
-[2026-07-11 01:46:11.390] 实时 ASR 已提交全局 Morrow 队列: device=44:1b:f6:df:5d:b8
-[2026-07-11 01:46:11.436] 实时 ASR 已丢弃未处于 listen:start 的音频帧: device_id=44:1b:f6:df:5d:b8 bytes=362
-[2026-07-11 01:46:11.456] 实时 ASR 已丢弃未处于 listen:start 的音频帧: device_id=44:1b:f6:df:5d:b8 bytes=362
-[2026-07-11 01:46:12.533] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=waiting face=calm heap_internal=34603 heap_psram=8108084 queue_depth=0
-[2026-07-11 01:46:12.533] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:13.692] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=waiting face=calm heap_internal=34603 heap_psram=8108220 queue_depth=0
-[2026-07-11 01:46:13.692] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:14.094] 周期命令已入队: type=speak device=44:1b:f6:df:5d:b8
-[2026-07-11 01:46:14.104] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=3582152710&timeout=5 HTTP/1.1" 200 -
-[2026-07-11 01:46:14.269] 周期命令已入队: type=speak device=44:1b:f6:df:5d:b8
-[2026-07-11 01:46:14.386] 周期命令已入队: type=speak device=44:1b:f6:df:5d:b8
-[2026-07-11 01:46:14.394] HTTP 请求: client=172.24.64.1 raw="POST /v3/command_ack HTTP/1.1" 200 -
-[2026-07-11 01:46:14.403] HTTP 请求: client=172.24.64.1 raw="POST /v3/command_ack HTTP/1.1" 200 -
-[2026-07-11 01:46:14.449] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=3582152710&timeout=5 HTTP/1.1" 200 -
-[2026-07-11 01:46:14.494] TTS 准备实时流: voice=zhimiao_emo sentences=1 text='哈哈哈，看来你特别喜欢给我起名字呀～不过我真的叫小派，不是小潘也不是小蔡哦。'
-[2026-07-11 01:46:14.540] 周期命令已入队: type=speak device=44:1b:f6:df:5d:b8
-[2026-07-11 01:46:14.550] HTTP 请求: client=172.24.64.1 raw="POST /v3/command_ack HTTP/1.1" 200 -
-[2026-07-11 01:46:14.585] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=3582152710&timeout=5 HTTP/1.1" 200 -
-[2026-07-11 01:46:14.716] HTTP 请求: client=172.24.64.1 raw="POST /v3/command_ack HTTP/1.1" 200 -
-[2026-07-11 01:46:14.855] 阿里云 TTS 流已打开: chars=38 elapsed_ms=360
-[2026-07-11 01:46:14.855] TTS 实时流已就绪: voice=zhimiao_emo sentences=1 ready_ms=361, text='哈哈哈，看来你特别喜欢给我起名字呀～不过我真的叫小派，不是小潘也不是小蔡哦。'
-[2026-07-11 01:46:14.855] HTTP 请求: client=172.24.64.1 raw="POST /v3/tts HTTP/1.1" 200 -
-[2026-07-11 01:46:14.869] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=speaking face=calm heap_internal=18383 heap_psram=8107948 queue_depth=2
-[2026-07-11 01:46:14.869] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:15.063] TTS 已发送首句: bytes=180798 text='哈哈哈，看来你特别喜欢给我起名字呀～不过我真的叫小派，不是小潘也不是小蔡哦。'
-[2026-07-11 01:46:15.063] TTS 实时流完成: bytes=180798 first_bytes=180798 total_ms=569
-[2026-07-11 01:46:16.006] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=speaking face=calm heap_internal=12191 heap_psram=8105008 queue_depth=2
-[2026-07-11 01:46:16.006] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:17.134] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=speaking face=calm heap_internal=12191 heap_psram=8105144 queue_depth=2
-[2026-07-11 01:46:17.134] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:18.298] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=speaking face=calm heap_internal=12191 heap_psram=8105008 queue_depth=2
-[2026-07-11 01:46:18.299] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:19.436] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=speaking face=calm heap_internal=12191 heap_psram=8105008 queue_depth=2
-[2026-07-11 01:46:19.437] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:19.790] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=3582152710&timeout=5 HTTP/1.1" 200 -
-[2026-07-11 01:46:19.926] HTTP 请求: client=172.24.64.1 raw="POST /v3/command_ack HTTP/1.1" 200 -
-[2026-07-11 01:46:20.592] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=speaking face=calm heap_internal=29451 heap_psram=8105144 queue_depth=3
-[2026-07-11 01:46:20.592] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:21.055] HTTP 请求: client=172.24.64.1 raw="POST /v3/command_ack HTTP/1.1" 200 -
-[2026-07-11 01:46:21.183] HTTP 请求: client=172.24.64.1 raw="POST /v3/command_ack HTTP/1.1" 200 -
-[2026-07-11 01:46:21.271] TTS 准备实时流: voice=zhimiao_emo sentences=1 text='有什么正经事需要我帮忙的吗？'
-[2026-07-11 01:46:21.617] 阿里云 TTS 流已打开: chars=14 elapsed_ms=346
-[2026-07-11 01:46:21.618] TTS 实时流已就绪: voice=zhimiao_emo sentences=1 ready_ms=346, text='有什么正经事需要我帮忙的吗？'
-[2026-07-11 01:46:21.618] HTTP 请求: client=172.24.64.1 raw="POST /v3/tts HTTP/1.1" 200 -
-[2026-07-11 01:46:21.711] TTS 已发送首句: bytes=55598 text='有什么正经事需要我帮忙的吗？'
-[2026-07-11 01:46:21.711] TTS 实时流完成: bytes=55598 first_bytes=55598 total_ms=439
-[2026-07-11 01:46:21.738] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=speaking face=calm heap_internal=19451 heap_psram=8104872 queue_depth=2
-[2026-07-11 01:46:21.739] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:22.884] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=speaking face=calm_blink heap_internal=19467 heap_psram=8105008 queue_depth=2
-[2026-07-11 01:46:22.884] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:23.777] HTTP 请求: client=172.24.64.1 raw="POST /v3/command_ack HTTP/1.1" 200 -
-[2026-07-11 01:46:23.910] HTTP 请求: client=172.24.64.1 raw="POST /v3/command_ack HTTP/1.1" 200 -
-[2026-07-11 01:46:24.020] TTS 准备实时流: voice=zhimiao_emo sentences=1 text='比如查查日程、看看天气、规划路线什么的？'
-[2026-07-11 01:46:24.054] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=speaking face=calm heap_internal=34215 heap_psram=8105008 queue_depth=1
-[2026-07-11 01:46:24.054] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:24.320] 阿里云 TTS 流已打开: chars=20 elapsed_ms=300
-[2026-07-11 01:46:24.321] TTS 实时流已就绪: voice=zhimiao_emo sentences=1 ready_ms=301, text='比如查查日程、看看天气、规划路线什么的？'
-[2026-07-11 01:46:24.321] HTTP 请求: client=172.24.64.1 raw="POST /v3/tts HTTP/1.1" 200 -
-[2026-07-11 01:46:24.442] TTS 已发送首句: bytes=111998 text='比如查查日程、看看天气、规划路线什么的？'
-[2026-07-11 01:46:24.442] TTS 实时流完成: bytes=111998 first_bytes=111998 total_ms=422
-[2026-07-11 01:46:24.957] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=3582152710&timeout=5 HTTP/1.1" 200 -
-[2026-07-11 01:46:25.193] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=speaking face=calm heap_internal=12439 heap_psram=8105144 queue_depth=1
-[2026-07-11 01:46:25.194] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:26.359] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=speaking face=calm heap_internal=12443 heap_psram=8105008 queue_depth=1
-[2026-07-11 01:46:26.359] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:27.519] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=speaking face=calm heap_internal=29503 heap_psram=8105008 queue_depth=1
-[2026-07-11 01:46:27.519] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:28.311] HTTP 请求: client=172.24.64.1 raw="POST /v3/command_ack HTTP/1.1" 200 -
-[2026-07-11 01:46:28.438] HTTP 请求: client=172.24.64.1 raw="POST /v3/command_ack HTTP/1.1" 200 -
-[2026-07-11 01:46:28.528] TTS 准备实时流: voice=zhimiao_emo sentences=1 text='我一直在，你每句话我都看到了，放心吧！'
-[2026-07-11 01:46:28.667] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=speaking face=calm heap_internal=17895 heap_psram=8104872 queue_depth=0
-[2026-07-11 01:46:28.667] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:28.840] 阿里云 TTS 流已打开: chars=19 elapsed_ms=312
-[2026-07-11 01:46:28.841] TTS 实时流已就绪: voice=zhimiao_emo sentences=1 ready_ms=313, text='我一直在，你每句话我都看到了，放心吧！'
-[2026-07-11 01:46:28.841] HTTP 请求: client=172.24.64.1 raw="POST /v3/tts HTTP/1.1" 200 -
-[2026-07-11 01:46:28.962] TTS 已发送首句: bytes=104398 text='我一直在，你每句话我都看到了，放心吧！'
-[2026-07-11 01:46:28.962] TTS 实时流完成: bytes=104398 first_bytes=104398 total_ms=434
-[2026-07-11 01:46:29.809] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=speaking face=calm heap_internal=12211 heap_psram=8105008 queue_depth=0
-[2026-07-11 01:46:29.810] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:29.987] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=3582152710&timeout=5 HTTP/1.1" 200 -
-[2026-07-11 01:46:30.977] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=speaking face=calm heap_internal=17619 heap_psram=8105144 queue_depth=0
-[2026-07-11 01:46:30.977] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:32.137] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=speaking face=calm heap_internal=29471 heap_psram=8105008 queue_depth=0
-[2026-07-11 01:46:32.137] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:32.619] HTTP 请求: client=172.24.64.1 raw="POST /v3/command_ack HTTP/1.1" 200 -
-[2026-07-11 01:46:33.267] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=34083 heap_psram=8105144 queue_depth=0
-[2026-07-11 01:46:33.267] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:33.533] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=34083 heap_psram=8105144 queue_depth=0
-[2026-07-11 01:46:33.533] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:34.145] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=3582152710&timeout=5 HTTP/1.1" 200 -
-[2026-07-11 01:46:34.677] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=34099 heap_psram=8105144 queue_depth=0
-[2026-07-11 01:46:34.677] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:35.828] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=34099 heap_psram=8105144 queue_depth=0
-[2026-07-11 01:46:35.828] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:36.951] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=34099 heap_psram=8105144 queue_depth=0
-[2026-07-11 01:46:36.952] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:38.120] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=34099 heap_psram=8105144 queue_depth=0
-[2026-07-11 01:46:38.121] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:39.183] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=3582152710&timeout=5 HTTP/1.1" 200 -
-[2026-07-11 01:46:39.264] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=3582152710 mode=listening face=calm heap_internal=34099 heap_psram=8105144 queue_depth=0
-[2026-07-11 01:46:39.264] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
-[2026-07-11 01:46:44.229] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=3582152710&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:42:12.967] HTTP 请求: client=172.24.64.1 raw="GET /ota HTTP/1.1" 200 -[2026-07-11 02:42:12.967] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+
+[2026-07-11 02:42:13.027] 小智实时 WebSocket 已接入: path='/ws' query=''
+[2026-07-11 02:42:13.027] 小智设备已连接: 44:1b:f6:df:5d:b8
+[2026-07-11 02:42:13.028] 小智实时服务端 hello 已发送: device_id=44:1b:f6:df:5d:b8 bytes=171
+[2026-07-11 02:42:13.082] 小智实时 hello 已收到: device_id=44:1b:f6:df:5d:b8 type='hello'
+[2026-07-11 02:42:13.082] 小智实时服务端 hello 已在设备 hello 后重发: device_id=44:1b:f6:df:5d:b8 bytes=171
+[2026-07-11 02:42:14.121] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=37959 heap_psram=8101044 queue_depth=0
+[2026-07-11 02:42:14.122] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:15.244] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=37959 heap_psram=8101044 queue_depth=0
+[2026-07-11 02:42:15.244] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:16.372] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm_blink heap_internal=37959 heap_psram=8101044 queue_depth=0
+[2026-07-11 02:42:16.372] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:17.487] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=37959 heap_psram=8101044 queue_depth=0
+[2026-07-11 02:42:17.487] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:17.964] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:42:18.625] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33843 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:18.626] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:19.730] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33843 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:19.730] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:20.113] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_start elapsed_ms=0
+[2026-07-11 02:42:20.369] 实时 ASR 已连接: device=44:1b:f6:df:5d:b8 task_id=f8558d503bf14cf08e93c29609144ac4
+[2026-07-11 02:42:20.864] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm_blink heap_internal=27375 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:20.864] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:21.023] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='你好'
+[2026-07-11 02:42:21.024] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_first_partial elapsed_ms=1687
+[2026-07-11 02:42:21.222] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=28939 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:21.222] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:21.758] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=True text='你好你好。'
+[2026-07-11 02:42:21.759] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_final elapsed_ms=2421
+[2026-07-11 02:42:21.759] 实时 ASR 音频已保存: device=44:1b:f6:df:5d:b8 path=captures/audio/realtime-44_1b_f6_df_5d_b8-20260711-024220-115403.wav pcm_bytes=76800
+[2026-07-11 02:42:21.760] 实时 ASR 已关闭: device=44:1b:f6:df:5d:b8 queued_frames=40 sent_frames=40
+[2026-07-11 02:42:21.802] 延迟统计: device=44:1b:f6:df:5d:b8 stage=morrow_submit elapsed_ms=2465
+[2026-07-11 02:42:21.803] 实时 ASR 已提交全局 Morrow 队列: device=44:1b:f6:df:5d:b8
+[2026-07-11 02:42:21.812] 实时 ASR 已丢弃未处于 listen:start 的音频帧: device_id=44:1b:f6:df:5d:b8 bytes=404
+[2026-07-11 02:42:21.857] 实时 ASR 已丢弃未处于 listen:start 的音频帧: device_id=44:1b:f6:df:5d:b8 bytes=332
+[2026-07-11 02:42:22.236] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:42:22.364] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=waiting face=calm_blink heap_internal=33375 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:42:22.364] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:23.473] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=waiting face=calm_blink heap_internal=33811 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:42:23.473] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:24.613] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=waiting face=calm heap_internal=33811 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:42:24.613] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:24.816] 周期命令已入队: type=speak device=44:1b:f6:df:5d:b8
+[2026-07-11 02:42:24.826] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:42:24.985] 周期命令已入队: type=speak device=44:1b:f6:df:5d:b8
+[2026-07-11 02:42:25.101] HTTP 请求: client=172.24.64.1 raw="POST /v3/command_ack HTTP/1.1" 200 -
+[2026-07-11 02:42:25.145] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:42:25.241] HTTP 请求: client=172.24.64.1 raw="POST /v3/command_ack HTTP/1.1" 200 -
+[2026-07-11 02:42:25.761] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33979 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:25.761] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:26.883] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33979 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:26.883] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:28.025] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33979 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:28.025] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:29.136] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33979 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:29.136] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:30.246] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33979 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:30.246] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:30.264] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:42:30.344] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_start elapsed_ms=0
+[2026-07-11 02:42:30.617] 实时 ASR 已连接: device=44:1b:f6:df:5d:b8 task_id=6ab3a642f6d24372803f81347853c6e8
+[2026-07-11 02:42:31.223] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='你，'
+[2026-07-11 02:42:31.224] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_first_partial elapsed_ms=880
+[2026-07-11 02:42:31.398] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=28787 heap_psram=8103860 queue_depth=0
+[2026-07-11 02:42:31.399] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:31.604] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=True text='嗯。'
+[2026-07-11 02:42:31.605] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_final elapsed_ms=1261
+[2026-07-11 02:42:31.605] 实时 ASR 音频已保存: device=44:1b:f6:df:5d:b8 path=captures/audio/realtime-44_1b_f6_df_5d_b8-20260711-024230-345049.wav pcm_bytes=42240
+[2026-07-11 02:42:31.606] 延迟统计: device=44:1b:f6:df:5d:b8 stage=morrow_submit elapsed_ms=1262
+[2026-07-11 02:42:31.606] 实时 ASR 已提交全局 Morrow 队列: device=44:1b:f6:df:5d:b8
+[2026-07-11 02:42:31.640] 实时 ASR 已丢弃未处于 listen:start 的音频帧: device_id=44:1b:f6:df:5d:b8 bytes=364
+[2026-07-11 02:42:31.652] 实时 ASR 已关闭: device=44:1b:f6:df:5d:b8 queued_frames=22 sent_frames=22
+[2026-07-11 02:42:31.693] 实时 ASR 已丢弃未处于 listen:start 的音频帧: device_id=44:1b:f6:df:5d:b8 bytes=426
+[2026-07-11 02:42:32.545] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=waiting face=calm heap_internal=33983 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:42:32.545] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:33.680] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=waiting face=calm heap_internal=33983 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:42:33.680] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:34.006] 周期命令已入队: type=speak device=44:1b:f6:df:5d:b8
+[2026-07-11 02:42:34.018] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:42:34.294] HTTP 请求: client=172.24.64.1 raw="POST /v3/command_ack HTTP/1.1" 200 -
+[2026-07-11 02:42:34.809] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33951 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:34.809] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:35.941] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm_blink heap_internal=33951 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:35.941] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:37.057] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33951 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:37.057] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:38.168] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33951 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:38.169] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:39.305] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm_blink heap_internal=33951 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:39.306] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:39.333] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:42:40.426] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=34015 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:40.426] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:40.558] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_start elapsed_ms=0
+[2026-07-11 02:42:40.776] 实时 ASR 已连接: device=44:1b:f6:df:5d:b8 task_id=91a1ea7980614f409e5bacc91cfd7abb
+[2026-07-11 02:42:41.152] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='你好你好'
+[2026-07-11 02:42:41.153] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_first_partial elapsed_ms=596
+[2026-07-11 02:42:41.346] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='你好，你'
+[2026-07-11 02:42:41.571] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=29807 heap_psram=8103860 queue_depth=0
+[2026-07-11 02:42:41.572] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:41.885] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='你好你好，小'
+[2026-07-11 02:42:42.467] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=True text='你好你好，小白同学。'
+[2026-07-11 02:42:42.468] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_final elapsed_ms=1911[2026-07-11 02:42:42.468] 实时 ASR 音频已保存: device=44:1b:f6:df:5d:b8 path=captures/audio/realtime-44_1b_f6_df_5d_b8-20260711-024240-559567.wav pcm_bytes=63360
+
+[2026-07-11 02:42:42.470] 延迟统计: device=44:1b:f6:df:5d:b8 stage=wake_reply_start elapsed_ms=1912
+[2026-07-11 02:42:42.470] 延迟统计: device=44:1b:f6:df:5d:b8 stage=device_tts_start elapsed_ms=1913
+[2026-07-11 02:42:42.483] 周期命令已入队: type=speak device=44:1b:f6:df:5d:b8
+[2026-07-11 02:42:42.483] 延迟统计: device=44:1b:f6:df:5d:b8 stage=device_speak_command_sent elapsed_ms=1926
+[2026-07-11 02:42:42.483] 实时语音命令已通过 HTTP 入队: device_id=44:1b:f6:df:5d:b8
+[2026-07-11 02:42:42.491] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:42:42.511] 实时 ASR 已关闭: device=44:1b:f6:df:5d:b8 queued_frames=33 sent_frames=32
+[2026-07-11 02:42:42.564] 实时 ASR 已丢弃未处于 listen:start 的音频帧: device_id=44:1b:f6:df:5d:b8 bytes=363
+[2026-07-11 02:42:42.618] HTTP 请求: client=172.24.64.1 raw="POST /v3/command_ack HTTP/1.1" 200 -
+[2026-07-11 02:42:42.623] 实时 ASR 已丢弃未处于 listen:start 的音频帧: device_id=44:1b:f6:df:5d:b8 bytes=333
+[2026-07-11 02:42:42.697] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=22663 heap_psram=8103860 queue_depth=0
+[2026-07-11 02:42:42.697] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:43.824] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33951 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:43.824] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:44.953] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33951 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:44.954] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:46.096] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33951 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:46.096] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:47.231] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33951 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:47.231] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:47.658] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:42:48.348] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33959 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:48.348] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:49.467] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33959 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:49.467] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:50.594] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33959 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:50.595] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:51.724] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm_blink heap_internal=33959 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:51.725] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:52.696] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:42:52.838] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=32427 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:52.838] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:53.176] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33983 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:53.177] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:54.319] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33983 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:54.320] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:55.445] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm_blink heap_internal=33983 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:55.445] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:56.567] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33983 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:56.568] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:56.941] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:42:57.695] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33935 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:57.695] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:58.824] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33935 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:58.824] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:42:59.943] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33935 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:42:59.943] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:01.092] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33935 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:01.092] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:01.995] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:43:02.227] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33959 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:02.227] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:03.356] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33959 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:03.357] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:04.502] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33959 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:04.502] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:05.668] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33959 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:05.668] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:06.817] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33959 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:06.817] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:07.030] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+Morrow connection failed: Connection to remote host was lost.
+[2026-07-11 02:43:07.938] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33979 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:07.938] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:09.078] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33979 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:09.078] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:10.207] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33979 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:10.207] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:10.513] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_start elapsed_ms=0
+[2026-07-11 02:43:10.747] 实时 ASR 已连接: device=44:1b:f6:df:5d:b8 task_id=a89933bbb741457b98df88eca060ef14
+[2026-07-11 02:43:11.164] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='你好你好'
+[2026-07-11 02:43:11.165] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_first_partial elapsed_ms=652
+[2026-07-11 02:43:11.368] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm_blink heap_internal=27519 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:11.368] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:11.884] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='你好你好，小潘同'
+[2026-07-11 02:43:12.073] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:43:12.183] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=True text='你好你好，小白同学。'
+[2026-07-11 02:43:12.184] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_final elapsed_ms=1671
+[2026-07-11 02:43:12.184] 实时 ASR 音频已保存: device=44:1b:f6:df:5d:b8 path=captures/audio/realtime-44_1b_f6_df_5d_b8-20260711-024310-514351.wav pcm_bytes=53760
+[2026-07-11 02:43:12.185] 延迟统计: device=44:1b:f6:df:5d:b8 stage=wake_reply_start elapsed_ms=1672
+[2026-07-11 02:43:12.185] 延迟统计: device=44:1b:f6:df:5d:b8 stage=device_tts_start elapsed_ms=1672
+[2026-07-11 02:43:12.195] 周期命令已入队: type=speak device=44:1b:f6:df:5d:b8
+[2026-07-11 02:43:12.195] 延迟统计: device=44:1b:f6:df:5d:b8 stage=device_speak_command_sent elapsed_ms=1682
+[2026-07-11 02:43:12.195] 实时语音命令已通过 HTTP 入队: device_id=44:1b:f6:df:5d:b8
+[2026-07-11 02:43:12.202] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:43:12.224] 实时 ASR 已关闭: device=44:1b:f6:df:5d:b8 queued_frames=28 sent_frames=27
+[2026-07-11 02:43:12.259] 实时 ASR 已丢弃未处于 listen:start 的音频帧: device_id=44:1b:f6:df:5d:b8 bytes=330
+[2026-07-11 02:43:12.268] 实时 ASR 已丢弃未处于 listen:start 的音频帧: device_id=44:1b:f6:df:5d:b8 bytes=331
+[2026-07-11 02:43:12.308] HTTP 请求: client=172.24.64.1 raw="POST /v3/command_ack HTTP/1.1" 200 -
+[2026-07-11 02:43:12.476] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_start elapsed_ms=0
+[2026-07-11 02:43:12.520] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=27467 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:12.520] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:12.719] 实时 ASR 已连接: device=44:1b:f6:df:5d:b8 task_id=e259063cd3624d27b64abbc686085949
+[2026-07-11 02:43:13.685] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm_blink heap_internal=27455 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:13.685] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:14.827] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=29039 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:14.827] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:15.216] 实时 ASR 停止请求已发送: device=44:1b:f6:df:5d:b8 task_id=e259063cd3624d27b64abbc686085949 sent_frames=46
+[2026-07-11 02:43:15.266] 实时 ASR 音频已保存: device=44:1b:f6:df:5d:b8 path=captures/audio/realtime-44_1b_f6_df_5d_b8-20260711-024312-477676.wav pcm_bytes=88320
+[2026-07-11 02:43:15.303] 实时 ASR 已关闭: device=44:1b:f6:df:5d:b8 queued_frames=46 sent_frames=46
+[2026-07-11 02:43:15.946] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=30443 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:15.947] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:17.071] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm_blink heap_internal=30443 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:17.072] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:17.340] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:43:18.195] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33975 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:18.196] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:19.304] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33975 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:19.304] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:20.416] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33975 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:20.416] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:21.538] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33975 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:21.539] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:22.365] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:43:22.660] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33987 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:22.660] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:23.810] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33987 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:23.811] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:24.140] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33987 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:24.141] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:25.286] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33987 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:25.286] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:26.411] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm_blink heap_internal=33987 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:26.411] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:26.594] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:43:27.539] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33939 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:27.540] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:28.678] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33939 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:28.679] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:29.838] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33939 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:29.839] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:30.956] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33939 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:30.956] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:31.631] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:43:32.081] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33979 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:32.082] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:33.206] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33991 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:33.206] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:34.355] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33991 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:34.355] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:35.501] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33991 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:35.502] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:36.660] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33991 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:36.660] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:36.676] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:43:37.774] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33975 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:37.774] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:38.899] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33975 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:38.899] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:40.001] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33975 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:40.001] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:41.137] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm_blink heap_internal=33975 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:41.137] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:41.705] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:43:42.259] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=34003 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:42.259] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:43.399] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=34003 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:43.400] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:44.535] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=34003 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:44.536] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:45.705] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=34003 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:45.705] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:46.738] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:43:46.880] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=34003 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:46.881] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:47.998] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33971 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:47.998] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:49.108] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33971 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:49.108] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:50.251] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33971 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:50.251] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:51.377] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33971 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:51.377] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:51.832] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:43:52.509] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33955 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:52.509] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:53.628] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33955 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:53.628] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:54.755] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33955 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:54.755] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:55.857] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33955 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:55.858] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:56.094] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:43:56.212] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=32419 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:56.212] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:57.343] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33999 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:43:57.344] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:58.461] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33999 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:58.462] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:43:59.615] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33999 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:43:59.615] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:00.805] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33999 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:44:00.805] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:01.122] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:44:01.925] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33983 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:44:01.925] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:03.072] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33983 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:03.072] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:04.198] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33983 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:04.198] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:05.327] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm_blink heap_internal=33983 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:05.328] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:06.152] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:44:06.447] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33955 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:06.448] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:07.591] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33955 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:07.591] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:08.743] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33955 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:08.744] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:09.890] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33955 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:09.890] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:11.019] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33955 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:44:11.020] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:11.183] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:44:12.141] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33959 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:12.141] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:13.259] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33959 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:44:13.259] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:14.397] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33959 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:14.398] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:15.503] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33959 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:44:15.504] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:16.214] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:44:16.630] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33971 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:16.630] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:17.753] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33971 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:17.754] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:18.858] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33971 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:44:18.858] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:19.992] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33971 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:19.993] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:21.161] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33971 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:21.161] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:21.245] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:44:22.320] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33971 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:44:22.320] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:23.474] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33971 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:44:23.474] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:24.579] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33971 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:24.579] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:25.706] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33971 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:25.707] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:26.282] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:44:26.830] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33971 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:26.831] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:27.155] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33971 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:27.155] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:28.309] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33971 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:28.310] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:29.450] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33971 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:44:29.451] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:30.526] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:44:30.580] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33971 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:30.580] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:31.711] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33951 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:31.712] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:32.862] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33951 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:32.863] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:33.990] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33951 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:33.990] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:35.125] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33951 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:35.125] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:35.571] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:44:36.238] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33987 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:36.238] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:37.381] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33987 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:44:37.382] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:38.507] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33987 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:38.508] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:39.640] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33987 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:39.640] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:40.596] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:44:40.763] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=32419 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:40.763] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:41.882] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33975 heap_psram=8105144 queue_depth=0
+[2026-07-11 02:44:41.882] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:43.006] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33975 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:43.006] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:44.158] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33975 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:44.158] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:45.279] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33975 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:45.279] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:45.634] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:44:46.393] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33967 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:46.393] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:47.502] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33967 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:47.503] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:48.659] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33967 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:48.659] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:49.790] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33967 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:49.791] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:50.697] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=2692684597&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 02:44:50.915] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33983 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:50.915] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 02:44:52.027] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=2692684597 mode=listening face=calm heap_internal=33983 heap_psram=8105008 queue_depth=0
+[2026-07-11 02:44:52.028] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
