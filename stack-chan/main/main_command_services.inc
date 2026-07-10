@@ -275,6 +275,10 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
             return false;
         }
         const int count = cJSON_GetArraySize(payload);
+        if (count > 8) {
+            ESP_LOGW(TAG, "Sequence rejected: too many steps count=%d", count);
+            return false;
+        }
         const bool restore_expression = sequence_step_sets_temporary_expression(command);
         begin_sequence_expression_hold(restore_expression);
         bool local_sleep_or_stop_executed = false;
@@ -284,6 +288,11 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
         bool ok = true;
         for (int i = 0; i < count; ++i) {
             const cJSON* step = cJSON_GetArrayItem(payload, i);
+            if (json_string_value(step, "type") == "sequence") {
+                ESP_LOGW(TAG, "Sequence rejected: nested sequence at index=%d", i);
+                ok = false;
+                break;
+            }
             if (!execute_command_object_internal(step, true, sleep_or_stop_executed)) {
                 if (sequence_step_failure_is_nonfatal(step)) {
                     std::string step_type = json_string_value(step, "type");
@@ -415,7 +424,6 @@ static bool send_v3_control_hello()
 #endif
     cJSON_AddItemToArray(capabilities, cJSON_CreateString("camera"));
     cJSON_AddItemToArray(capabilities, cJSON_CreateString("servo"));
-    cJSON_AddItemToArray(capabilities, cJSON_CreateString("signed_ota"));
     char* encoded = cJSON_PrintUnformatted(root);
     std::string body = encoded != nullptr ? encoded : "{}";
     if (encoded != nullptr) {

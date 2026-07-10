@@ -110,6 +110,26 @@ class V3DeliveryTest(unittest.TestCase):
         self.assertIsNone(store.lease_next_command("robot-1", boot_id=1, lease_ms=1))
         self.assertEqual(store.get_delivery(result["delivery_id"])["state"], "failed")
 
+    def test_ack_state_is_monotonic_and_running_extends_lease(self):
+        store = self.make_store()
+        coordinator = DeliveryCoordinator(store)
+        result = coordinator.submit({"device_id": "robot-1", "speech": "你好。"})
+        leased = store.lease_next_command("robot-1", boot_id=1)
+
+        store.record_ack({"device_id": "robot-1", "cmd_id": leased["cmd_id"], "state": "running"})
+        command = store.get_delivery(result["delivery_id"])["commands"][0]
+        self.assertEqual(command["state"], "running")
+        self.assertTrue(command["lease_expires_at"])
+
+        store.record_ack({"device_id": "robot-1", "cmd_id": leased["cmd_id"], "state": "received"})
+        command = store.get_delivery(result["delivery_id"])["commands"][0]
+        self.assertEqual(command["state"], "running")
+
+        store.record_ack({"device_id": "robot-1", "cmd_id": leased["cmd_id"], "state": "rendered"})
+        store.record_ack({"device_id": "robot-1", "cmd_id": leased["cmd_id"], "state": "running"})
+        command = store.get_delivery(result["delivery_id"])["commands"][0]
+        self.assertEqual(command["state"], "rendered")
+
 
 if __name__ == "__main__":
     unittest.main()

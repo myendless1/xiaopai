@@ -131,6 +131,7 @@ public:
         output_samples_ = 0;
         dropped_samples_ = 0;
         selected_channel_ = 0;
+        selected_channel_locked_ = false;
         channel_select_log_counter_ = 0;
 
         uac_config_t uac_config = {};
@@ -352,6 +353,7 @@ private:
             channels_ = CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_CHANNELS;
             resample_accum_ = 0;
             selected_channel_ = 0;
+            selected_channel_locked_ = false;
             set_detail("DJI Mic USB已接入，等待第一帧UAC音频");
             xiaopai_state_set(LocalVoiceState::Waiting, "dji usb attach");
             ESP_LOGI(TAG, "DJI Mic USB接收器已接入: source=dji_mic_receiver requested=%uHz %u-bit %u ch; 等待首帧UAC PCM后切换输入",
@@ -365,6 +367,7 @@ private:
         capture_ready_ = false;
         resample_accum_ = 0;
         selected_channel_ = 0;
+        selected_channel_locked_ = false;
         drop_raw_ring();
         drop_pcm_ring();
         set_detail("DJI Mic USB已断开，等待重新接入");
@@ -485,16 +488,14 @@ private:
             }
 
             uint32_t best_ch = ch_energy[1] > ch_energy[0] ? 1 : 0;
-            int64_t best_energy = ch_energy[best_ch];
             uint32_t current_ch = selected_channel_.load();
-            if (current_ch < inspect_channels &&
-                ch_energy[current_ch] > 0 &&
-                ch_energy[current_ch] * 4 >= best_energy * 3) {
-                selected_ch = current_ch;
-            } else {
+            if (!selected_channel_locked_.load() || current_ch >= inspect_channels) {
                 selected_ch = best_ch;
+                selected_channel_ = selected_ch;
+                selected_channel_locked_ = true;
+            } else {
+                selected_ch = current_ch;
             }
-            selected_channel_ = selected_ch;
 
             uint32_t select_log_counter = ++channel_select_log_counter_;
             if ((select_log_counter % 100) == 1) {
@@ -506,6 +507,7 @@ private:
             }
         } else {
             selected_channel_ = 0;
+            selected_channel_locked_ = false;
         }
 
         int16_t out[kCallbackOutChunkSamples];
@@ -625,6 +627,7 @@ private:
     std::atomic<uint32_t> output_samples_{0};
     std::atomic<uint32_t> dropped_samples_{0};
     std::atomic<uint32_t> selected_channel_{0};
+    std::atomic<bool> selected_channel_locked_{false};
     std::atomic<uint32_t> channel_select_log_counter_{0};
     RingbufHandle_t pcm_ringbuf_ = nullptr;
     RingbufHandle_t raw_ringbuf_ = nullptr;

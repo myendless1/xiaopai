@@ -21,6 +21,7 @@
 #include "esp_log.h"
 #include "esp_opus_dec.h"
 #include "sdkconfig.h"
+#include "xiaopai_state.h"
 
 #include <algorithm>
 #include <atomic>
@@ -300,7 +301,7 @@ static const char* audio_input_source_label_impl(AudioInputSource source)
 static bool dji_receiver_should_own_input(const DjiMicReceiverStatus& dji)
 {
 #if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT
-    return dji.capture_ready;
+    return dji.capture_ready && dji.identity_confirmed;
 #else
     (void)dji;
     return false;
@@ -1243,7 +1244,7 @@ public:
         AudioInputSource active_source = static_cast<AudioInputSource>(active_input_source_.load());
 #if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT && CONFIG_STACKCHAN_DJI_MIC_AUTO_START
         TickType_t dji_start_ticks = dji_start_wait_ticks_.load();
-        if (dji_mic_receiver_input_is_enabled() && !dji.capture_ready &&
+        if (dji_mic_receiver_input_is_enabled() && !dji.capture_ready && dji.identity_confirmed &&
             dji_start_ticks != 0 && kDjiInputStartupTimeoutMs > 0 &&
             (xTaskGetTickCount() - dji_start_ticks) < pdMS_TO_TICKS(kDjiInputStartupTimeoutMs)) {
             active_source = AudioInputSource::kDjiMicReceiver;
@@ -1420,7 +1421,8 @@ private:
     bool dji_receiver_startup_waiting(const DjiMicReceiverStatus& dji)
     {
 #if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT && CONFIG_STACKCHAN_DJI_MIC_AUTO_START
-        if (!dji_mic_receiver_input_is_enabled() || dji.capture_ready || kDjiInputStartupTimeoutMs <= 0) {
+        if (!dji_mic_receiver_input_is_enabled() || dji.capture_ready || !dji.identity_confirmed ||
+            kDjiInputStartupTimeoutMs <= 0) {
             return false;
         }
         TickType_t start_ticks = dji_start_wait_ticks_.load();
@@ -1589,7 +1591,7 @@ private:
 
     size_t try_read_dji_receiver(std::vector<int16_t>& buffer, const DjiMicReceiverStatus& status)
     {
-        if (!status.capture_ready || buffer.empty()) {
+        if (!status.capture_ready || !status.identity_confirmed || buffer.empty()) {
             return 0;
         }
         size_t read = dji_mic_receiver_input_read_16k(buffer.data(), buffer.size(), pdMS_TO_TICKS(2));
@@ -1614,6 +1616,9 @@ private:
         if (previous_value == source_value) {
             return;
         }
+        xiaopai_audio_source_commit(source == AudioInputSource::kDjiMicReceiver ? MicSource::DjiMic
+                                                                                 : MicSource::InternalMic,
+                                    reason);
         AudioInputSource previous = static_cast<AudioInputSource>(previous_value);
         ESP_LOGI(TAG, "监听输入源切换: from=%s from_label=%s to=%s to_label=%s reason=%s dji_detected=%d dji_streaming=%d dji_capture=%d dji_identity=%d dev=%04x:%04x manufacturer=%s product=%s detail=%s",
                  audio_input_source_name_impl(previous), audio_input_source_label_impl(previous),
@@ -1891,7 +1896,7 @@ private:
 #if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT && CONFIG_STACKCHAN_DJI_MIC_AUTO_START
         DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
         TickType_t start_ticks = dji_start_wait_ticks_.load();
-        return dji_mic_receiver_input_is_enabled() && !dji.capture_ready &&
+        return dji_mic_receiver_input_is_enabled() && !dji.capture_ready && dji.identity_confirmed &&
                start_ticks != 0 && kDjiInputStartupTimeoutMs > 0 &&
                (xTaskGetTickCount() - start_ticks) < pdMS_TO_TICKS(kDjiInputStartupTimeoutMs);
 #else

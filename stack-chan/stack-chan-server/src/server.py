@@ -23,7 +23,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue import Empty
 
-from openclaw_agent import OpenClawAgent, is_legacy_chat_completions_base_url
+from openclaw_agent import OpenClawAgent
 from realtime_server import RealtimeConfig, RealtimeManager
 from xiaopai_openclaw_prompt import XIAOPAI_OPENCLAW_SYSTEM_PROMPT
 from xiaozhi_protocol import ota_config
@@ -1268,6 +1268,7 @@ class AliyunVoiceServer(ThreadingHTTPServer):
     command_store: CommandStore
     device_registry: DeviceRegistry
     delivery_coordinator: DeliveryCoordinator
+    openclaw_agent: OpenClawAgent | None
 
     def get_token(self) -> str:
         if self.access_key_id and self.access_key_secret:
@@ -1630,6 +1631,15 @@ class Handler(BaseHTTPRequestHandler):
                 "ts": time.time(),
             }
         self._mark_device_seen(device_id)
+        self._send_morrow_device_result(
+            {
+                "kind": "command_ack",
+                "device_id": device_id,
+                "cmd_id": result.get("cmd_id", ""),
+                "state": result.get("state", ""),
+                "ack": payload,
+            }
+        )
         self._send_json({"type": "command_ack", "device_id": device_id, **result})
 
     def _handle_v3_ota_manifest(self) -> None:
@@ -2254,6 +2264,11 @@ class Handler(BaseHTTPRequestHandler):
                 elif isinstance(step, dict) and step.get("type") == "speak":
                     step.setdefault("pause_listener", True)
         normalize_command_speech_payload(command_wire_type, payload)
+        if command_wire_type == "stop" and self._openclaw_enabled():
+            try:
+                self._new_openclaw_agent().cancel_device_turn(device_id, reason="device_stop")
+            except Exception as exc:
+                self._log_error(f"Morrow turn 取消失败: device={device_id} error={exc}")
         command = make_command(
             command_wire_type,
             payload,
@@ -2379,6 +2394,15 @@ class Handler(BaseHTTPRequestHandler):
                     "message": ack["message"],
                 }
             )
+        self._send_morrow_device_result(
+            {
+                "kind": "command_ack",
+                "device_id": device_id,
+                "cmd_id": ack["cmd_id"],
+                "state": ack["status"],
+                "ack": ack,
+            }
+        )
         self._mark_device_seen(device_id)
         self._send_json({"type": "ack", "device_id": device_id, "ack": ack})
 
@@ -2519,16 +2543,29 @@ class Handler(BaseHTTPRequestHandler):
         return bool(self.server.openclaw_base_url)
 
     def _new_openclaw_agent(self) -> OpenClawAgent:
-        return OpenClawAgent(
-            base_url=self.server.openclaw_base_url,
-            token=self.server.openclaw_token,
-            model=self.server.openclaw_model,
-            backend_model=self.server.openclaw_backend_model,
-            timeout=self.server.openclaw_timeout,
-            session_prefix=self.server.openclaw_session_prefix,
-            max_completion_tokens=self.server.openclaw_max_completion_tokens,
-            max_segment_chars=self.server.max_sentence_chars,
-        )
+        agent = getattr(self.server, "openclaw_agent", None)
+        if agent is None:
+            agent = OpenClawAgent(
+                base_url=self.server.openclaw_base_url,
+                token=self.server.openclaw_token,
+                model=self.server.openclaw_model,
+                backend_model=self.server.openclaw_backend_model,
+                timeout=self.server.openclaw_timeout,
+                session_prefix=self.server.openclaw_session_prefix,
+                max_completion_tokens=self.server.openclaw_max_completion_tokens,
+                max_segment_chars=self.server.max_sentence_chars,
+            )
+            self.server.openclaw_agent = agent
+        return agent
+
+    def _send_morrow_device_result(self, payload: dict) -> None:
+        agent = getattr(self.server, "openclaw_agent", None)
+        if agent is None or not self._openclaw_enabled():
+            return
+        try:
+            agent.send_device_result(payload)
+        except Exception as exc:
+            self._log_error(f"Morrow 设备结果回传失败: {exc}")
 
     def _send_device_state_command(self, device_id: str, state: str, reason: str = "") -> list[str]:
         device_id = safe_device_id(device_id)
@@ -3846,14 +3883,53 @@ def enqueue_morrow_notice_speech(server, notice_text: str) -> int:
     text = normalize_speech_text_for_voice(str(notice_text or ""))
     if not text or speech_text_is_temporarily_suppressed(text):
         return 0
+    return submit_morrow_notice_text(server, text)
 
+
+def save_morrow_notice_outbox(server, text: str, message: str = "waiting for device") -> str:
+    notice_id = f"notice_{uuid.uuid4().hex[:16]}"
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    with server.v3_database.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO morrow_notices(notice_id, text, state, attempts, created_at, updated_at, next_attempt_at, last_message)
+            VALUES (?, ?, 'pending', 0, ?, ?, ?, ?)
+            """,
+            (notice_id, text, now, now, now, message),
+        )
+    agent = getattr(server, "openclaw_agent", None)
+    if agent is not None:
+        try:
+            agent.send_device_result({"kind": "notice_outbox", "notice_id": notice_id, "state": "pending", "message": message})
+        except Exception:
+            pass
+    return notice_id
+
+
+def mark_morrow_notice_state(server, notice_id: str, state: str, message: str = "") -> None:
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    with server.v3_database.connect() as conn:
+        conn.execute(
+            "UPDATE morrow_notices SET state=?, updated_at=?, last_message=? WHERE notice_id=?",
+            (state, now, message, notice_id),
+        )
+    agent = getattr(server, "openclaw_agent", None)
+    if agent is not None:
+        try:
+            agent.send_device_result({"kind": "notice_outbox", "notice_id": notice_id, "state": state, "message": message})
+        except Exception:
+            pass
+
+
+def submit_morrow_notice_text(server, text: str, *, notice_id: str = "") -> int:
     device_ids = connected_device_ids(server)
     if not device_ids:
-        log_print("Morrow 主动提醒已收到，但当前没有在线小派设备，已跳过播报")
+        saved_id = notice_id or save_morrow_notice_outbox(server, text)
+        log_print(f"Morrow 主动提醒已保存到 outbox: notice_id={saved_id}")
         return 0
 
     device_id = device_ids[0]
-    stream_id = f"morrow_notice:{uuid.uuid4().hex[:8]}"
+    stream_id = notice_id or f"morrow_notice:{uuid.uuid4().hex[:8]}"
     queued_count = 0
     segment_index = 0
     for raw_segment in split_sentences(text, int(getattr(server, "max_sentence_chars", 120) or 120)):
@@ -3875,29 +3951,47 @@ def enqueue_morrow_notice_speech(server, notice_text: str) -> int:
 
     if queued_count:
         log_print(f"Morrow 主动提醒已入队: device={device_id} segments={queued_count}")
+        if notice_id:
+            mark_morrow_notice_state(server, notice_id, "submitted", f"queued to {device_id}")
     return queued_count
 
 
+def run_morrow_notice_outbox_loop(server) -> None:
+    while True:
+        time.sleep(5)
+        if not connected_device_ids(server):
+            continue
+        now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        with server.v3_database.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT notice_id, text FROM morrow_notices
+                 WHERE state='pending' AND (next_attempt_at='' OR next_attempt_at <= ?)
+                 ORDER BY created_at ASC
+                 LIMIT 8
+                """,
+                (now,),
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    "UPDATE morrow_notices SET attempts=attempts+1, updated_at=? WHERE notice_id=?",
+                    (now, row["notice_id"]),
+                )
+        for row in rows:
+            submit_morrow_notice_text(server, row["text"], notice_id=row["notice_id"])
+
+
 def run_morrow_notice_listener(server) -> None:
-    if not server.openclaw_base_url or is_legacy_chat_completions_base_url(server.openclaw_base_url):
+    if not server.openclaw_base_url:
         return
 
     stop_event = server.morrow_notice_stop_event
-    agent = OpenClawAgent(
-        base_url=server.openclaw_base_url,
-        token=server.openclaw_token,
-        model=server.openclaw_model,
-        backend_model=server.openclaw_backend_model,
-        timeout=server.openclaw_timeout,
-        session_prefix="default",
-        max_completion_tokens=server.openclaw_max_completion_tokens,
-        max_segment_chars=server.max_sentence_chars,
-    )
+    agent = server.openclaw_agent
     backoff_seconds = 1.0
     while not stop_event.is_set():
         try:
-            log_print("Morrow 主动提醒监听正在连接默认 session")
-            for notice_text in agent.morrow_robot_notice_stream(stop_event=stop_event, session_id="default"):
+            log_print("Morrow 主动提醒监听复用长期对话流")
+            for notice_text in agent.morrow_robot_notice_stream(stop_event=stop_event):
                 if stop_event.is_set():
                     break
                 enqueue_morrow_notice_speech(server, notice_text)
@@ -4348,7 +4442,7 @@ def main():
         type=int,
         default=int(os.environ.get("STACKCHAN_OPENCLAW_MAX_COMPLETION_TOKENS", "512")),
     )
-    parser.add_argument("--openclaw-session-prefix", default=os.environ.get("STACKCHAN_OPENCLAW_SESSION_PREFIX", "default"))
+    parser.add_argument("--openclaw-session-prefix", default=os.environ.get("STACKCHAN_OPENCLAW_SESSION_PREFIX", "xiaopai"))
     parser.add_argument(
         "--realtime-enabled",
         action=argparse.BooleanOptionalAction,
@@ -4559,7 +4653,18 @@ def main():
             httpd.realtime_manager = None
             log_print(f"实时语音服务启动失败: {exc}", file=sys.stderr)
 
-    if httpd.openclaw_base_url and not is_legacy_chat_completions_base_url(httpd.openclaw_base_url):
+    httpd.openclaw_agent = OpenClawAgent(
+        base_url=httpd.openclaw_base_url,
+        token=httpd.openclaw_token,
+        model=httpd.openclaw_model,
+        backend_model=httpd.openclaw_backend_model,
+        timeout=httpd.openclaw_timeout,
+        session_prefix=httpd.openclaw_session_prefix,
+        max_completion_tokens=httpd.openclaw_max_completion_tokens,
+        max_segment_chars=httpd.max_sentence_chars,
+    ) if httpd.openclaw_base_url else None
+
+    if httpd.openclaw_base_url:
         httpd.morrow_notice_thread = threading.Thread(
             target=run_morrow_notice_listener,
             args=(httpd,),
@@ -4567,10 +4672,9 @@ def main():
             daemon=True,
         )
         httpd.morrow_notice_thread.start()
-    elif httpd.openclaw_base_url:
-        log_print("Morrow 主动提醒监听未启动: 当前为 legacy OpenClaw chat-completions 模式")
 
     threading.Thread(target=run_periodic_ota_check_loop, args=(httpd,), name="ota-check", daemon=True).start()
+    threading.Thread(target=run_morrow_notice_outbox_loop, args=(httpd,), name="morrow-outbox", daemon=True).start()
 
     log_print("小派服务已就绪")
     log_print(f"  人脸检测: {args.face_detector}")
@@ -4645,6 +4749,8 @@ def main():
         httpd.morrow_notice_stop_event.set()
         if httpd.realtime_manager:
             httpd.realtime_manager.stop()
+        if getattr(httpd, "openclaw_agent", None):
+            httpd.openclaw_agent.close()
 
 
 if __name__ == "__main__":

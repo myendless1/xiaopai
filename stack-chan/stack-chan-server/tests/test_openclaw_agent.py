@@ -1,5 +1,6 @@
 import json
 import sys
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -57,40 +58,21 @@ class FakeMorrowWebSocket:
 
 
 class OpenClawAgentSessionTest(unittest.TestCase):
+    def setUp(self):
+        for client in list(OpenClawAgent._clients.values()):
+            client.stop()
+        OpenClawAgent._clients.clear()
+
     def test_session_key_is_stable_and_safe(self):
         self.assertEqual(
             build_openclaw_session_key("xiaopai", "44:1b f6/e4"),
             "xiaopai-44:1b_f6_e4",
         )
 
-    def test_chat_sends_session_header_and_user_fallback(self):
-        captured = []
-
-        def fake_urlopen(request, timeout):
-            captured.append((request, timeout))
-            return FakeResponse()
-
-        agent = OpenClawAgent(
-            base_url="http://openclaw/v1",
-            token="token",
-            model="openclaw/default",
-            session_prefix="xiaopai",
-        )
-
-        with patch("urllib.request.urlopen", fake_urlopen):
-            reply = agent.chat("dev 1", "你好")
-
-        self.assertEqual(reply, "ok")
-        request, timeout = captured[0]
-        self.assertEqual(timeout, 45)
-        body = json.loads(request.data.decode("utf-8"))
-        self.assertEqual(body["user"], "xiaopai-dev_1")
-        self.assertEqual(request.get_header("X-openclaw-session-key"), "xiaopai-dev_1")
-
     def test_morrow_ws_url_uses_default_session(self):
         self.assertEqual(
-            build_morrow_ws_url("http://127.0.0.1:3000", "default"),
-            "ws://127.0.0.1:3000/api/sessions/default/ws",
+            build_morrow_ws_url("http://127.0.0.1:3000", "xiaopai"),
+            "ws://127.0.0.1:3000/api/sessions/xiaopai/ws",
         )
 
     def test_morrow_chat_stream_segments_on_punctuation(self):
@@ -129,58 +111,51 @@ class OpenClawAgentSessionTest(unittest.TestCase):
         websocket = FakeMorrowWebSocket(frames)
         captured = {}
 
-        def fake_urlopen(request, timeout):
-            captured["session_url"] = request.full_url
-            return FakeSessionResponse()
-
         def fake_create_connection(url, timeout, header=None):
             captured["ws_url"] = url
             captured["header"] = header
             return websocket
 
-        agent = OpenClawAgent(base_url="http://morrow:3000", token="", model="ignored")
+        agent = OpenClawAgent(base_url="http://morrow:3000", token="", model="ignored", session_prefix="xiaopai")
         fake_websocket_module = types.SimpleNamespace(create_connection=fake_create_connection)
 
-        with patch("urllib.request.urlopen", fake_urlopen), patch.dict(sys.modules, {"websocket": fake_websocket_module}):
+        with patch("urllib.request.urlopen", side_effect=AssertionError("HTTP session creation is forbidden")), patch.dict(sys.modules, {"websocket": fake_websocket_module}):
             segments = list(agent.chat_stream("dev1", "今天怎么样"))
 
         self.assertEqual(segments, ["你好，", "今天不错。"])
-        self.assertEqual(captured["session_url"], "http://morrow:3000/api/sessions/default")
-        self.assertEqual(captured["ws_url"], "ws://morrow:3000/api/sessions/default/ws")
+        self.assertEqual(captured["ws_url"], "ws://morrow:3000/api/sessions/xiaopai/ws")
         sent = json.loads(websocket.sent[0])
         self.assertEqual(sent["type"], "start_turn")
         self.assertEqual(sent["data"]["prompt"], "今天怎么样")
+        self.assertEqual(sent["data"]["conversation_id"], "xiaopai-dev1")
 
-    def test_morrow_robot_notice_stream_uses_default_session_without_start_turn(self):
+    def test_morrow_robot_notice_stream_reuses_dialogue_stream_without_start_turn(self):
         frames = [
             json.dumps({"type": "snapshot", "data": {}}, ensure_ascii=False),
             json.dumps(
                 {"type": "robot_notice", "data": {"text": "该喝水了。"}},
                 ensure_ascii=False,
             ),
-            "",
         ]
         websocket = FakeMorrowWebSocket(frames)
         captured = {}
-
-        def fake_urlopen(request, timeout):
-            captured["session_url"] = request.full_url
-            return FakeSessionResponse()
+        stop_event = threading.Event()
 
         def fake_create_connection(url, timeout, header=None):
             captured["ws_url"] = url
             captured["header"] = header
             return websocket
 
-        agent = OpenClawAgent(base_url="http://morrow:3000", token="", model="ignored")
+        agent = OpenClawAgent(base_url="http://morrow:3000", token="", model="ignored", session_prefix="xiaopai")
         fake_websocket_module = types.SimpleNamespace(create_connection=fake_create_connection)
 
-        with patch("urllib.request.urlopen", fake_urlopen), patch.dict(sys.modules, {"websocket": fake_websocket_module}):
-            notices = list(agent.morrow_robot_notice_stream(session_id="default"))
+        with patch("urllib.request.urlopen", side_effect=AssertionError("HTTP session creation is forbidden")), patch.dict(sys.modules, {"websocket": fake_websocket_module}):
+            notice_iter = agent.morrow_robot_notice_stream(stop_event=stop_event)
+            notices = [next(notice_iter)]
+            stop_event.set()
 
         self.assertEqual(notices, ["该喝水了。"])
-        self.assertEqual(captured["session_url"], "http://morrow:3000/api/sessions/default")
-        self.assertEqual(captured["ws_url"], "ws://morrow:3000/api/sessions/default/ws")
+        self.assertEqual(captured["ws_url"], "ws://morrow:3000/api/sessions/xiaopai/ws")
         self.assertEqual(websocket.sent, [])
 
 

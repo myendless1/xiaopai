@@ -591,8 +591,7 @@ static bool enqueue_speak_command(const char* cmd_id, const char* text, const ch
     item.speech_rate = speech_rate;
     item.pitch_rate = pitch_rate;
     item.pause_voice_listener = pause_voice_listener;
-    request_speak_preempt("new speak command");
-    return xQueueOverwrite(speak_command_queue, &item) == pdPASS;
+    return xQueueSend(speak_command_queue, &item, 0) == pdPASS;
 }
 
 static void run_speak_command_loop()
@@ -623,7 +622,7 @@ static void run_speak_command_loop()
 static void start_speak_command_service()
 {
     if (speak_command_queue == nullptr) {
-        speak_command_queue = xQueueCreate(1, sizeof(SpeakCommandItem));
+        speak_command_queue = xQueueCreate(4, sizeof(SpeakCommandItem));
     }
     if (speak_command_queue == nullptr) {
         ESP_LOGE(TAG, "Failed to create speak command queue");

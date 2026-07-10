@@ -1351,6 +1351,10 @@ static bool run_find_owner_command(int rounds, const char* reply, float gain_x =
     if (!result.ready) {
         return false;
     }
+    if (!result.saw_face) {
+        ESP_LOGI(TAG, "Find owner reply skipped because no face was found");
+        return false;
+    }
     if (reply != nullptr && reply[0] != '\0') {
         return execute_speak_command_internal(reply, false);
     }

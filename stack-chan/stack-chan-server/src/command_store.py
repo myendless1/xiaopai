@@ -8,6 +8,17 @@ from schemas import CommandEnvelope, DEFAULT_LEASE_MS, TERMINAL_COMMAND_STATES, 
 
 
 RUNNABLE_STATES = ("queued", "leased")
+STATE_RANK = {
+    "queued": 0,
+    "leased": 1,
+    "received": 2,
+    "running": 3,
+    "rendered": 4,
+    "done": 4,
+    "failed": 4,
+    "cancelled": 4,
+    "expired": 4,
+}
 
 
 class CommandStore:
@@ -132,16 +143,31 @@ class CommandStore:
                 ),
             )
             if cmd_id:
-                command = conn.execute("SELECT delivery_id FROM commands WHERE cmd_id=?", (cmd_id,)).fetchone()
+                command = conn.execute("SELECT delivery_id, state FROM commands WHERE cmd_id=?", (cmd_id,)).fetchone()
                 if command is not None:
-                    conn.execute(
-                        "UPDATE commands SET state=?, updated_at=?, last_message=? WHERE cmd_id=?",
-                        (state, now, str(ack.get("message") or ""), cmd_id),
-                    )
+                    current_state = str(command["state"] or "queued")
+                    if self._ack_can_advance(current_state, state):
+                        lease_expires_at = future_time_ms(DEFAULT_LEASE_MS) if state == "running" else ""
+                        conn.execute(
+                            """
+                            UPDATE commands
+                               SET state=?, updated_at=?, last_message=?,
+                                   lease_expires_at=CASE WHEN ?!='' THEN ? ELSE lease_expires_at END
+                             WHERE cmd_id=?
+                            """,
+                            (state, now, str(ack.get("message") or ""), lease_expires_at, lease_expires_at, cmd_id),
+                        )
                     delivery_id = str(command["delivery_id"] or "")
                     if delivery_id:
                         self._refresh_delivery_state(conn, delivery_id, now)
         return {"cmd_id": cmd_id, "state": state, "received_at": now}
+
+    def _ack_can_advance(self, current_state: str, next_state: str) -> bool:
+        current = normalize_ack_state(current_state)
+        incoming = normalize_ack_state(next_state)
+        if current in TERMINAL_COMMAND_STATES:
+            return incoming == current
+        return STATE_RANK.get(incoming, 0) >= STATE_RANK.get(current, 0)
 
     def cancel_delivery(self, delivery_id: str, message: str = "cancelled") -> dict[str, Any]:
         now = utc_now()

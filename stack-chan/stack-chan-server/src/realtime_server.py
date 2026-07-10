@@ -185,7 +185,7 @@ class RealtimeConfig:
     openclaw_model: str = "openclaw/default"
     openclaw_backend_model: str = ""
     openclaw_timeout: int = 45
-    openclaw_session_prefix: str = "default"
+    openclaw_session_prefix: str = "xiaopai"
     openclaw_max_completion_tokens: int = 512
     audio_capture_dir: str = ""
     save_audio_uploads: bool = True
