@@ -35,7 +35,7 @@ from server import (
     sleep_reply_event_for_text,
     tts_request_options_from_params,
 )
-from xiaozhi_protocol import build_hello, build_stt
+from realtime_protocol import build_hello, build_stt
 
 
 class RealtimeMappingTest(unittest.TestCase):
@@ -67,7 +67,7 @@ class RealtimeMappingTest(unittest.TestCase):
         payload = command_payload_from_query("face", {"expression": ["thinking"]})
         self.assertEqual(payload, {"expression": "thinking"})
 
-    def test_xiaozhi_protocol_shapes(self):
+    def test_realtime_protocol_shapes(self):
         hello = build_hello("sess_1")
         self.assertEqual(hello["type"], "hello")
         self.assertEqual(hello["audio_params"]["frame_duration"], 60)
@@ -247,7 +247,7 @@ class RealtimeMappingTest(unittest.TestCase):
 
         manager._register_session = capture_register_session
         websocket = FakeWebSocket()
-        asyncio.run(manager._dispatch(websocket, "/xiaozhi/ws"))
+        asyncio.run(manager._dispatch(websocket, "/ws"))
 
         self.assertTrue(registered[0].dialog_awake)
         self.assertTrue(any('"type":"device_state"' in payload and '"state":"listening"' in payload for payload in websocket.sent))
@@ -281,7 +281,7 @@ class RealtimeMappingTest(unittest.TestCase):
         manager._start_asr = lambda session: started.append(session.device_id)
 
         websocket = FakeWebSocket()
-        asyncio.run(manager._dispatch(websocket, "/xiaozhi/ws"))
+        asyncio.run(manager._dispatch(websocket, "/ws"))
 
         self.assertEqual(started, [])
 
@@ -327,7 +327,7 @@ class RealtimeMappingTest(unittest.TestCase):
         manager._start_asr = fake_start_asr
 
         websocket = FakeWebSocket()
-        asyncio.run(manager._dispatch(websocket, "/xiaozhi/ws"))
+        asyncio.run(manager._dispatch(websocket, "/ws"))
 
         self.assertEqual(started, ["default"])
         self.assertEqual(pushed, [b"opus"])

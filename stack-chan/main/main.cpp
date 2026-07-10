@@ -80,7 +80,7 @@
 #error "CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD is a standalone test firmware mode; disable CONFIG_STACKCHAN_DJI_MIC_AUTO_START"
 #endif
 
-void run_xiaozhi_ota_probe();
+void run_realtime_speech();
 bool check_and_apply_firmware_ota_once();
 void run_stream_tts_demo();
 void run_wifi_connect_app();

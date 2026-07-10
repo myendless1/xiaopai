@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 from aliyun_streaming_asr import AliyunStreamingAsrSession, build_stop_transcription, parse_asr_event
 from aliyun_streaming_tts import AliyunStreamingTtsClient, split_sentences
 from opus_codec import OpusCodec, OpusUnavailableError
-from xiaozhi_protocol import (
+from realtime_protocol import (
     build_hello,
     build_llm,
     build_stt,
@@ -164,7 +164,7 @@ def is_realtime_wake_only_text(text: str) -> bool:
 class RealtimeConfig:
     host: str = "0.0.0.0"
     port: int = 8092
-    path: str = "/xiaozhi/ws"
+    path: str = "/ws"
     token: str = ""
     region: str = "shanghai"
     appkey: str = ""
@@ -491,7 +491,7 @@ class RealtimeManager:
     def start(self) -> None:
         if self._thread is not None:
             return
-        self._thread = threading.Thread(target=self._run_loop, name="xiaozhi-realtime", daemon=True)
+        self._thread = threading.Thread(target=self._run_loop, name="realtime-server", daemon=True)
         self._thread.start()
         self._started.wait(timeout=5)
         if self._startup_error is not None:

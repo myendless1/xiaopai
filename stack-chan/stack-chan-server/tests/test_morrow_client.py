@@ -18,6 +18,10 @@ class FakeWebSocket:
         self.frames = queue.Queue()
         self.sent = []
         self.closed = False
+        self.timeouts = []
+
+    def settimeout(self, timeout):
+        self.timeouts.append(timeout)
 
     def recv(self):
         frame = self.frames.get(timeout=1)
@@ -44,6 +48,17 @@ class MorrowClientTest(unittest.TestCase):
 
     def test_default_session_url(self):
         self.assertEqual(build_morrow_ws_url("http://morrow:3000"), "ws://morrow:3000/api/sessions/default/ws")
+
+    def test_connect_timeout_is_disabled_after_handshake(self):
+        ws = FakeWebSocket()
+        client = self.make_client(ws)
+        client.start()
+        deadline = time.time() + 0.2
+        while not ws.timeouts and time.time() < deadline:
+            time.sleep(0.005)
+        self.assertEqual(ws.timeouts, [None])
+        self.assertTrue(client.connected)
+        client.stop()
 
     def test_not_ready_until_snapshot_and_strict_start_turn(self):
         ws = FakeWebSocket()

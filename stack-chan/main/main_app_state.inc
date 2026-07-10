@@ -134,7 +134,7 @@ static constexpr int kVolumeDropdownControlPad = 10;
 std::atomic<AppId> current_app{AppId::Launcher};
 int selected_menu = 0;
 TaskHandle_t wifi_task_handle = nullptr;
-TaskHandle_t xiaozhi_task_handle = nullptr;
+TaskHandle_t realtime_task_handle = nullptr;
 TaskHandle_t stream_tts_task_handle = nullptr;
 TaskHandle_t camera_upload_task_handle = nullptr;
 TaskHandle_t tracking_task_handle = nullptr;
@@ -147,6 +147,7 @@ TaskHandle_t head_touch_task_handle = nullptr;
 TaskHandle_t head_touch_audio_task_handle = nullptr;
 TaskHandle_t speak_command_task_handle = nullptr;
 TaskHandle_t memory_monitor_task_handle = nullptr;
+TaskHandle_t heartbeat_task_handle = nullptr;
 EventGroupHandle_t wifi_event_group = nullptr;
 SemaphoreHandle_t m5_mutex = nullptr;
 SemaphoreHandle_t audio_mutex = nullptr;
@@ -223,6 +224,7 @@ struct CommandDedupeEntry {
     uint32_t attempt;
     uint32_t sequence;
     bool ack_pending;
+    bool persist_across_boot;
 };
 CommandDedupeEntry command_dedupe_entries[64] = {};
 uint32_t command_dedupe_sequence = 0;
@@ -230,6 +232,7 @@ uint32_t command_dedupe_sequence = 0;
 enum class HeadTouchEvent : uint8_t {
     Press,
     Click,
+    LongPress,
     SwipeForward,
     SwipeBackward,
 };
@@ -268,13 +271,13 @@ static constexpr const char* kServerBaseCandidates[] = {
     "http://192.168.137.1:8091",
 };
 
-struct XiaozhiConfig {
+struct RealtimeConfig {
     std::string websocket_url;
     std::string websocket_token;
     std::string session_id;
 };
 
-XiaozhiConfig xiaozhi_config;
+RealtimeConfig realtime_config;
 
 static void supervisor_apply_current_app(uintptr_t arg)
 {
@@ -1069,12 +1072,12 @@ void enter_app(AppId app)
     if (app == AppId::VoiceDemo) {
         supervisor_set_app1_stop_requested(false, "start voice demo");
         set_app1_status("Starting", "Local recording upload");
-        if (xiaozhi_task_handle == nullptr) {
+        if (realtime_task_handle == nullptr) {
             xTaskCreatePinnedToCore([](void*) {
-                ::run_xiaozhi_ota_probe();
-                xiaozhi_task_handle = nullptr;
+                ::run_realtime_speech();
+                realtime_task_handle = nullptr;
                 vTaskDelete(nullptr);
-            }, "realtime_audio_task", kApp1TaskStackBytes, nullptr, 5, &xiaozhi_task_handle, 0);
+            }, "realtime_audio_task", kApp1TaskStackBytes, nullptr, 5, &realtime_task_handle, 0);
         } else {
             set_app1_status("Running", "Probe task is already running");
         }

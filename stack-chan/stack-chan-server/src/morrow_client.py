@@ -159,12 +159,23 @@ class MorrowClient:
     def _connect(self) -> Any:
         headers = [f"Authorization: Bearer {self.auth_token}"] if self.auth_token else []
         if self._websocket_factory is not None:
-            return self._websocket_factory(self.ws_url, timeout=self.connect_timeout, header=headers)
+            ws = self._websocket_factory(self.ws_url, timeout=self.connect_timeout, header=headers)
+            self._disable_read_timeout(ws)
+            return ws
         try:
             import websocket  # type: ignore
         except Exception as exc:
             raise RuntimeError("websocket-client is required for Morrow") from exc
-        return websocket.create_connection(self.ws_url, timeout=self.connect_timeout, header=headers)
+        ws = websocket.create_connection(self.ws_url, timeout=self.connect_timeout, header=headers)
+        self._disable_read_timeout(ws)
+        return ws
+
+    @staticmethod
+    def _disable_read_timeout(ws: Any) -> None:
+        """Keep the connect timeout from expiring an otherwise healthy idle WebSocket."""
+        settimeout = getattr(ws, "settimeout", None)
+        if callable(settimeout):
+            settimeout(None)
 
     def _connection_loop(self) -> None:
         delay = self.reconnect_min
@@ -173,6 +184,7 @@ class MorrowClient:
                 self._ws = self._connect()
                 self._connected.set()
                 self._ready.clear()
+                self.last_error = ""
                 delay = self.reconnect_min
                 self._read_connection()
                 if not self._stop.is_set():

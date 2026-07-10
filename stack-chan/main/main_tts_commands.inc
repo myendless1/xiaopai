@@ -407,9 +407,11 @@ static CommandDedupeEntry* command_dedupe_update(const char* cmd_id, const char*
         return nullptr;
     }
     CommandDedupeEntry* target = nullptr;
+    bool existing = false;
     for (auto& entry : command_dedupe_entries) {
         if (entry.cmd_id[0] != '\0' && strcmp(entry.cmd_id, cmd_id) == 0) {
             target = &entry;
+            existing = true;
             break;
         }
         if (target == nullptr && entry.cmd_id[0] == '\0') {
@@ -425,11 +427,80 @@ static CommandDedupeEntry* command_dedupe_update(const char* cmd_id, const char*
         }
     }
     snprintf(target->cmd_id, sizeof(target->cmd_id), "%s", cmd_id);
+    if (!existing) target->persist_across_boot = false;
     snprintf(target->state, sizeof(target->state), "%s", state != nullptr ? state : "received");
     target->attempt = attempt;
     target->sequence = ++command_dedupe_sequence;
     target->ack_pending = true;
     return target;
+}
+
+static void command_dedupe_mark_persistent(const char* cmd_id)
+{
+    for (auto& entry : command_dedupe_entries) {
+        if (entry.cmd_id[0] != '\0' && strcmp(entry.cmd_id, cmd_id) == 0) {
+            entry.persist_across_boot = true;
+            return;
+        }
+    }
+}
+
+struct PersistentCommandDedupeLog {
+    uint32_t version;
+    uint32_t count;
+    CommandDedupeEntry entries[32];
+};
+
+static bool command_state_is_terminal(const char* state)
+{
+    return state != nullptr &&
+           (strcmp(state, "rendered") == 0 || strcmp(state, "done") == 0 ||
+            strcmp(state, "failed") == 0 || strcmp(state, "cancelled") == 0 ||
+            strcmp(state, "expired") == 0);
+}
+
+static void persist_terminal_command_dedupe_log()
+{
+    PersistentCommandDedupeLog log = {};
+    log.version = 1;
+    for (uint32_t sequence = command_dedupe_sequence; sequence > 0 && log.count < 32; --sequence) {
+        for (const auto& entry : command_dedupe_entries) {
+            if (entry.sequence == sequence && entry.persist_across_boot && command_state_is_terminal(entry.state)) {
+                log.entries[log.count++] = entry;
+                break;
+            }
+        }
+    }
+    nvs_handle_t handle;
+    if (nvs_open("xiaopai", NVS_READWRITE, &handle) != ESP_OK) {
+        return;
+    }
+    esp_err_t err = nvs_set_blob(handle, "cmd_dedupe", &log, sizeof(log));
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    if (err != ESP_OK) ESP_LOGW(TAG, "Persist command dedupe failed: %s", esp_err_to_name(err));
+}
+
+static void restore_terminal_command_dedupe_log()
+{
+    nvs_handle_t handle;
+    if (nvs_open("xiaopai", NVS_READONLY, &handle) != ESP_OK) {
+        return;
+    }
+    PersistentCommandDedupeLog log = {};
+    size_t size = sizeof(log);
+    esp_err_t err = nvs_get_blob(handle, "cmd_dedupe", &log, &size);
+    nvs_close(handle);
+    if (err != ESP_OK || size != sizeof(log) || log.version != 1) {
+        return;
+    }
+    uint32_t count = std::min<uint32_t>(log.count, 32);
+    for (uint32_t i = 0; i < count; ++i) {
+        command_dedupe_entries[i] = log.entries[i];
+        command_dedupe_entries[i].ack_pending = false;
+        command_dedupe_entries[i].sequence = ++command_dedupe_sequence;
+    }
+    ESP_LOGI(TAG, "Restored %u terminal command dedupe entries from NVS", count);
 }
 
 static bool send_command_ack(const char* cmd_id, const char* status, const char* message = "",
@@ -441,6 +512,9 @@ static bool send_command_ack(const char* cmd_id, const char* status, const char*
     const uint32_t ack_seq = ++command_ack_seq;
     const char* state = status != nullptr ? status : "received";
     CommandDedupeEntry* dedupe_entry = command_dedupe_update(cmd_id, state, attempt);
+    if (dedupe_entry != nullptr && command_state_is_terminal(state)) {
+        persist_terminal_command_dedupe_log();
+    }
     std::string v3_url = make_server_url("/v3/command_ack");
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "command_ack");
@@ -620,7 +694,7 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
         return false;
     }
     JobHeader playback_job = xiaopai_make_job_header("", xiaopai_boot_id, 0);
-    bool should_pause_listener = pause_voice_listener || xiaozhi_task_handle != nullptr;
+    bool should_pause_listener = pause_voice_listener || realtime_task_handle != nullptr;
     VoiceListenerPauseGuard* voice_pause =
         should_pause_listener ? new VoiceListenerPauseGuard("speak command") : nullptr;
 

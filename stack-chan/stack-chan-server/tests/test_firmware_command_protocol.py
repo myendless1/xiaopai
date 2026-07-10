@@ -12,6 +12,8 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         cls.commands = (ROOT / "main" / "main_command_services.inc").read_text()
         cls.state = (ROOT / "main" / "main_app_state.inc").read_text()
         cls.realtime = (ROOT / "main" / "main_realtime_transport.inc").read_text()
+        cls.touch = (ROOT / "main" / "main_head_touch.inc").read_text()
+        cls.speech = (ROOT / "main" / "main_realtime_speech.inc").read_text()
 
     def test_tts_uses_post_v3_endpoint_without_legacy_ack_fallback(self):
         self.assertIn('make_server_url("/v3/tts")', self.tts)
@@ -40,6 +42,23 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         self.assertNotIn('type == "mcp"', self.realtime)
         self.assertNotIn('type == "command"', self.realtime)
         self.assertNotIn("tools/call", self.realtime)
+
+    def test_local_long_press_stops_and_reports_generation(self):
+        self.assertIn("kLocalStopLongPressMs = 1200", self.touch)
+        self.assertIn("request_speak_preempt", self.touch)
+        self.assertIn("advance_speech_generation", self.touch)
+        self.assertIn('"local_stop"', self.touch)
+        self.assertIn('make_server_url("/device/event")', self.touch)
+
+    def test_terminal_non_idempotent_dedupe_is_persisted_in_nvs(self):
+        self.assertIn('nvs_set_blob(handle, "cmd_dedupe"', self.tts)
+        self.assertIn('nvs_get_blob(handle, "cmd_dedupe"', self.tts)
+        self.assertIn("CommandDedupeEntry entries[32]", self.tts)
+        self.assertIn("restore_terminal_command_dedupe_log", self.commands)
+
+    def test_firmware_ui_names_morrow(self):
+        self.assertNotIn("OpenClaw", self.speech)
+        self.assertIn("Morrow is thinking", self.speech)
 
 
 if __name__ == "__main__":

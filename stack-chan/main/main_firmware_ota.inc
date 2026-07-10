@@ -265,7 +265,7 @@ bool check_and_apply_firmware_ota_once()
 {
 #if CONFIG_STACKCHAN_FIRMWARE_OTA_ENABLED
     std::string response;
-    const std::string url = make_server_url("/realtime/config");
+    const std::string url = make_server_url("/ota");
     set_app1_status("OTA", "Checking firmware", url.c_str(), "", true, false);
     if (!http_get_string(url, &response, CONFIG_STACKCHAN_FIRMWARE_OTA_TIMEOUT_MS)) {
         ESP_LOGW(TAG, "Firmware OTA config check failed");

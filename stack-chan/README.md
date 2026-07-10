@@ -40,7 +40,7 @@ Build and publish a new OTA image with a numeric dotted version:
 ./build_and_publish_ota.sh 0.1.1
 ```
 
-The device checks the server after WiFi/server selection. If `/realtime/config`
+The device checks the server after WiFi/server selection. If `/ota`
 advertises a newer `firmware.version`, it downloads the app image, writes it to
 the inactive OTA slot, sets that slot as bootable, and restarts.
 

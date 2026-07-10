@@ -75,7 +75,7 @@ static std::string make_ws_hello_message()
 
 static std::string make_listen_message(const char* state)
 {
-    return std::string("{\"session_id\":\"") + xiaozhi_config.session_id +
+    return std::string("{\"session_id\":\"") + realtime_config.session_id +
            "\",\"type\":\"listen\",\"state\":\"" + state + "\",\"mode\":\"manual\"}";
 }
 
@@ -146,9 +146,9 @@ static bool handle_ws_text_message(esp_transport_handle_t ws, const char* data, 
     std::string type = json_string_value(root, "type");
     if (type == "hello") {
         std::string transport = json_string_value(root, "transport");
-        xiaozhi_config.session_id = json_string_value(root, "session_id");
-        got_hello = transport == "websocket" || !xiaozhi_config.session_id.empty();
-        ESP_LOGI(TAG, "WS hello transport=%s session_id=%s", transport.c_str(), xiaozhi_config.session_id.c_str());
+        realtime_config.session_id = json_string_value(root, "session_id");
+        got_hello = transport == "websocket" || !realtime_config.session_id.empty();
+        ESP_LOGI(TAG, "WS hello transport=%s session_id=%s", transport.c_str(), realtime_config.session_id.c_str());
     } else if (type == "stt") {
         stt_text = json_string_value(root, "text");
         ESP_LOGI(TAG, "STT result: %s", stt_text.c_str());

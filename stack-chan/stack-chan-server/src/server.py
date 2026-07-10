@@ -26,7 +26,7 @@ from queue import Empty
 from morrow_client import MorrowClient
 from morrow_coordinator import MorrowTurnCoordinator, command_store_segment_sink
 from realtime_server import RealtimeConfig, RealtimeManager
-from xiaozhi_protocol import ota_config
+from realtime_protocol import ota_config
 from yunet_service import YunetFaceService
 from command_store import CommandStore
 from database import Database
@@ -933,7 +933,7 @@ def _read_c_string(blob: bytes) -> str:
     return value.decode("utf-8", errors="replace").strip()
 
 
-def is_xiaozhi_ota_version(version: str) -> bool:
+def is_ota_version(version: str) -> bool:
     return bool(re.fullmatch(r"\d+(?:\.\d+)*", str(version or "").strip()))
 
 
@@ -979,7 +979,7 @@ def parse_esp_app_firmware_info(path: str) -> OtaFirmwareInfo | None:
 def find_latest_ota_firmware(firmware_file: str, firmware_dir: str) -> OtaFirmwareInfo | None:
     if firmware_file:
         info = parse_esp_app_firmware_info(firmware_file)
-        if info is None or not is_xiaozhi_ota_version(info.version):
+        if info is None or not is_ota_version(info.version):
             return None
         return info
     if not firmware_dir or not os.path.isdir(firmware_dir):
@@ -993,7 +993,7 @@ def find_latest_ota_firmware(firmware_file: str, firmware_dir: str) -> OtaFirmwa
             if name in ("bootloader.bin", "partition-table.bin"):
                 continue
             info = parse_esp_app_firmware_info(os.path.join(root, name))
-            if info is not None and is_xiaozhi_ota_version(info.version):
+            if info is not None and is_ota_version(info.version):
                 candidates.append(info)
     if not candidates:
         return None
@@ -1236,10 +1236,10 @@ class AliyunVoiceServer(ThreadingHTTPServer):
     find_owner_gain_y: float
     find_owner_stop_pixels: float
     realtime_manager: RealtimeManager | None
-    xiaozhi_ws_path: str
-    xiaozhi_ws_port: int
-    xiaozhi_public_host: str
-    xiaozhi_local_token: str
+    realtime_ws_path: str
+    realtime_ws_port: int
+    realtime_public_host: str
+    realtime_local_token: str
     ota_firmware_dir: str
     ota_firmware_file: str
     ota_public_base_url: str
@@ -1367,8 +1367,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/v3/device/next-command":
             self._handle_next_command(query)
             return
-        if path in ("/xiaozhi/ota", "/xiaozhi/ota/", "/realtime/config"):
-            self._handle_xiaozhi_ota(query)
+        if path in ("/ota", "/ota/"):
+            self._handle_ota(query)
             return
         if path.startswith("/firmware/"):
             if path in ("/firmware/latest.json", "/firmware/latest"):
@@ -1484,8 +1484,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/upload-audio":
             self._handle_upload(body)
             return
-        if path in ("/xiaozhi/ota", "/xiaozhi/ota/", "/realtime/config"):
-            self._handle_xiaozhi_ota(query)
+        if path in ("/ota", "/ota/"):
+            self._handle_ota(query)
             return
         if path == "/command":
             payload = json.loads(body.decode("utf-8")) if body else {}
@@ -1553,6 +1553,13 @@ class Handler(BaseHTTPRequestHandler):
         device_id = safe_device_id(payload.get("device_id") or self.headers.get("X-Device-Id", "") or "default")
         body = self.server.device_registry.heartbeat(device_id, last_ack_seq=int(payload.get("last_ack_seq") or 0))
         self._mark_device_seen(device_id)
+        self._log_info(
+            f"设备心跳状态: device={device_id} boot={payload.get('boot_id')} "
+            f"mode={payload.get('mode')} face={payload.get('expression')} "
+            f"heap_internal={payload.get('free_internal_heap')} "
+            f"heap_psram={payload.get('free_psram')} "
+            f"queue_depth={payload.get('speech_queue_depth')}"
+        )
         self._send_json(body)
 
     def _handle_v3_command_ack(self, payload: dict) -> None:
@@ -1586,8 +1593,8 @@ class Handler(BaseHTTPRequestHandler):
         manager = getattr(self.server, "realtime_manager", None)
         return {
             "enabled": bool(manager and manager.enabled),
-            "ws_path": getattr(self.server, "xiaozhi_ws_path", "/xiaozhi/ws"),
-            "ws_port": getattr(self.server, "xiaozhi_ws_port", 0),
+            "ws_path": getattr(self.server, "realtime_ws_path", "/ws"),
+            "ws_port": getattr(self.server, "realtime_ws_port", 0),
             "devices": len(manager.devices_snapshot()) if manager else 0,
         }
 
@@ -1781,14 +1788,14 @@ class Handler(BaseHTTPRequestHandler):
             }
         )
 
-    def _handle_xiaozhi_ota(self, query: dict) -> None:
-        host = first_value(query, "host") or getattr(self.server, "xiaozhi_public_host", "")
+    def _handle_ota(self, query: dict) -> None:
+        host = first_value(query, "host") or getattr(self.server, "realtime_public_host", "")
         if not host:
             host_header = self.headers.get("Host", "")
             host = host_header.split(":", 1)[0] if host_header else "127.0.0.1"
-        port = int(first_value(query, "ws_port") or getattr(self.server, "xiaozhi_ws_port", 0) or self.server.server_port)
-        path = getattr(self.server, "xiaozhi_ws_path", "/xiaozhi/ws")
-        token = getattr(self.server, "xiaozhi_local_token", "")
+        port = int(first_value(query, "ws_port") or getattr(self.server, "realtime_ws_port", 0) or self.server.server_port)
+        path = getattr(self.server, "realtime_ws_path", "/ws")
+        token = getattr(self.server, "realtime_local_token", "")
         ws_url = f"ws://{host}:{port}{path}"
         self._log_info(f"实时语音配置: host_header={self.headers.get('Host', '')!r} ws_url={ws_url}")
         body = ota_config(ws_url, token)
@@ -4371,26 +4378,26 @@ def main():
         "--realtime-enabled",
         action=argparse.BooleanOptionalAction,
         default=parse_bool(os.environ.get("STACKCHAN_REALTIME_ENABLED", "true")),
-        help="Enable xiaozhi WebSocket realtime bridge.",
+        help="Enable the WebSocket realtime speech bridge.",
     )
-    parser.add_argument("--xiaozhi-ws-path", default=os.environ.get("STACKCHAN_XIAOZHI_WS_PATH", "/xiaozhi/ws"))
+    parser.add_argument("--realtime-ws-path", default=os.environ.get("STACKCHAN_REALTIME_WS_PATH", "/ws"))
     parser.add_argument(
-        "--xiaozhi-ws-port",
+        "--realtime-ws-port",
         type=int,
-        default=int(os.environ.get("STACKCHAN_XIAOZHI_WS_PORT", "0")),
+        default=int(os.environ.get("STACKCHAN_REALTIME_WS_PORT", "0")),
         help="Realtime WebSocket port. Defaults to HTTP port + 1 because the legacy HTTP server is stdlib-only.",
     )
-    parser.add_argument("--xiaozhi-public-host", default=os.environ.get("STACKCHAN_XIAOZHI_PUBLIC_HOST", ""))
-    parser.add_argument("--xiaozhi-local-token", default=os.environ.get("STACKCHAN_XIAOZHI_LOCAL_TOKEN", ""))
+    parser.add_argument("--realtime-public-host", default=os.environ.get("STACKCHAN_REALTIME_PUBLIC_HOST", ""))
+    parser.add_argument("--realtime-local-token", default=os.environ.get("STACKCHAN_REALTIME_LOCAL_TOKEN", ""))
     parser.add_argument(
         "--ota-firmware-dir",
         default=os.environ.get("STACKCHAN_OTA_FIRMWARE_DIR", DEFAULT_OTA_FIRMWARE_DIR),
-        help="Directory to scan for the newest valid ESP-IDF app .bin advertised through /xiaozhi/ota.",
+        help="Directory to scan for the newest valid ESP-IDF app .bin advertised through /ota.",
     )
     parser.add_argument(
         "--ota-firmware-file",
         default=os.environ.get("STACKCHAN_OTA_FIRMWARE_FILE", ""),
-        help="Specific ESP-IDF app .bin to advertise through /xiaozhi/ota. Overrides --ota-firmware-dir.",
+        help="Specific ESP-IDF app .bin to advertise through /ota. Overrides --ota-firmware-dir.",
     )
     parser.add_argument(
         "--ota-public-base-url",
@@ -4484,10 +4491,10 @@ def main():
     httpd.find_owner_gain_y = args.find_owner_gain_y
     httpd.find_owner_stop_pixels = args.find_owner_stop_pixels
     httpd.realtime_manager = None
-    httpd.xiaozhi_ws_path = args.xiaozhi_ws_path
-    httpd.xiaozhi_ws_port = args.xiaozhi_ws_port or (args.port + 1)
-    httpd.xiaozhi_public_host = args.xiaozhi_public_host
-    httpd.xiaozhi_local_token = args.xiaozhi_local_token
+    httpd.realtime_ws_path = args.realtime_ws_path
+    httpd.realtime_ws_port = args.realtime_ws_port or (args.port + 1)
+    httpd.realtime_public_host = args.realtime_public_host
+    httpd.realtime_local_token = args.realtime_local_token
     httpd.ota_firmware_dir = args.ota_firmware_dir
     httpd.ota_firmware_file = args.ota_firmware_file
     httpd.ota_public_base_url = args.ota_public_base_url
@@ -4554,9 +4561,9 @@ def main():
     if args.realtime_enabled:
         realtime_config = RealtimeConfig(
             host=args.host,
-            port=httpd.xiaozhi_ws_port,
-            path=args.xiaozhi_ws_path,
-            token=args.xiaozhi_local_token,
+            port=httpd.realtime_ws_port,
+            path=args.realtime_ws_path,
+            token=args.realtime_local_token,
             region=args.region,
             appkey=httpd.appkey,
             token_getter=httpd.get_token,
@@ -4629,7 +4636,7 @@ def main():
     log_print(
         "  实时语音: "
         + (
-            f"启用 ws://{args.host}:{httpd.xiaozhi_ws_port}{args.xiaozhi_ws_path}"
+            f"启用 ws://{args.host}:{httpd.realtime_ws_port}{args.realtime_ws_path}"
             if httpd.realtime_manager and httpd.realtime_manager.enabled
             else "禁用"
         )
@@ -4641,7 +4648,7 @@ def main():
         log_print(f"  TTS:    http://{args.host}:{args.port}/stream-speak?text=...")
         log_print(f"  事件音频: http://{args.host}:{args.port}/head-touch-events -> {args.static_dir}/event-audio")
         log_print(f"  图片上传: http://{args.host}:{args.port}/upload-image -> {args.capture_dir}")
-        log_print(f"  OTA:    http://{args.host}:{args.port}/xiaozhi/ota")
+        log_print(f"  OTA:    http://{args.host}:{args.port}/ota")
         log_print(f"  人脸检测详情: {args.face_detector}{' ' + args.yunet_model if args.face_detector == 'yunet' else ''}")
         log_print(
             f"  视觉跟踪详情: deadzone={args.visual_tracking_deadzone_px}px "
@@ -4655,8 +4662,8 @@ def main():
         )
         log_print(f"  Morrow 详情: {args.morrow_base_url or ''} session={args.morrow_session}")
         if httpd.realtime_manager and httpd.realtime_manager.enabled:
-            log_print(f"  小智 OTA: http://{args.host}:{args.port}/xiaozhi/ota")
-            log_print(f"  小智 WS:  ws://{args.host}:{httpd.xiaozhi_ws_port}{args.xiaozhi_ws_path}")
+            log_print(f"  OTA:     http://{args.host}:{args.port}/ota")
+            log_print(f"  实时 WS: ws://{args.host}:{httpd.realtime_ws_port}{args.realtime_ws_path}")
         log_print(f"  TTS 尾部静音: {args.tts_tail_silence_ms}ms")
         log_print("  通过 HTTP 长轮询推送命令:")
         log_print(f"          设备拉取: GET http://{args.host}:{args.port}/device/next-command?device_id=...")

@@ -24,8 +24,8 @@ class P5SingleControlChannelTest(unittest.TestCase):
         self.assertNotIn("_send_mcp_command", source)
         self.assertNotIn("def enqueue_command", source)
 
-    def test_xiaozhi_protocol_has_no_mcp_frames(self):
-        source = (ROOT / "src" / "xiaozhi_protocol.py").read_text()
+    def test_realtime_protocol_has_no_mcp_frames(self):
+        source = (ROOT / "src" / "realtime_protocol.py").read_text()
         self.assertNotIn("build_mcp_request", source)
         self.assertNotIn('"tools/call"', source)
 

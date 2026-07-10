@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 HOST="${STACKCHAN_SERVER_HOST:-${STACKCHAN_ALIYUN_HOST:-0.0.0.0}}"
 PORT="${STACKCHAN_SERVER_PORT:-${STACKCHAN_ALIYUN_PORT:-8091}}"
 VENV="${STACKCHAN_SERVER_VENV:-.venv}"
-LOG_FILE="${STACKCHAN_SERVER_LOG:-/tmp/stack-chan-server.log}"
+LOG_FILE="${STACKCHAN_SERVER_LOG:-/home/myendless/xiaopai/stack-chan/stack-chan-server/logs/stack-chan-server.log}"
 PIP_INDEX_URL="${STACKCHAN_PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 PIP_TRUSTED_HOST="${STACKCHAN_PIP_TRUSTED_HOST:-pypi.tuna.tsinghua.edu.cn}"
 DEBUG="${STACKCHAN_DEBUG:-0}"
@@ -85,7 +85,7 @@ pcm = b"\x00\x00" * codec.samples_per_frame
 codec.decode(codec.encode(pcm))
 PY
   then
-    echo "Realtime Xiaozhi audio requires Python opuslib and system libopus." >&2
+    echo "Realtime audio requires Python opuslib and system libopus." >&2
     echo "Python packages are installed from requirements.txt; install the system library, then restart:" >&2
     echo "  sudo apt-get update && sudo apt-get install -y libopus0" >&2
     echo "To run without realtime speech, set STACKCHAN_REALTIME_ENABLED=false or pass --no-realtime-enabled." >&2
@@ -121,7 +121,7 @@ if [ "$DEBUG" = "1" ] || [ "$DEBUG" = "true" ]; then
   echo "  ASR upload:   http://$HOST:$PORT/upload"
   echo "  TTS stream:   http://$HOST:$PORT/stream-speak?text=..."
   echo "  Image upload: http://$HOST:$PORT/upload-image"
-  echo "  OTA check:    http://$HOST:$PORT/xiaozhi/ota"
+  echo "  OTA check:    http://$HOST:$PORT/ota"
   echo "  OTA latest:   http://$HOST:$PORT/firmware/latest.json"
   echo "  health:       http://127.0.0.1:$PORT/health"
   echo
@@ -129,14 +129,46 @@ if [ "$DEBUG" = "1" ] || [ "$DEBUG" = "true" ]; then
   echo "  CONFIG_STACKCHAN_RECORD_UPLOAD_URL = http://<this-computer-lan-ip>:$PORT/upload"
   echo "  CONFIG_STACKCHAN_STREAM_TTS_URL    = http://<this-computer-lan-ip>:$PORT/stream-speak"
   echo "  CONFIG_STACKCHAN_IMAGE_UPLOAD_URL  = http://<this-computer-lan-ip>:$PORT/upload-image"
-  echo "  CONFIG_OTA_URL                     = http://<this-computer-lan-ip>:$PORT/xiaozhi/ota"
+  echo "  CONFIG_OTA_URL                     = http://<this-computer-lan-ip>:$PORT/ota"
 else
   DEBUG_ARGS=()
   echo "  debug:        disabled (run ./start.sh --debug for device IDs, task IDs, IPs, ports, and full API bodies)"
 fi
 echo
 
+CURRENT_DIR="$PWD"
+EXISTING_PIDS=()
+while IFS= read -r pid; do
+  [ -n "$pid" ] || continue
+  if [ "$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)" = "$CURRENT_DIR" ]; then
+    EXISTING_PIDS+=("$pid")
+  fi
+done < <(pgrep -f 'python.*src/server\.py' || true)
+
+if [ "${#EXISTING_PIDS[@]}" -gt 0 ]; then
+  echo "Stopping existing Xiaopai server process(es): ${EXISTING_PIDS[*]}"
+  kill "${EXISTING_PIDS[@]}" 2>/dev/null || true
+
+  for _ in {1..10}; do
+    RUNNING_PIDS=()
+    for pid in "${EXISTING_PIDS[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        RUNNING_PIDS+=("$pid")
+      fi
+    done
+    [ "${#RUNNING_PIDS[@]}" -eq 0 ] && break
+    sleep 0.5
+  done
+
+  if [ "${#RUNNING_PIDS[@]}" -gt 0 ]; then
+    echo "Existing process(es) did not stop; forcing termination: ${RUNNING_PIDS[*]}"
+    kill -9 "${RUNNING_PIDS[@]}" 2>/dev/null || true
+    sleep 0.5
+  fi
+fi
+
 mkdir -p "$(dirname "$LOG_FILE")"
+: > "$LOG_FILE"
 echo "---- stack-chan-server start $(date '+%Y-%m-%d %H:%M:%S') ----" >> "$LOG_FILE"
 
 SERVER_CMD=(

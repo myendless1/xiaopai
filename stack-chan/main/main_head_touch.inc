@@ -5,6 +5,8 @@ static const char* head_touch_event_name(HeadTouchEvent event)
             return "press";
         case HeadTouchEvent::Click:
             return "click";
+        case HeadTouchEvent::LongPress:
+            return "long_press";
         case HeadTouchEvent::SwipeForward:
             return "swipe_forward";
         case HeadTouchEvent::SwipeBackward:
@@ -41,6 +43,26 @@ static void run_head_touch_audio_loop()
     while (true) {
         HeadTouchEvent event = HeadTouchEvent::Press;
         if (xQueueReceive(head_touch_event_queue, &event, portMAX_DELAY) == pdTRUE) {
+            if (event == HeadTouchEvent::LongPress) {
+                ESP_LOGW(TAG, "Local long-press stop triggered");
+                request_speak_preempt("local long press");
+                advance_speech_generation();
+                xiaopai_state_set(LocalVoiceState::Idle, "local long press stop");
+                expression_state_set("stopped");
+                cJSON* root = cJSON_CreateObject();
+                cJSON_AddStringToObject(root, "device_id", mac_address().c_str());
+                cJSON_AddStringToObject(root, "type", "local_stop");
+                cJSON_AddNumberToObject(root, "generation", speech_command_generation);
+                char* encoded = cJSON_PrintUnformatted(root);
+                std::string body = encoded != nullptr ? encoded : "{}";
+                if (encoded != nullptr) cJSON_free(encoded);
+                cJSON_Delete(root);
+                std::string response;
+                if (!http_post_json_string(make_server_url("/device/event"), body, &response, 5000)) {
+                    ESP_LOGW(TAG, "Failed to report local_stop event");
+                }
+                continue;
+            }
             mark_user_interaction("screen touch");
             LocalVoiceState state = xiaopai_state_get().state;
             if (state == LocalVoiceState::Waiting) {
@@ -72,6 +94,9 @@ static void run_head_touch_audio_loop()
 static void run_head_touch_loop()
 {
     bool was_touched = false;
+    bool long_press_sent = false;
+    uint32_t pressed_at_ms = 0;
+    static constexpr uint32_t kLocalStopLongPressMs = 1200;
     ESP_LOGI(TAG, "Screen touch local shy trigger started");
 
     while (true) {
@@ -94,12 +119,20 @@ static void run_head_touch_loop()
             continue;
         }
 
-        const bool is_touched = touch.isPressed() || touch.wasPressed() || touch.wasClicked();
+        const bool is_touched = touch.isPressed() || touch.wasPressed();
         if (is_touched && !was_touched) {
             was_touched = true;
-            enqueue_head_touch_event(HeadTouchEvent::Click);
+            long_press_sent = false;
+            pressed_at_ms = M5.millis();
+        } else if (touch.isPressed() && was_touched && !long_press_sent &&
+                   static_cast<uint32_t>(M5.millis() - pressed_at_ms) >= kLocalStopLongPressMs) {
+            long_press_sent = true;
+            enqueue_head_touch_event(HeadTouchEvent::LongPress);
         } else if (!touch.isPressed() && was_touched) {
             was_touched = false;
+            if (!long_press_sent) {
+                enqueue_head_touch_event(HeadTouchEvent::Click);
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(kScreenTouchPollMs));

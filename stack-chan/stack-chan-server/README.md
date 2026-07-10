@@ -11,7 +11,7 @@ Local bridge server for the Xiaopai firmware in this repository. It keeps cloud 
 - Optional RGB565 conversion to PNG and BMP. The Xiaopai camera data is decoded as big-endian RGB565.
 - Local CPU face/head detection using OpenCV YuNet. Detected boxes are returned in the `/upload-image` response; visualizations are saved only in debug capture mode.
 - Visual tracking loop: `/upload-image` can turn the largest detected face into queued Xiaopai head-motion commands.
-- Xiaozhi-compatible OTA config endpoint. The server can advertise the newest compiled ESP-IDF app firmware and serve it over WiFi.
+- OTA config endpoint. The server can advertise the newest compiled ESP-IDF app firmware and serve it over WiFi.
 - Legacy local open-source STT/TTS utilities are kept under `legacy/`.
 
 ## Setup
@@ -34,7 +34,7 @@ EOF
 
 The server can also use `ALIYUN_NLS_TOKEN` directly. With `ALIYUN_AK_ID` and `ALIYUN_AK_SECRET`, it creates and refreshes the NLS token automatically. The default ASR/TTS/command server uses only Python standard library modules.
 
-Realtime Xiaozhi speech uses Opus audio frames, so the OS must provide `libopus` in addition to the Python packages installed by `start.sh`.
+Realtime speech uses Opus audio frames, so the OS must provide `libopus` in addition to the Python packages installed by `start.sh`.
 
 By default, logs are concise and omit device IDs, task IDs, client IPs, ports, and full API bodies. Start with debug logging only when you need those details:
 
@@ -61,13 +61,13 @@ See [HTTP_COMMAND_API.md](HTTP_COMMAND_API.md) for the full command API referenc
 
 Returns service status and endpoint metadata.
 
-`GET|POST /xiaozhi/ota`
+`GET|POST /ota`
 
-Returns the Xiaozhi realtime config and, when an ESP-IDF app firmware is available, a `firmware` section compatible with `xiaozhi-esp32` OTA:
+Returns the realtime config and, when an ESP-IDF app firmware is available, a `firmware` section for OTA:
 
 ```json
 {
-  "websocket": {"url": "ws://192.168.1.20:8092/xiaozhi/ws", "token": "", "version": 1},
+  "websocket": {"url": "ws://192.168.1.20:8092/ws", "token": "", "version": 1},
   "server_time": {"timestamp": 1781692800000, "timezone_offset": 480},
   "firmware": {
     "version": "0.1.1",
@@ -361,6 +361,11 @@ Environment variables:
 | `STACKCHAN_SERVER_HOST` | `0.0.0.0` | Bind host |
 | `STACKCHAN_SERVER_PORT` | `8091` | Bind port |
 | `STACKCHAN_SERVER_VENV` | `.venv` | Virtual environment path |
+| `STACKCHAN_REALTIME_ENABLED` | `true` | Enable the realtime speech WebSocket |
+| `STACKCHAN_REALTIME_WS_PATH` | `/ws` | Realtime speech WebSocket path |
+| `STACKCHAN_REALTIME_WS_PORT` | HTTP port + 1 | Realtime speech WebSocket port |
+| `STACKCHAN_REALTIME_PUBLIC_HOST` | request host | Host advertised by `/ota` |
+| `STACKCHAN_REALTIME_LOCAL_TOKEN` | empty | Optional bearer token for realtime WebSocket clients |
 | `STACKCHAN_ALIYUN_REGION` | `shanghai` | Aliyun NLS region: `shanghai`, `beijing`, or `shenzhen` |
 | `STACKCHAN_ALIYUN_TTS_URL` | empty | Override TTS URL |
 | `STACKCHAN_ALIYUN_VOICE` | `zhimiao_emo` | Aliyun TTS voice |
@@ -397,6 +402,7 @@ Set the Xiaopai firmware URLs to your computer's LAN IP:
 CONFIG_STACKCHAN_RECORD_UPLOAD_URL = http://<lan-ip>:8091/upload
 CONFIG_STACKCHAN_STREAM_TTS_URL    = http://<lan-ip>:8091/stream-speak
 CONFIG_STACKCHAN_IMAGE_UPLOAD_URL  = http://<lan-ip>:8091/upload-image
+CONFIG_STACKCHAN_OTA_URL           = http://<lan-ip>:8091/ota
 ```
 
 ## Quick Tests

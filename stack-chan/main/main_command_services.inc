@@ -382,6 +382,10 @@ static bool handle_command_response(const std::string& response)
     std::string cmd_type = json_string_value(command, "type");
     uint32_t attempt = static_cast<uint32_t>(json_int_value(command, "attempt", 0));
     uint32_t ttl_ms = static_cast<uint32_t>(json_int_value(command, "ttl_ms", 30000));
+    bool persist_dedupe = cmd_type == "speak" || cmd_type == "sequence" || cmd_type == "motion" ||
+                          cmd_type == "move" || cmd_type == "find_owner" || cmd_type == "locate_owner" ||
+                          cmd_type == "capture_image" || cmd_type == "camera" || cmd_type == "track_once" ||
+                          cmd_type == "check_ota" || cmd_type == "ota_check" || cmd_type == "firmware_ota";
     ESP_LOGI(TAG, "Command received: id=%s type=%s", cmd_id.c_str(), cmd_type.c_str());
     const CommandDedupeEntry* duplicate = command_dedupe_find(cmd_id.c_str());
     if (duplicate != nullptr) {
@@ -418,6 +422,7 @@ static bool handle_command_response(const std::string& response)
             send_command_ack(cmd_id.c_str(), "failed", "speak queue unavailable or empty text", attempt);
         } else {
             send_command_ack(cmd_id.c_str(), "received", "", attempt);
+            if (persist_dedupe) command_dedupe_mark_persistent(cmd_id.c_str());
         }
         cJSON_Delete(root);
         return queued;
@@ -430,6 +435,7 @@ static bool handle_command_response(const std::string& response)
     }
 
     send_command_ack(cmd_id.c_str(), "received", "", attempt);
+    if (persist_dedupe) command_dedupe_mark_persistent(cmd_id.c_str());
     bool ok = execute_command_object(command);
     char message[96] = {};
     if (!ok) {
@@ -470,6 +476,45 @@ static bool send_v3_control_hello()
     return http_post_json_string(make_server_url("/v3/control/hello"), body, &response, 5000);
 }
 
+static bool send_v3_control_heartbeat()
+{
+    if (xiaopai_boot_id == 0) {
+        xiaopai_boot_id = esp_random();
+    }
+    const esp_app_desc_t* app = esp_app_get_description();
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "heartbeat");
+    cJSON_AddStringToObject(root, "device_id", mac_address().c_str());
+    cJSON_AddNumberToObject(root, "boot_id", xiaopai_boot_id);
+    cJSON_AddStringToObject(root, "firmware_version", app != nullptr ? app->version : "unknown");
+    cJSON_AddNumberToObject(root, "last_ack_seq", command_ack_seq);
+    cJSON_AddStringToObject(root, "mode", xiaopai_state_get().name);
+    cJSON_AddStringToObject(root, "expression", expression_state_get().name);
+    cJSON_AddNumberToObject(root, "free_internal_heap", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(root, "free_psram", heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(root, "speech_queue_depth", speak_command_queue != nullptr ? uxQueueMessagesWaiting(speak_command_queue) : 0);
+
+    char* encoded = cJSON_PrintUnformatted(root);
+    std::string body = encoded != nullptr ? encoded : "{}";
+    if (encoded != nullptr) {
+        cJSON_free(encoded);
+    }
+    cJSON_Delete(root);
+    std::string response;
+    return http_post_json_string(make_server_url("/v3/control/heartbeat"), body, &response, 2000);
+}
+
+static void run_heartbeat_loop()
+{
+    ESP_LOGI(TAG, "Heartbeat task started");
+    while (true) {
+        if (wifi_is_connected() && active_server_selected) {
+            send_v3_control_heartbeat();
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
 static void run_command_http_loop()
 {
     ensure_client_id();
@@ -478,6 +523,7 @@ static void run_command_http_loop()
     }
     ESP_LOGI(TAG, "HTTP command long-poll started");
     expression_state_set(kDefaultExpression);
+    restore_terminal_command_dedupe_log();
     send_v3_control_hello();
 
     while (true) {
@@ -544,7 +590,7 @@ static void log_memory_snapshot(const char* reason)
              static_cast<unsigned>(kMemoryMonitorTaskStackBytes), static_cast<unsigned>(kWifiTaskStackBytes));
 
     log_task_stack_watermark("boot", boot_task_handle);
-    log_task_stack_watermark("realtime_audio_task", xiaozhi_task_handle);
+    log_task_stack_watermark("realtime_audio_task", realtime_task_handle);
     log_task_stack_watermark("control_transport_task", command_task_handle);
     log_task_stack_watermark("wifi_debug", wifi_debug_task_handle);
     log_task_stack_watermark("speech_task", speak_command_task_handle);
@@ -614,22 +660,29 @@ static void start_background_services()
         start_head_touch_services();
         start_speak_command_service();
         start_wifi_debug_service();
+        if (heartbeat_task_handle == nullptr) {
+            xTaskCreatePinnedToCore([](void*) {
+                run_heartbeat_loop();
+                heartbeat_task_handle = nullptr;
+                vTaskDelete(nullptr);
+            }, "heartbeat_task", 4 * 1024, nullptr, 1, &heartbeat_task_handle, 0);
+        }
         // Temporarily disabled: periodic sedentary find-owner checks.
         // start_sedentary_find_owner_service();
         log_memory_snapshot("after helper tasks");
 
-        if (xiaozhi_task_handle == nullptr) {
+        if (realtime_task_handle == nullptr) {
             supervisor_set_app1_stop_requested(false, "command starts voice demo");
             log_memory_snapshot("before bg_voice create");
             BaseType_t created = xTaskCreatePinnedToCore([](void*) {
-                run_xiaozhi_ota_probe();
-                xiaozhi_task_handle = nullptr;
+                run_realtime_speech();
+                realtime_task_handle = nullptr;
                 vTaskDelete(nullptr);
-            }, "realtime_audio_task", kApp1TaskStackBytes, nullptr, 5, &xiaozhi_task_handle, 0);
+            }, "realtime_audio_task", kApp1TaskStackBytes, nullptr, 5, &realtime_task_handle, 0);
             if (created == pdPASS) {
                 ESP_LOGI(TAG, "Realtime voice task created");
             } else {
-                xiaozhi_task_handle = nullptr;
+                realtime_task_handle = nullptr;
                 ESP_LOGE(TAG, "Failed to create realtime voice task");
             }
             log_memory_snapshot("after bg_voice create");

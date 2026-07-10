@@ -1,4 +1,4 @@
-static bool configure_local_xiaozhi_websocket()
+static bool configure_local_websocket()
 {
     std::string base = active_server_base;
     const bool tls = base.rfind("https://", 0) == 0;
@@ -15,12 +15,12 @@ static bool configure_local_xiaozhi_websocket()
         return false;
     }
     int ws_port = port + 1;
-    xiaozhi_config.websocket_url =
-        std::string(tls ? "wss://" : "ws://") + host + ":" + std::to_string(ws_port) + "/xiaozhi/ws";
-    xiaozhi_config.websocket_token = "";
-    xiaozhi_config.session_id.clear();
-    ESP_LOGI(TAG, "Local Xiaozhi WS configured: %s", xiaozhi_config.websocket_url.c_str());
-    set_app1_status("Realtime", xiaozhi_config.websocket_url.c_str(), "Streaming ASR/TTS", "", false, true);
+    realtime_config.websocket_url =
+        std::string(tls ? "wss://" : "ws://") + host + ":" + std::to_string(ws_port) + "/ws";
+    realtime_config.websocket_token = "";
+    realtime_config.session_id.clear();
+    ESP_LOGI(TAG, "Local realtime WS configured: %s", realtime_config.websocket_url.c_str());
+    set_app1_status("Realtime", realtime_config.websocket_url.c_str(), "Streaming ASR/TTS", "", false, true);
     return true;
 }
 
@@ -70,8 +70,8 @@ static void summarize_ota_response(const std::string& response)
     if (cJSON_IsObject(websocket)) {
         cJSON* url = cJSON_GetObjectItem(websocket, "url");
         cJSON* token = cJSON_GetObjectItem(websocket, "token");
-        xiaozhi_config.websocket_url = cJSON_IsString(url) ? url->valuestring : "";
-        xiaozhi_config.websocket_token = cJSON_IsString(token) ? token->valuestring : "";
+        realtime_config.websocket_url = cJSON_IsString(url) ? url->valuestring : "";
+        realtime_config.websocket_token = cJSON_IsString(token) ? token->valuestring : "";
         ESP_LOGI(TAG, "WebSocket config found: url=%s token=%s", cJSON_IsString(url) ? url->valuestring : "(missing)",
                  cJSON_IsString(token) ? token->valuestring : "(missing)");
         set_app1_status("Got Token", cJSON_IsString(url) ? url->valuestring : "websocket config found",
@@ -101,17 +101,17 @@ static void summarize_ota_response(const std::string& response)
     cJSON_Delete(root);
 }
 
-static bool request_xiaozhi_ota_config()
+static bool request_ota_config()
 {
-    set_app1_status("HTTP", "POST Xiaozhi OTA config");
+    set_app1_status("HTTP", "POST OTA config");
     std::string body = make_system_info_json();
-    ESP_LOGI(TAG, "OTA URL: %s", CONFIG_STACKCHAN_XIAOZHI_OTA_URL);
+    ESP_LOGI(TAG, "OTA URL: %s", CONFIG_STACKCHAN_OTA_URL);
     ESP_LOGI(TAG, "Device-Id: %s", mac_address().c_str());
     ESP_LOGI(TAG, "Client-Id: %s", client_id);
     ESP_LOGI(TAG, "Request body: %s", body.c_str());
 
     esp_http_client_config_t config = {};
-    config.url = CONFIG_STACKCHAN_XIAOZHI_OTA_URL;
+    config.url = CONFIG_STACKCHAN_OTA_URL;
     config.method = HTTP_METHOD_POST;
     config.timeout_ms = 15000;
     config.crt_bundle_attach = esp_crt_bundle_attach;
@@ -185,12 +185,12 @@ static bool request_xiaozhi_ota_config()
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     summarize_ota_response(response);
-    return !xiaozhi_config.websocket_url.empty() && !xiaozhi_config.websocket_token.empty();
+    return !realtime_config.websocket_url.empty() && !realtime_config.websocket_token.empty();
 }
 
-static bool request_local_xiaozhi_ota_config()
+static bool request_local_ota_config()
 {
-    std::string url = make_server_url("/realtime/config");
+    std::string url = make_server_url("/ota");
     set_app1_status("Realtime", "GET realtime config", url.c_str(), "", true, false);
     ESP_LOGI(TAG, "Realtime config URL: %s", url.c_str());
 
@@ -253,10 +253,10 @@ static bool request_local_xiaozhi_ota_config()
         return false;
     }
     summarize_ota_response(response);
-    if (!websocket_url_is_connectable(xiaozhi_config.websocket_url)) {
-        ESP_LOGW(TAG, "Realtime config returned unusable WS URL: %s", xiaozhi_config.websocket_url.c_str());
-        xiaozhi_config.websocket_url.clear();
-        xiaozhi_config.websocket_token.clear();
+    if (!websocket_url_is_connectable(realtime_config.websocket_url)) {
+        ESP_LOGW(TAG, "Realtime config returned unusable WS URL: %s", realtime_config.websocket_url.c_str());
+        realtime_config.websocket_url.clear();
+        realtime_config.websocket_token.clear();
         return false;
     }
     return true;
@@ -289,12 +289,12 @@ static void* create_opus_encoder(int& frame_size_samples, int& outbuf_size)
     return encoder;
 }
 
-static esp_transport_handle_t open_xiaozhi_websocket(esp_transport_handle_t& parent)
+static esp_transport_handle_t open_realtime_websocket(esp_transport_handle_t& parent)
 {
     ParsedUrl parsed;
-    if (!parse_websocket_url(xiaozhi_config.websocket_url, parsed)) {
-        ESP_LOGE(TAG, "Invalid websocket URL: %s", xiaozhi_config.websocket_url.c_str());
-        set_app1_status("WS Fail", "Invalid websocket URL", xiaozhi_config.websocket_url.c_str(), "", false, false);
+    if (!parse_websocket_url(realtime_config.websocket_url, parsed)) {
+        ESP_LOGE(TAG, "Invalid websocket URL: %s", realtime_config.websocket_url.c_str());
+        set_app1_status("WS Fail", "Invalid websocket URL", realtime_config.websocket_url.c_str(), "", false, false);
         return nullptr;
     }
 
@@ -319,8 +319,8 @@ static esp_transport_handle_t open_xiaozhi_websocket(esp_transport_handle_t& par
                           "Device-Id: " + mac_address() + "\r\n" +
                           "Client-Id: " + client_id + "\r\n";
     esp_transport_ws_set_path(ws, parsed.path.c_str());
-    if (!xiaozhi_config.websocket_token.empty()) {
-        std::string auth = "Bearer " + xiaozhi_config.websocket_token;
+    if (!realtime_config.websocket_token.empty()) {
+        std::string auth = "Bearer " + realtime_config.websocket_token;
         esp_transport_ws_set_auth(ws, auth.c_str());
     }
     esp_transport_ws_set_headers(ws, headers.c_str());
@@ -496,7 +496,7 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
         set_app1_status("Rejected", "Audio input is gated by supervisor", "", "", false, false);
         return true;
     }
-    set_app1_status("Recording", audio_input_source_label(input.active_source), "Sending Opus to Xiaozhi", "");
+    set_app1_status("Recording", audio_input_source_label(input.active_source), "Sending Opus", "");
     update_listening_light_level(first_samples, first_count);
     std::vector<int16_t> frame(encoder_frame_samples);
     int frame_pos = 0;
@@ -928,9 +928,9 @@ public:
     VoiceListenerPauseGuard& operator=(const VoiceListenerPauseGuard&) = delete;
 };
 
-static void run_xiaozhi_speech_loop()
+static void run_realtime_speech_loop()
 {
-    if (xiaozhi_config.websocket_url.empty()) {
+    if (realtime_config.websocket_url.empty()) {
         set_app1_status("No WS", "OTA did not return websocket config", "Cannot recognize speech", "", false, false);
         return;
     }
@@ -990,10 +990,10 @@ static void run_xiaozhi_speech_loop()
                 break;
             }
 
-            if (!request_local_xiaozhi_ota_config()) {
-                configure_local_xiaozhi_websocket();
+            if (!request_local_ota_config()) {
+                configure_local_websocket();
             }
-            ws = open_xiaozhi_websocket(parent);
+            ws = open_realtime_websocket(parent);
             if (ws != nullptr) {
                 xiaopai_state_set(LocalVoiceState::Listening, "websocket connected");
                 set_app1_status("Listening", "WebSocket connected", "Ready for voice", "", true, false);
@@ -1033,7 +1033,7 @@ static void run_xiaozhi_speech_loop()
             if (paused_state == LocalVoiceState::Speaking) {
                 set_app1_status("Speaking", "Local speech output", "ASR is gated", "", true, false);
             } else if (paused_state == LocalVoiceState::Waiting) {
-                set_app1_status("Waiting", "OpenClaw is thinking", "ASR is gated", "", true, false);
+                set_app1_status("Waiting", "Morrow is thinking", "ASR is gated", "", true, false);
             } else {
                 set_app1_status("Paused", "Shared peripheral", "Listening resumes soon", "", true, false);
             }
@@ -1131,17 +1131,17 @@ static void run_xiaozhi_speech_loop()
     esp_opus_enc_close(encoder);
 }
 
-void run_xiaozhi_ota_probe()
+void run_realtime_speech()
 {
-    ESP_LOGI(TAG, "Starting realtime Xiaozhi speech loop over WebSocket");
+    ESP_LOGI(TAG, "Starting realtime speech loop over WebSocket");
     set_app1_status("Realtime", "Preparing streaming speech", "Waiting for local server", "", true, false);
     ensure_client_id();
     if (!ensure_network_ready()) {
         return;
     }
-    if (!request_local_xiaozhi_ota_config() && !configure_local_xiaozhi_websocket()) {
+    if (!request_local_ota_config() && !configure_local_websocket()) {
         set_app1_status("No WS", "Could not build local WebSocket URL", active_server_base.c_str(), "", false, false);
         return;
     }
-    run_xiaozhi_speech_loop();
+    run_realtime_speech_loop();
 }

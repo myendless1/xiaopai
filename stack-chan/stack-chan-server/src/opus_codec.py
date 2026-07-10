@@ -28,7 +28,7 @@ class OpusCodec:
     def _require(self) -> None:
         if self._opuslib is None:
             raise OpusUnavailableError(
-                "opuslib/libopus is not available; install opuslib and libopus for xiaozhi audio frames"
+                "opuslib/libopus is not available; install opuslib and libopus for realtime audio frames"
             ) from self._import_error
 
     def decode(self, opus_frame: bytes) -> bytes:

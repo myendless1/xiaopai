@@ -8,9 +8,9 @@ menu "Xiaopai settings"
         string "Wi-Fi password"
         default "88888888"
 
-    config STACKCHAN_XIAOZHI_OTA_URL
-        string "Xiaozhi OTA URL"
-        default "https://api.tenclass.net/xiaozhi/ota/"
+    config STACKCHAN_OTA_URL
+        string "OTA URL"
+        default "http://192.168.137.1:8091/ota"
 
     config STACKCHAN_FIRMWARE_OTA_ENABLED
         bool "Enable Xiaopai firmware OTA"
@@ -104,17 +104,17 @@ menu "Xiaopai settings"
 
     config STACKCHAN_DJI_MIC_USB_INPUT
         bool "Enable DJI Mic receiver USB input auto-switch"
-        default y
+        default n
 
     config STACKCHAN_DJI_MIC_AUTO_START
         bool "Auto start DJI Mic USB input on boot"
         depends on STACKCHAN_DJI_MIC_USB_INPUT
-        default y
+        default n
 
     config STACKCHAN_DJI_MIC_DRIVE_VBUS
         bool "Drive CoreS3 USB VBUS for DJI Mic"
         depends on STACKCHAN_DJI_MIC_USB_INPUT
-        default y
+        default n
 
     config STACKCHAN_DJI_MIC_START_DELAY_MS
         int "Delay before starting DJI Mic USB input after boot"
