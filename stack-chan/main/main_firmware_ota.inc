@@ -287,7 +287,12 @@ bool check_and_apply_firmware_ota_once()
     snprintf(line, sizeof(line), "New version %s", info.version.c_str());
     set_app1_status("OTA", line, "Downloading firmware", "", true, false);
     show_firmware_ota_progress(info, 0);
-    return firmware_ota_download_and_apply(info);
+    xiaopai_system_mode_set(SystemMode::Maintenance, "firmware ota");
+    bool ok = firmware_ota_download_and_apply(info);
+    if (!ok) {
+        xiaopai_system_mode_set(SystemMode::Active, "firmware ota failed");
+    }
+    return ok;
 #else
     return false;
 #endif

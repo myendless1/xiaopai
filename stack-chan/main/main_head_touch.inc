@@ -118,11 +118,11 @@ static void start_head_touch_services()
     if (head_touch_audio_task_handle == nullptr) {
         xTaskCreatePinnedToCore([](void*) {
             run_head_touch_audio_loop();
-        }, "screen_touch_audio", kScreenTouchAudioTaskStackBytes, nullptr, 2, &head_touch_audio_task_handle, 0);
+        }, "ui_audio_task", kScreenTouchAudioTaskStackBytes, nullptr, 2, &head_touch_audio_task_handle, 1);
     }
     if (head_touch_task_handle == nullptr) {
         xTaskCreatePinnedToCore([](void*) {
             run_head_touch_loop();
-        }, "screen_touch", kScreenTouchTaskStackBytes, nullptr, 2, &head_touch_task_handle, 1);
+        }, "ui_task", kScreenTouchTaskStackBytes, nullptr, 2, &head_touch_task_handle, 1);
     }
 }

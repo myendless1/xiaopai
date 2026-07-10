@@ -1387,8 +1387,13 @@ static void run_sedentary_find_owner_loop()
             ESP_LOGI(TAG, "Sedentary owner check skipped: active mode");
             continue;
         }
+        if (!xiaopai_supervisor_admit(SupervisorJobKind::Vision, SupervisorSafetyClass::Normal,
+                                      "sedentary owner check")) {
+            ESP_LOGI(TAG, "Sedentary owner check skipped: supervisor gate");
+            continue;
+        }
 
-        tracking_stop_requested = false;
+        supervisor_set_tracking_stop_requested(false, "find owner command");
         FindOwnerResult result = run_find_owner_detection(kFindOwnerMaxRounds, kFindOwnerYawGain, kFindOwnerPitchGain,
                                                           kFindOwnerStopPixels, true, false);
         if (!result.saw_face) {
@@ -1413,11 +1418,16 @@ static void start_sedentary_find_owner_service()
     }
     xTaskCreatePinnedToCore([](void*) {
         run_sedentary_find_owner_loop();
-    }, "sedentary_owner", kTrackingTaskStackBytes, nullptr, 2, &sedentary_task_handle, 0);
+    }, "vision_health_task", kTrackingTaskStackBytes, nullptr, 2, &sedentary_task_handle, 0);
 }
 
 void run_camera_upload_app()
 {
+    if (!xiaopai_supervisor_admit(SupervisorJobKind::Vision, SupervisorSafetyClass::Normal,
+                                  "camera upload app")) {
+        set_camera_status("Rejected", "Vision is gated by supervisor", "", "", false, false);
+        return;
+    }
     ensure_client_id();
     if (!ensure_wifi_connected()) {
         return;
@@ -1445,6 +1455,11 @@ void run_camera_upload_app()
 
 void run_tracking_user_demo()
 {
+    if (!xiaopai_supervisor_admit(SupervisorJobKind::Vision, SupervisorSafetyClass::Normal,
+                                  "tracking user demo")) {
+        set_tracking_status("Rejected", "Vision is gated by supervisor", "", "", false, false);
+        return;
+    }
     ensure_client_id();
     if (!ensure_wifi_connected()) {
         return;

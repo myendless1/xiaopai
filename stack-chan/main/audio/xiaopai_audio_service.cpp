@@ -1036,7 +1036,7 @@ public:
                     static_cast<XiaopaiAudioService*>(arg)->input_task();
                     vTaskDelete(nullptr);
                 },
-                "xiaopai_audio_in", 6144, this, 4, &input_task_, 0);
+                "audio_input_task", 6144, this, 6, &input_task_, 1);
         }
         if (output_task_ == nullptr) {
             xTaskCreate(
@@ -1044,7 +1044,7 @@ public:
                     static_cast<XiaopaiAudioService*>(arg)->output_task();
                     vTaskDelete(nullptr);
                 },
-                "xiaopai_audio_out", 4096, this, 5, &output_task_);
+                "audio_output_hw", 4096, this, 5, &output_task_);
         }
 #if CONFIG_STACKCHAN_AUDIO_DEVICE_AEC
         ensure_afe_started("audio service start");

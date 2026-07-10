@@ -4,16 +4,17 @@ static bool start_realtime_tts_playback()
         return true;
     }
 
-    xiaopai_state_begin_speaking("realtime tts");
+    if (!supervisor_set_speech_playback_active(true, "realtime tts")) {
+        return false;
+    }
     if (!audio_service_start()) {
         ESP_LOGE(TAG, "audio_service_start failed for realtime TTS");
-        xiaopai_state_end_speaking("realtime tts begin failed");
+        supervisor_set_speech_playback_active(false, "realtime tts begin failed");
         return false;
     }
 
     apply_speaker_volume();
-    app2_stop_requested = false;
-    speech_playback_active = true;
+    supervisor_set_app2_stop_requested(false, "realtime tts");
     realtime_tts_playback_active = true;
     expression_state_start_speech_visual_feedback();
     set_app1_status("Realtime TTS", "Playing server audio", "WebSocket Opus stream", "");
@@ -33,9 +34,8 @@ static void finish_realtime_tts_playback()
     ESP_LOGI(TAG, "Realtime TTS playback %s after %u ms", app2_stop_requested ? "stopped" : "done",
              static_cast<unsigned>(M5.millis() - started_ms));
     expression_state_stop_speech_visual_feedback();
-    speech_playback_active = false;
     realtime_tts_playback_active = false;
-    xiaopai_state_end_speaking("realtime tts finished");
+    supervisor_set_speech_playback_active(false, "realtime tts finished");
 }
 
 static bool play_realtime_opus_frame(const uint8_t* data, size_t len)

@@ -130,7 +130,8 @@ static constexpr int kVolumeDropdownPanelY = 8;
 static constexpr int kVolumeDropdownPanelH = 66;
 static constexpr int kVolumeDropdownControlPad = 10;
 
-AppId current_app = AppId::Launcher;
+// Compatibility snapshots read by legacy loops. Only supervisor_task callbacks update them.
+std::atomic<AppId> current_app{AppId::Launcher};
 int selected_menu = 0;
 TaskHandle_t wifi_task_handle = nullptr;
 TaskHandle_t xiaozhi_task_handle = nullptr;
@@ -155,14 +156,14 @@ int wifi_retry_count = 0;
 bool wifi_started = false;
 bool wifi_connect_requested = false;
 volatile bool wifi_manual_switching = false;
-volatile bool app1_stop_requested = false;
-volatile bool app2_stop_requested = false;
-volatile bool tracking_stop_requested = false;
+std::atomic<bool> app1_stop_requested{false};
+std::atomic<bool> app2_stop_requested{false};
+std::atomic<bool> tracking_stop_requested{false};
 volatile bool voice_listener_paused = false;
-volatile bool voice_recording_active = false;
+std::atomic<bool> voice_recording_active{false};
 volatile int voice_listener_pause_count = 0;
 volatile bool voice_status_screen_suppressed = false;
-volatile bool speech_playback_active = false;
+std::atomic<bool> speech_playback_active{false};
 volatile bool realtime_tts_playback_active = false;
 volatile uint32_t listening_light_last_update_ms = 0;
 volatile bool speaking_light_running = false;
@@ -258,6 +259,80 @@ struct XiaozhiConfig {
 };
 
 XiaozhiConfig xiaozhi_config;
+
+static void supervisor_apply_current_app(uintptr_t arg)
+{
+    current_app.store(static_cast<AppId>(arg));
+}
+
+static void supervisor_apply_app1_stop(uintptr_t arg)
+{
+    app1_stop_requested.store(arg != 0);
+}
+
+static void supervisor_apply_app2_stop(uintptr_t arg)
+{
+    app2_stop_requested.store(arg != 0);
+}
+
+static void supervisor_apply_tracking_stop(uintptr_t arg)
+{
+    tracking_stop_requested.store(arg != 0);
+}
+
+static void supervisor_apply_voice_recording(uintptr_t arg)
+{
+    voice_recording_active.store(arg != 0);
+}
+
+static void supervisor_apply_speech_playback(uintptr_t arg)
+{
+    speech_playback_active.store(arg != 0);
+}
+
+static void supervisor_set_current_app(AppId app, const char* reason)
+{
+    xiaopai_supervisor_run(supervisor_apply_current_app, static_cast<uintptr_t>(app),
+                           SupervisorSafetyClass::Normal, reason);
+}
+
+static void supervisor_set_app1_stop_requested(bool value, const char* reason,
+                                               SupervisorSafetyClass safety_class = SupervisorSafetyClass::Normal)
+{
+    xiaopai_supervisor_run(supervisor_apply_app1_stop, value ? 1 : 0, safety_class, reason);
+}
+
+static void supervisor_set_app2_stop_requested(bool value, const char* reason,
+                                               SupervisorSafetyClass safety_class = SupervisorSafetyClass::Normal)
+{
+    xiaopai_supervisor_run(supervisor_apply_app2_stop, value ? 1 : 0, safety_class, reason);
+}
+
+static void supervisor_set_tracking_stop_requested(bool value, const char* reason,
+                                                   SupervisorSafetyClass safety_class = SupervisorSafetyClass::Normal)
+{
+    xiaopai_supervisor_run(supervisor_apply_tracking_stop, value ? 1 : 0, safety_class, reason);
+}
+
+static bool supervisor_set_voice_recording_active(bool value, const char* reason)
+{
+    bool ok = value ? xiaopai_state_begin_recording(reason) : xiaopai_state_end_recording(reason);
+    if (ok) {
+        xiaopai_supervisor_run(supervisor_apply_voice_recording, value ? 1 : 0,
+                               SupervisorSafetyClass::Normal, reason);
+    }
+    return ok;
+}
+
+static bool supervisor_set_speech_playback_active(bool value, const char* reason)
+{
+    bool ok = value ? xiaopai_state_begin_speaking(reason) : xiaopai_state_end_speaking(reason);
+    if (ok) {
+        xiaopai_supervisor_run(supervisor_apply_speech_playback, value ? 1 : 0,
+                               SupervisorSafetyClass::Normal, reason);
+    }
+    return ok;
+}
 
 static bool speech_output_is_busy()
 {
@@ -956,14 +1031,14 @@ void draw_touch_status(const char* event_name, const m5::Touch_Class::touch_deta
 void enter_app(AppId app)
 {
     if (current_app == AppId::StreamTtsDemo && app != AppId::StreamTtsDemo) {
-        app2_stop_requested = true;
+        supervisor_set_app2_stop_requested(true, "leave stream tts demo", SupervisorSafetyClass::LocalStop);
         codec_audio_output_stop();
     }
     if (current_app == AppId::TrackingUser && app != AppId::TrackingUser) {
-        tracking_stop_requested = true;
+        supervisor_set_tracking_stop_requested(true, "leave tracking demo", SupervisorSafetyClass::LocalStop);
     }
 
-    current_app = app;
+    supervisor_set_current_app(app, "enter app");
 
     if (app == AppId::Launcher) {
         draw_launcher();
@@ -976,14 +1051,14 @@ void enter_app(AppId app)
     }
 
     if (app == AppId::VoiceDemo) {
-        app1_stop_requested = false;
+        supervisor_set_app1_stop_requested(false, "start voice demo");
         set_app1_status("Starting", "Local recording upload");
         if (xiaozhi_task_handle == nullptr) {
             xTaskCreatePinnedToCore([](void*) {
                 ::run_xiaozhi_ota_probe();
                 xiaozhi_task_handle = nullptr;
                 vTaskDelete(nullptr);
-            }, "app1_voice", kApp1TaskStackBytes, nullptr, 3, &xiaozhi_task_handle, 1);
+            }, "realtime_audio_task", kApp1TaskStackBytes, nullptr, 5, &xiaozhi_task_handle, 0);
         } else {
             set_app1_status("Running", "Probe task is already running");
         }
@@ -991,14 +1066,14 @@ void enter_app(AppId app)
     }
 
     if (app == AppId::StreamTtsDemo) {
-        app2_stop_requested = false;
+        supervisor_set_app2_stop_requested(false, "start stream tts demo");
         set_tts_status("Starting", "Aliyun PCM streaming TTS");
         if (stream_tts_task_handle == nullptr) {
             xTaskCreatePinnedToCore([](void*) {
                 ::run_stream_tts_demo();
                 stream_tts_task_handle = nullptr;
                 vTaskDelete(nullptr);
-            }, "app2_pcm_tts", kApp2TaskStackBytes, nullptr, 3, &stream_tts_task_handle, 1);
+            }, "speech_demo_task", kApp2TaskStackBytes, nullptr, 5, &stream_tts_task_handle, 1);
         } else {
             set_tts_status("Running", "Stream TTS task is already running");
         }
@@ -1012,7 +1087,7 @@ void enter_app(AppId app)
                 ::run_camera_upload_app();
                 camera_upload_task_handle = nullptr;
                 vTaskDelete(nullptr);
-            }, "app3_camera", kCameraTaskStackBytes, nullptr, 3, &camera_upload_task_handle, 1);
+            }, "vision_task", kCameraTaskStackBytes, nullptr, 3, &camera_upload_task_handle, 0);
         } else {
             set_camera_status("Running", "Camera upload already running");
         }
@@ -1020,14 +1095,14 @@ void enter_app(AppId app)
     }
 
     if (app == AppId::TrackingUser) {
-        tracking_stop_requested = false;
+        supervisor_set_tracking_stop_requested(false, "start tracking demo");
         set_tracking_status("Starting", "Taking photo");
         if (tracking_task_handle == nullptr) {
             xTaskCreatePinnedToCore([](void*) {
                 ::run_tracking_user_demo();
                 tracking_task_handle = nullptr;
                 vTaskDelete(nullptr);
-            }, "app3_tracking", kTrackingTaskStackBytes, nullptr, 3, &tracking_task_handle, 1);
+            }, "vision_track_task", kTrackingTaskStackBytes, nullptr, 3, &tracking_task_handle, 0);
         } else {
             set_tracking_status("Running", "Camera task is already running");
         }
@@ -1102,7 +1177,7 @@ void update_wifi_connect()
 void update_voice_demo()
 {
     if (back_requested()) {
-        app1_stop_requested = true;
+        supervisor_set_app1_stop_requested(true, "voice demo back", SupervisorSafetyClass::LocalStop);
         enter_app(AppId::Launcher);
         return;
     }
@@ -1111,7 +1186,7 @@ void update_voice_demo()
 void update_stream_tts_demo()
 {
     if (back_requested()) {
-        app2_stop_requested = true;
+        supervisor_set_app2_stop_requested(true, "stream tts back", SupervisorSafetyClass::LocalStop);
         codec_audio_output_stop();
         enter_app(AppId::Launcher);
         return;
@@ -1129,7 +1204,7 @@ void update_camera_upload()
 void update_tracking_user()
 {
     if (back_requested()) {
-        tracking_stop_requested = true;
+        supervisor_set_tracking_stop_requested(true, "tracking back", SupervisorSafetyClass::LocalStop);
         enter_app(AppId::Launcher);
         return;
     }

@@ -50,6 +50,26 @@ struct XiaopaiStateSnapshot {
     bool can_sample_mic = false;
 };
 
+enum class SupervisorJobKind : uint8_t {
+    AudioInput,
+    Speech,
+    Vision,
+    Motion,
+    Ui,
+    Control,
+    Maintenance,
+    FaultRecovery,
+};
+
+enum class SupervisorSafetyClass : uint8_t {
+    Normal,
+    LocalStop,
+    SafetyStop,
+    FaultRecovery,
+};
+
+using SupervisorCallback = void (*)(uintptr_t arg);
+
 void xiaopai_state_init(const LocalVoiceStateHooks& hooks);
 XiaopaiStateSnapshot xiaopai_state_get();
 const char* xiaopai_state_name(LocalVoiceState state);
@@ -58,10 +78,17 @@ const char* xiaopai_interaction_state_name(InteractionState state);
 bool xiaopai_state_set(LocalVoiceState state, const char* reason = nullptr);
 bool xiaopai_state_set(const char* state, const char* reason = nullptr);
 void xiaopai_state_apply_outputs(LocalVoiceState state);
-void xiaopai_state_begin_speaking(const char* reason);
-void xiaopai_state_end_speaking(const char* reason);
-void xiaopai_system_mode_set(SystemMode mode, const char* reason = nullptr);
-void xiaopai_cancel_current(const char* reason = nullptr);
-void xiaopai_audio_source_commit(MicSource source, const char* reason = nullptr);
+bool xiaopai_state_begin_recording(const char* reason);
+bool xiaopai_state_end_recording(const char* reason);
+bool xiaopai_state_begin_speaking(const char* reason);
+bool xiaopai_state_end_speaking(const char* reason);
+bool xiaopai_system_mode_set(SystemMode mode, const char* reason = nullptr);
+bool xiaopai_cancel_current(const char* reason = nullptr);
+bool xiaopai_audio_source_commit(MicSource source, const char* reason = nullptr);
 JobHeader xiaopai_make_job_header(const char* cmd_id, uint32_t boot_id, uint64_t deadline_tick);
 bool xiaopai_job_is_current(const JobHeader& header, uint64_t now_tick);
+bool xiaopai_supervisor_admit(SupervisorJobKind kind, SupervisorSafetyClass safety_class,
+                              const char* reason = nullptr);
+bool xiaopai_supervisor_run(SupervisorCallback callback, uintptr_t arg,
+                            SupervisorSafetyClass safety_class = SupervisorSafetyClass::Normal,
+                            const char* reason = nullptr);

@@ -453,7 +453,7 @@ class VoiceRecordingGuard {
 public:
     VoiceRecordingGuard()
     {
-        voice_recording_active = true;
+        active_ = supervisor_set_voice_recording_active(true, "voice recording begin");
     }
 
     ~VoiceRecordingGuard()
@@ -466,7 +466,7 @@ public:
         if (!active_) {
             return;
         }
-        voice_recording_active = false;
+        supervisor_set_voice_recording_active(false, "voice recording end");
         active_ = false;
     }
 
@@ -474,7 +474,7 @@ public:
     VoiceRecordingGuard& operator=(const VoiceRecordingGuard&) = delete;
 
 private:
-    bool active_ = true;
+    bool active_ = false;
 };
 
 static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder, int encoder_frame_samples,
@@ -492,6 +492,10 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
              audio_input_source_name(input.active_source),
              audio_input_source_label(input.active_source));
     VoiceRecordingGuard recording_guard;
+    if (!voice_recording_active) {
+        set_app1_status("Rejected", "Audio input is gated by supervisor", "", "", false, false);
+        return true;
+    }
     set_app1_status("Recording", audio_input_source_label(input.active_source), "Sending Opus to Xiaozhi", "");
     update_listening_light_level(first_samples, first_count);
     std::vector<int16_t> frame(encoder_frame_samples);
@@ -957,7 +961,7 @@ static void run_xiaozhi_speech_loop()
     auto close_ws = [&]() {
         if (realtime_tts_playback_active) {
             request_speak_preempt("websocket reconnect");
-            app2_stop_requested = false;
+            supervisor_set_app2_stop_requested(false, "websocket reconnect");
         }
         if (ws != nullptr) {
             esp_transport_close(ws);

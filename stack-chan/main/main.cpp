@@ -45,6 +45,7 @@
 #include "sdkconfig.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdlib>
 #include <cmath>

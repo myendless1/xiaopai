@@ -235,10 +235,15 @@ void run_stream_tts_demo()
         ESP_LOGE(TAG, "audio_service_start failed");
         return;
     }
+    if (!supervisor_set_speech_playback_active(true, "stream tts demo")) {
+        set_tts_status("Rejected", "Speech is gated by supervisor", "", "", false, false);
+        return;
+    }
     apply_speaker_volume();
-    app2_stop_requested = false;
+    supervisor_set_app2_stop_requested(false, "stream tts demo");
     stream_tts_pcm();
     audio_service_wait_playback_idle(pdMS_TO_TICKS(1000));
+    supervisor_set_speech_playback_active(false, "stream tts demo finished");
 }
 
 static bool http_get_string(const std::string& url, std::string* response, int timeout_ms)
@@ -497,7 +502,7 @@ static void stop_speaking_light_animation()
 
 static void request_speak_preempt(const char* reason)
 {
-    app2_stop_requested = true;
+    supervisor_set_app2_stop_requested(true, "speak preempt", SupervisorSafetyClass::LocalStop);
     stop_speaking_light_animation();
     if (realtime_tts_playback_active) {
         audio_service_abort_playback();
@@ -523,7 +528,10 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
         return true;
     }
 
-    xiaopai_state_begin_speaking("speak command");
+    if (!supervisor_set_speech_playback_active(true, "speak command")) {
+        return false;
+    }
+    JobHeader playback_job = xiaopai_make_job_header("", xiaopai_boot_id, 0);
     bool should_pause_listener = pause_voice_listener || xiaozhi_task_handle != nullptr;
     VoiceListenerPauseGuard* voice_pause =
         should_pause_listener ? new VoiceListenerPauseGuard("speak command") : nullptr;
@@ -537,26 +545,28 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
             xSemaphoreGive(audio_mutex);
         }
         delete voice_pause;
-        xiaopai_state_end_speaking("speak begin failed");
+        supervisor_set_speech_playback_active(false, "speak begin failed");
         return false;
     }
     apply_speaker_volume();
-    app2_stop_requested = false;
-    speech_playback_active = true;
+    supervisor_set_app2_stop_requested(false, "speak command");
     expression_state_start_speech_visual_feedback();
     const char* selected_cache_name = cache_name != nullptr && cache_name[0] != '\0' ? cache_name : "";
     bool ok = selected_cache_name[0] != '\0' ? stream_cached_reply_pcm(selected_cache_name, text)
                                              : stream_tts_pcm_for_text(text, voice, sample_rate, volume, speech_rate,
                                                                        pitch_rate);
+    bool current_completion = xiaopai_job_is_current(playback_job, xTaskGetTickCount());
+    if (!current_completion) {
+        ESP_LOGI(TAG, "Discarding stale speak completion: generation or cancellation changed");
+    }
     expression_state_stop_speech_visual_feedback();
     codec_audio_output_end();
-    speech_playback_active = false;
     if (audio_mutex != nullptr) {
         xSemaphoreGive(audio_mutex);
     }
     delete voice_pause;
-    xiaopai_state_end_speaking("speak command finished");
-    return ok;
+    supervisor_set_speech_playback_active(false, "speak command finished");
+    return ok && current_completion;
 }
 
 static bool execute_speak_command(const char* text)
@@ -608,7 +618,7 @@ static void run_speak_command_loop()
         }
 
         wait_for_voice_recording_to_finish();
-        app2_stop_requested = false;
+        supervisor_set_app2_stop_requested(false, "speak command loop");
         speak_command_active = true;
         bool ok = execute_speak_command_internal(item.text, item.pause_voice_listener, item.cache_name, item.voice,
                                                  item.sample_rate, item.volume, item.speech_rate, item.pitch_rate);
@@ -631,7 +641,7 @@ static void start_speak_command_service()
     if (speak_command_task_handle == nullptr) {
         BaseType_t created = xTaskCreatePinnedToCore([](void*) {
             run_speak_command_loop();
-        }, "speak_cmd", kSpeakCommandTaskStackBytes, nullptr, 3, &speak_command_task_handle, 0);
+        }, "speech_task", kSpeakCommandTaskStackBytes, nullptr, 5, &speak_command_task_handle, 1);
         if (created == pdPASS) {
             ESP_LOGI(TAG, "Speak command task created");
         } else {

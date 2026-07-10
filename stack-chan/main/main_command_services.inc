@@ -125,6 +125,10 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
     }
 
     if (type == "audio_test" || type == "codec_test" || type == "tone") {
+        if (!xiaopai_supervisor_admit(SupervisorJobKind::Speech, SupervisorSafetyClass::Normal,
+                                      "audio test command")) {
+            return false;
+        }
         int sample_rate = json_int_value(payload, "sample_rate", kTtsStreamSampleRate);
         int tone_hz = json_int_value(payload, "freq", json_int_value(payload, "tone_hz", 1000));
         int duration_ms = json_int_value(payload, "duration_ms", 1200);
@@ -212,10 +216,18 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
         return execute_volume_command(payload);
     }
     if (type == "capture_image" || type == "track_once" || type == "camera") {
+        if (!xiaopai_supervisor_admit(SupervisorJobKind::Vision, SupervisorSafetyClass::Normal,
+                                      "camera command")) {
+            return false;
+        }
         run_camera_upload_app();
         return true;
     }
     if (type == "find_owner" || type == "locate_owner") {
+        if (!xiaopai_supervisor_admit(SupervisorJobKind::Vision, SupervisorSafetyClass::Normal,
+                                      "find owner command")) {
+            return false;
+        }
         int rounds = static_cast<int>(json_number_value(payload, "rounds", kFindOwnerMaxRounds));
         float gain_x = static_cast<float>(json_number_value(payload, "gain_x", kFindOwnerYawGain));
         float gain_y = static_cast<float>(json_number_value(payload, "gain_y", kFindOwnerPitchGain));
@@ -234,6 +246,10 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
                                       wait_for_speech);
     }
     if (type == "motion" || type == "move") {
+        if (!xiaopai_supervisor_admit(SupervisorJobKind::Motion, SupervisorSafetyClass::Normal,
+                                      "motion command")) {
+            return false;
+        }
         std::string motion_type = json_string_value(payload, "type");
         if (motion_type == "motion" || motion_type == "move") {
             motion_type.clear();
@@ -268,6 +284,10 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
         return move_head_to_tracking_angles(pan, tilt, duration_ms);
     }
     if (type == "node_head" || type == "nod_head") {
+        if (!xiaopai_supervisor_admit(SupervisorJobKind::Motion, SupervisorSafetyClass::Normal,
+                                      "nod head command")) {
+            return false;
+        }
         return run_node_head_command();
     }
     if (type == "sequence") {
@@ -311,14 +331,14 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
         return ok;
     }
     if (type == "stop") {
-        app2_stop_requested = true;
+        supervisor_set_app2_stop_requested(true, "stop command", SupervisorSafetyClass::LocalStop);
         codec_audio_output_stop();
         expression_state_set("stopped");
         xiaopai_state_set(LocalVoiceState::Idle, "stop command");
         return true;
     }
     if (type == "sleep") {
-        app2_stop_requested = true;
+        supervisor_set_app2_stop_requested(true, "sleep command", SupervisorSafetyClass::LocalStop);
         codec_audio_output_stop();
         show_sleep_dark_listening("sleep command");
         return true;
@@ -507,13 +527,13 @@ static void log_memory_snapshot(const char* reason)
              static_cast<unsigned>(kMemoryMonitorTaskStackBytes), static_cast<unsigned>(kWifiTaskStackBytes));
 
     log_task_stack_watermark("boot", boot_task_handle);
-    log_task_stack_watermark("bg_voice", xiaozhi_task_handle);
-    log_task_stack_watermark("bg_command", command_task_handle);
+    log_task_stack_watermark("realtime_audio_task", xiaozhi_task_handle);
+    log_task_stack_watermark("control_transport_task", command_task_handle);
     log_task_stack_watermark("wifi_debug", wifi_debug_task_handle);
-    log_task_stack_watermark("speak_cmd", speak_command_task_handle);
-    log_task_stack_watermark("screen_touch", head_touch_task_handle);
+    log_task_stack_watermark("speech_task", speak_command_task_handle);
+    log_task_stack_watermark("ui_task", head_touch_task_handle);
     log_task_stack_watermark("touch_audio", head_touch_audio_task_handle);
-    log_task_stack_watermark("sedentary_owner", sedentary_task_handle);
+    log_task_stack_watermark("vision_health_task", sedentary_task_handle);
     log_task_stack_watermark("mem_mon", memory_monitor_task_handle);
 }
 
@@ -544,7 +564,7 @@ static void start_memory_monitor_service()
 
 static void start_background_services()
 {
-    current_app = AppId::WifiConnect;
+    supervisor_set_current_app(AppId::WifiConnect, "wifi provisioning command");
     voice_status_screen_suppressed = false;
 
     if (boot_task_handle != nullptr) {
@@ -561,7 +581,7 @@ static void start_background_services()
         check_and_apply_firmware_ota_once();
         log_memory_snapshot("after ota");
 
-        current_app = AppId::VoiceDemo;
+        supervisor_set_current_app(AppId::VoiceDemo, "wifi provisioning done");
         voice_status_screen_suppressed = true;
         expression_state_set(kDefaultExpression);
         enable_servo_power();
@@ -582,13 +602,13 @@ static void start_background_services()
         log_memory_snapshot("after helper tasks");
 
         if (xiaozhi_task_handle == nullptr) {
-            app1_stop_requested = false;
+            supervisor_set_app1_stop_requested(false, "command starts voice demo");
             log_memory_snapshot("before bg_voice create");
             BaseType_t created = xTaskCreatePinnedToCore([](void*) {
                 run_xiaozhi_ota_probe();
                 xiaozhi_task_handle = nullptr;
                 vTaskDelete(nullptr);
-            }, "bg_voice", kApp1TaskStackBytes, nullptr, 3, &xiaozhi_task_handle, 1);
+            }, "realtime_audio_task", kApp1TaskStackBytes, nullptr, 5, &xiaozhi_task_handle, 0);
             if (created == pdPASS) {
                 ESP_LOGI(TAG, "Realtime voice task created");
             } else {
@@ -605,7 +625,7 @@ static void start_background_services()
                 run_command_http_loop();
                 command_task_handle = nullptr;
                 vTaskDelete(nullptr);
-            }, "bg_command", kCommandTaskStackBytes, nullptr, 4, &command_task_handle, 0);
+            }, "control_transport_task", kCommandTaskStackBytes, nullptr, 5, &command_task_handle, 0);
             if (created == pdPASS) {
                 ESP_LOGI(TAG, "HTTP command long-poll task created");
             } else {
