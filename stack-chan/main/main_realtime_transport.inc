@@ -47,7 +47,7 @@ static bool play_realtime_opus_frame(const uint8_t* data, size_t len)
         return false;
     }
 
-    if (!audio_service_play_opus_frame_16k(data, len)) {
+    if (!audio_service_play_opus_frame_24k(data, len)) {
         ESP_LOGE(TAG, "Realtime Opus playback failed");
         return false;
     }
@@ -172,7 +172,7 @@ static bool handle_ws_text_message(esp_transport_handle_t ws, const char* data, 
         std::string state = json_string_value(root, "state");
         ESP_LOGI(TAG, "Device state=%s", state.c_str());
         if (state == "sleep" || state == "sleeping" || state == "idle") {
-            show_sleep_dark_listening("ws device_state");
+            show_dialog_sleeping("ws device_state");
         } else if (state == "wake" || state == "awake" || state == "listen" || state == "listening") {
             mark_user_interaction("ws device_state wake");
             xiaopai_state_set(LocalVoiceState::Listening, "ws device_state");

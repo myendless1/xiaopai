@@ -171,8 +171,9 @@ class RealtimeConfig:
     token_getter: Callable[[], str] | None = None
     aliyun_asr_ws_url: str = ""
     aliyun_tts_ws_url: str = ""
-    voice: str = "zhimiao_emo"
-    sample_rate: int = 24000
+    voice: str = "zhibing_emo"
+    upstream_sample_rate: int = 16000
+    downstream_sample_rate: int = 24000
     volume: int = 80
     speech_rate: int = 0
     pitch_rate: int = 0
@@ -279,7 +280,7 @@ class RealtimeAsrBridge:
 
     def push_opus(self, opus_frame: bytes) -> None:
         try:
-            pcm = self.manager.opus.decode(opus_frame)
+            pcm = self.manager.upstream_opus.decode(opus_frame)
         except OpusUnavailableError as exc:
             self.manager.logger(f"实时 ASR 不可用: {exc}")
             self.stop(graceful=False)
@@ -304,7 +305,7 @@ class RealtimeAsrBridge:
                 token_getter=self.manager.config.token_getter,
                 region=self.manager.config.region,
                 ws_url=self.manager.config.aliyun_asr_ws_url,
-                sample_rate=self.manager.config.sample_rate,
+                sample_rate=self.manager.config.upstream_sample_rate,
             )
             ws, task_id = asr.connect()
             self._ws = ws
@@ -361,7 +362,7 @@ class RealtimeAsrBridge:
                 stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
                 self._capture_path = os.path.join(capture_dir, f"realtime-{safe_device}-{stamp}.wav")
                 self._capture_file = open(self._capture_path, "wb")
-                self._capture_file.write(_wav_header(0, self.manager.config.sample_rate))
+                self._capture_file.write(_wav_header(0, self.manager.config.upstream_sample_rate))
             self._capture_file.write(pcm)
             self._capture_pcm_bytes += len(pcm)
 
@@ -373,7 +374,7 @@ class RealtimeAsrBridge:
             self._capture_file = None
             try:
                 fp.seek(0)
-                fp.write(_wav_header(self._capture_pcm_bytes, self.manager.config.sample_rate))
+                fp.write(_wav_header(self._capture_pcm_bytes, self.manager.config.upstream_sample_rate))
                 fp.close()
                 self.manager.logger(
                     "实时 ASR 音频已保存: "
@@ -387,7 +388,7 @@ class RealtimeAsrBridge:
                             "path": self._capture_path,
                             "bytes": self._capture_pcm_bytes,
                             "audio_format": "wav",
-                            "sample_rate": self.manager.config.sample_rate,
+                            "sample_rate": self.manager.config.upstream_sample_rate,
                         }
                     )
             except Exception as exc:
@@ -476,13 +477,21 @@ class RealtimeManager:
         self._started = threading.Event()
         self._startup_error: BaseException | None = None
         self._sessions: dict[str, RealtimeDeviceSession] = {}
+        self._dialog_awake_by_device: dict[str, bool] = {}
         self._sessions_lock = threading.Lock()
-        self._opus = OpusCodec(sample_rate=config.sample_rate)
-        self._pcm_bytes_per_frame = self._opus.samples_per_frame * self._opus.channels * 2
+        self._upstream_opus = OpusCodec(sample_rate=config.upstream_sample_rate)
+        self._downstream_opus = OpusCodec(sample_rate=config.downstream_sample_rate)
+        self._downstream_pcm_bytes_per_frame = (
+            self._downstream_opus.samples_per_frame * self._downstream_opus.channels * 2
+        )
 
     @property
-    def opus(self) -> OpusCodec:
-        return self._opus
+    def upstream_opus(self) -> OpusCodec:
+        return self._upstream_opus
+
+    @property
+    def downstream_opus(self) -> OpusCodec:
+        return self._downstream_opus
 
     @property
     def enabled(self) -> bool:
@@ -589,6 +598,15 @@ class RealtimeManager:
                 return next(iter(self._sessions.values()))
             return None
 
+    def _remembered_dialog_awake(self, device_id: str) -> bool:
+        with self._sessions_lock:
+            return self._dialog_awake_by_device.get(device_id, True)
+
+    def _remember_dialog_awake(self, session: RealtimeDeviceSession, awake: bool) -> None:
+        session.dialog_awake = awake
+        with self._sessions_lock:
+            self._dialog_awake_by_device[session.device_id] = awake
+
     async def _dispatch(self, websocket, path=None) -> None:
         if path is None:
             request = getattr(websocket, "request", None)
@@ -606,14 +624,14 @@ class RealtimeManager:
             websocket=websocket,
             session_id=make_request_id("sess"),
         )
-        session.dialog_awake = True
+        session.dialog_awake = self._remembered_dialog_awake(session.device_id)
         self._register_session(session)
         try:
             hello = json_dumps(build_hello(session.session_id))
             hello_resent_after_device_hello = False
             await websocket.send(hello)
             self.logger(f"小智实时服务端 hello 已发送: device_id={session.device_id} bytes={len(hello)}")
-            await self._send_device_state(session, "listening")
+            await self._send_device_state(session, "listening" if session.dialog_awake else "sleep")
             async for frame in websocket:
                 if isinstance(frame, bytes):
                     session.last_seen = time.time()
@@ -639,6 +657,7 @@ class RealtimeManager:
                     device_id = safe_realtime_device_id(extract_device_id_from_hello(message, session.device_id))
                     self.logger(f"小智实时 hello 已收到: device_id={device_id} type={message.get('type')!r}")
                     self._update_session_device_id(session, device_id)
+                    await self._send_device_state(session, "listening" if session.dialog_awake else "sleep")
                     if not hello_resent_after_device_hello:
                         await websocket.send(hello)
                         hello_resent_after_device_hello = True
@@ -705,6 +724,7 @@ class RealtimeManager:
                 self._sessions.pop(old_device_id, None)
             replaced = self._sessions.get(device_id)
             session.device_id = device_id
+            session.dialog_awake = self._dialog_awake_by_device.get(device_id, session.dialog_awake)
             self._sessions[device_id] = session
         if replaced is not None and replaced is not session:
             self._retire_replaced_session(replaced, f"device id replaced: {device_id}")
@@ -815,25 +835,36 @@ class RealtimeManager:
         )
 
     async def _handle_final_text(self, session: RealtimeDeviceSession, text: str) -> None:
+        woke_from_sleep = False
+        if not session.dialog_awake:
+            if has_realtime_wake_word(text):
+                woke_from_sleep = True
+                self._remember_dialog_awake(session, True)
+                await self._send_device_state(session, "listening")
+                if is_realtime_wake_only_text(text):
+                    self._mark(session, "wake_reply_start")
+                    await self._speak(session, random.choice(REALTIME_WAKE_REPLIES))
+                    return
+            else:
+                self._mark(session, "dialog_sleeping_ignore")
+                await self._send_device_state(session, "sleep")
+                return
+
         if has_realtime_sleep_word(text):
             reply_name, reply_text = realtime_sleep_reply_event_for_text(text)
             self._mark(session, "sleep_reply_start")
             await self._speak(session, reply_text, cache_name=reply_name)
-            session.dialog_awake = False
+            self._remember_dialog_awake(session, False)
             self._mark(session, "dialog_sleep")
             await self._send_device_state(session, "sleep")
             return
-        if has_realtime_wake_word(text):
-            session.dialog_awake = True
+        if has_realtime_wake_word(text) and not woke_from_sleep:
+            self._remember_dialog_awake(session, True)
             await self._send_device_state(session, "listening")
             if is_realtime_wake_only_text(text):
                 self._mark(session, "wake_reply_start")
                 await self._speak(session, random.choice(REALTIME_WAKE_REPLIES))
                 return
-        elif not session.dialog_awake:
-            self._mark(session, "dialog_sleeping_ignore")
-            await self._send_device_state(session, "sleep")
-            return
         if self.config.morrow_submit_callback is not None:
             try:
                 self._mark(session, "morrow_submit")
@@ -929,7 +960,7 @@ class RealtimeManager:
             region=self.config.region,
             ws_url=self.config.aliyun_tts_ws_url,
             voice=self.config.voice,
-            sample_rate=self.config.sample_rate,
+            sample_rate=self.config.downstream_sample_rate,
             volume=self.config.volume,
             speech_rate=self.config.speech_rate,
             pitch_rate=self.config.pitch_rate,
@@ -950,7 +981,7 @@ class RealtimeManager:
 
         pcm_buffer = bytearray()
         first_frame = True
-        frame_duration = self._opus.samples_per_frame / self.config.sample_rate
+        frame_duration = self._downstream_opus.samples_per_frame / self.config.downstream_sample_rate
         next_send_at = loop.time()
         try:
             while True:
@@ -962,9 +993,9 @@ class RealtimeManager:
                 if item and "tts_first_pcm" not in session.latency_marks:
                     self._mark(session, "tts_first_pcm")
                 pcm_buffer.extend(item)
-                while len(pcm_buffer) >= self._pcm_bytes_per_frame:
-                    pcm_frame = bytes(pcm_buffer[: self._pcm_bytes_per_frame])
-                    del pcm_buffer[: self._pcm_bytes_per_frame]
+                while len(pcm_buffer) >= self._downstream_pcm_bytes_per_frame:
+                    pcm_frame = bytes(pcm_buffer[: self._downstream_pcm_bytes_per_frame])
+                    del pcm_buffer[: self._downstream_pcm_bytes_per_frame]
                     
                     if not first_frame:
                         next_send_at += frame_duration
@@ -974,12 +1005,12 @@ class RealtimeManager:
                         elif now - next_send_at > frame_duration:
                             next_send_at = now
                     
-                    await session.websocket.send(self._opus.encode(pcm_frame))
+                    await session.websocket.send(self._downstream_opus.encode(pcm_frame))
                     if "tts_first_opus_sent" not in session.latency_marks:
                         self._mark(session, "tts_first_opus_sent")
                     first_frame = False
             if pcm_buffer:
-                pcm_frame = bytes(pcm_buffer).ljust(self._pcm_bytes_per_frame, b"\x00")
+                pcm_frame = bytes(pcm_buffer).ljust(self._downstream_pcm_bytes_per_frame, b"\x00")
                 if not first_frame:
                     next_send_at += frame_duration
                     now = loop.time()
@@ -987,7 +1018,7 @@ class RealtimeManager:
                         await asyncio.sleep(next_send_at - now)
                     elif now - next_send_at > frame_duration:
                         next_send_at = now
-                await session.websocket.send(self._opus.encode(pcm_frame))
+                await session.websocket.send(self._downstream_opus.encode(pcm_frame))
                 if "tts_first_opus_sent" not in session.latency_marks:
                     self._mark(session, "tts_first_opus_sent")
         except OpusUnavailableError as exc:

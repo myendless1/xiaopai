@@ -440,6 +440,11 @@ static void show_sleep_dark_listening(const char* reason)
     set_light_strip_listening();
 }
 
+static void show_dialog_sleeping(const char* reason)
+{
+    xiaopai_state_set(LocalVoiceState::DialogSleeping, reason != nullptr ? reason : "dialog sleeping");
+}
+
 static bool auto_sleep_dark_due()
 {
     if (expression_state_get().sleep_dark || current_app == AppId::WifiConnect || !wifi_is_connected() ||

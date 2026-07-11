@@ -718,6 +718,13 @@ static void set_listening_outputs()
     }
 }
 
+static void set_dialog_sleeping_outputs()
+{
+    light_strip_listening_after_speech = false;
+    set_light_strip_sleeping();
+    expression_state_set("sleep_dark");
+}
+
 static void set_light_strip_speaking()
 {
     set_light_strip_color(kLightStripSpeakingR, kLightStripSpeakingG, kLightStripSpeakingB, 2);

@@ -219,24 +219,24 @@ Aliyun TTS endpoint. Text is split by sentence, synthesized with retries, and re
 For robot playback with a fixed debug voice, include the voice in the configured stream TTS URL, for example:
 
 ```text
-CONFIG_STACKCHAN_STREAM_TTS_URL = http://<lan-ip>:8091/stream-speak?voice=zhimiao_emo
+CONFIG_STACKCHAN_STREAM_TTS_URL = http://<lan-ip>:8091/stream-speak?voice=zhibing_emo
 ```
 
 Or test the raw stream directly:
 
 ```bash
 curl -G 'http://127.0.0.1:8091/stream-speak' \
-  --data-urlencode 'text=你好，我是知妙。' \
-  --data-urlencode 'voice=zhimiao_emo' \
-  -o /tmp/xiaopai-zhimiao.pcm
+  --data-urlencode 'text=你好，我是知冰。' \
+  --data-urlencode 'voice=zhibing_emo' \
+  -o /tmp/xiaopai-zhibing.pcm
 ```
 
 To make Xiaopai speak with that voice, send a command to the robot command queue:
 
 ```bash
 curl -G 'http://127.0.0.1:8091/command/speak' \
-  --data-urlencode 'text=你好，我是知妙。' \
-  --data-urlencode 'voice=zhimiao_emo' \
+  --data-urlencode 'text=你好，我是知冰。' \
+  --data-urlencode 'voice=zhibing_emo' \
   --data-urlencode 'interrupt=true'
 ```
 
@@ -368,8 +368,9 @@ Environment variables:
 | `STACKCHAN_REALTIME_LOCAL_TOKEN` | empty | Optional bearer token for realtime WebSocket clients |
 | `STACKCHAN_ALIYUN_REGION` | `shanghai` | Aliyun NLS region: `shanghai`, `beijing`, or `shenzhen` |
 | `STACKCHAN_ALIYUN_TTS_URL` | empty | Override TTS URL |
-| `STACKCHAN_ALIYUN_VOICE` | `zhimiao_emo` | Aliyun TTS voice |
-| `STACKCHAN_ALIYUN_SAMPLE_RATE` | `24000` | ASR raw PCM and TTS sample rate |
+| `STACKCHAN_ALIYUN_VOICE` | `zhibing_emo` | Aliyun TTS voice |
+| `STACKCHAN_ALIYUN_ASR_SAMPLE_RATE` | `16000` | Microphone/Opus/ASR upstream sample rate |
+| `STACKCHAN_ALIYUN_SAMPLE_RATE` | `24000` | TTS/Opus/playback downstream sample rate |
 | `STACKCHAN_ALIYUN_VOLUME` | `80` | TTS volume |
 | `STACKCHAN_ALIYUN_SPEECH_RATE` | `0` | TTS speech rate |
 | `STACKCHAN_ALIYUN_PITCH_RATE` | `0` | TTS pitch rate |

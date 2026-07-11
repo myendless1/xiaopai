@@ -45,7 +45,7 @@ TTS_URLS = {
     "beijing": "https://nls-gateway-cn-beijing.aliyuncs.com/stream/v1/tts",
     "shenzhen": "https://nls-gateway-cn-shenzhen.aliyuncs.com/stream/v1/tts",
 }
-DEFAULT_TTS_VOICE = "zhimiao_emo"
+DEFAULT_TTS_VOICE = "zhibing_emo"
 DEFAULT_OTA_FIRMWARE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "firmware")
 
 TOKEN_META_ENDPOINT = "https://nls-meta.cn-shanghai.aliyuncs.com/"
@@ -1199,6 +1199,7 @@ class AliyunVoiceServer(ThreadingHTTPServer):
     asr_url: str
     tts_url: str
     voice: str
+    asr_sample_rate: int
     sample_rate: int
     volume: int
     speech_rate: int
@@ -1315,6 +1316,8 @@ class Handler(BaseHTTPRequestHandler):
                     "image": "/upload-image",
                     "tts_format": "pcm_s16le",
                     "sample_rate": self.server.sample_rate,
+                    "asr_sample_rate": self.server.asr_sample_rate,
+                    "tts_sample_rate": self.server.sample_rate,
                     "channels": 1,
                     "voice": self.server.voice,
                     "expressions": list(AVAILABLE_EXPRESSIONS),
@@ -1600,6 +1603,8 @@ class Handler(BaseHTTPRequestHandler):
             "ws_path": getattr(self.server, "realtime_ws_path", "/ws"),
             "ws_port": getattr(self.server, "realtime_ws_port", 0),
             "devices": len(manager.devices_snapshot()) if manager else 0,
+            "upstream_sample_rate": manager.config.upstream_sample_rate if manager else self.server.asr_sample_rate,
+            "downstream_sample_rate": manager.config.downstream_sample_rate if manager else self.server.sample_rate,
         }
 
     def _ota_status(self) -> dict:
@@ -1861,7 +1866,7 @@ class Handler(BaseHTTPRequestHandler):
         path, query = self._path_query()
         device_id = self._device_id(query)
         self._mark_device_seen(device_id)
-        sample_rate = detect_wav_sample_rate(body) or self.server.sample_rate
+        sample_rate = detect_wav_sample_rate(body) or self.server.asr_sample_rate
         audio_format = "wav" if detect_wav_sample_rate(body) else "pcm"
         upload_mode = self.headers.get("X-Upload-Mode", "").strip().lower()
         save_only = (
@@ -4202,6 +4207,11 @@ def main():
     parser.add_argument("--region", choices=sorted(ASR_URLS), default=os.environ.get("STACKCHAN_ALIYUN_REGION", "shanghai"))
     parser.add_argument("--tts-url", default=os.environ.get("STACKCHAN_ALIYUN_TTS_URL", ""))
     parser.add_argument("--voice", default=os.environ.get("STACKCHAN_ALIYUN_VOICE", DEFAULT_TTS_VOICE))
+    parser.add_argument(
+        "--asr-sample-rate",
+        type=int,
+        default=int(os.environ.get("STACKCHAN_ALIYUN_ASR_SAMPLE_RATE", "16000")),
+    )
     parser.add_argument("--sample-rate", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_SAMPLE_RATE", "24000")))
     parser.add_argument("--volume", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_VOLUME", "80")))
     parser.add_argument("--speech-rate", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_SPEECH_RATE", "0")))
@@ -4433,6 +4443,18 @@ def main():
         help="Keep legacy HTTP command and upload APIs available.",
     )
     args = parser.parse_args()
+    if args.asr_sample_rate != 16000:
+        log_print(
+            f"设备上行ASR固定为16000Hz，忽略配置的采样率: {args.asr_sample_rate}",
+            file=sys.stderr,
+        )
+        args.asr_sample_rate = 16000
+    if args.sample_rate != 24000:
+        log_print(
+            f"设备下行音频固定为24000Hz，忽略配置的采样率: {args.sample_rate}",
+            file=sys.stderr,
+        )
+        args.sample_rate = 24000
 
     httpd = AliyunVoiceServer((args.host, args.port), Handler)
     httpd.access_key_id = optional_env("ALIYUN_AK_ID", "ALIYUN_ACCESS_KEY_ID")
@@ -4451,6 +4473,7 @@ def main():
     httpd.asr_url = ASR_URLS[args.region]
     httpd.tts_url = args.tts_url or TTS_URLS[args.region]
     httpd.voice = args.voice
+    httpd.asr_sample_rate = args.asr_sample_rate
     httpd.sample_rate = args.sample_rate
     httpd.volume = args.volume
     httpd.speech_rate = args.speech_rate
@@ -4576,7 +4599,8 @@ def main():
             aliyun_asr_ws_url=args.aliyun_asr_ws_url,
             aliyun_tts_ws_url=args.aliyun_tts_ws_url,
             voice=args.voice,
-            sample_rate=args.sample_rate,
+            upstream_sample_rate=args.asr_sample_rate,
+            downstream_sample_rate=args.sample_rate,
             volume=args.volume,
             speech_rate=args.speech_rate,
             pitch_rate=args.pitch_rate,
@@ -4674,7 +4698,10 @@ def main():
         log_print("  通过 HTTP 长轮询推送命令:")
         log_print(f"          设备拉取: GET http://{args.host}:{args.port}/device/next-command?device_id=...")
         log_print(f"          发送命令: GET http://{args.host}:{args.port}/command/speak?device_id=...&text=...")
-        log_print(f"  语音:  {args.voice}, pcm_s16le {args.sample_rate}Hz mono")
+        log_print(
+            f"  语音:  upstream ASR/Opus {args.asr_sample_rate}Hz; "
+            f"downstream {args.voice} pcm_s16le/Opus {args.sample_rate}Hz mono"
+        )
     try:
         httpd.serve_forever()
     finally:

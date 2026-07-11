@@ -63,8 +63,12 @@ static void run_head_touch_audio_loop()
                 }
                 continue;
             }
-            mark_user_interaction("screen touch");
             LocalVoiceState state = xiaopai_state_get().state;
+            if (state == LocalVoiceState::DialogSleeping) {
+                ESP_LOGI(TAG, "Screen touch ignored while dialog sleeping: %s", head_touch_event_name(event));
+                continue;
+            }
+            mark_user_interaction("screen touch");
             if (state == LocalVoiceState::Waiting) {
                 ESP_LOGI(TAG, "Screen touch ignored while waiting: %s", head_touch_event_name(event));
                 continue;

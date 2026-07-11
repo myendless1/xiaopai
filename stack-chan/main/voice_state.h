@@ -5,6 +5,7 @@
 enum class LocalVoiceState : uint8_t {
     Idle,
     Listening,
+    DialogSleeping,
     Waiting,
     Speaking,
 };
@@ -12,6 +13,7 @@ enum class LocalVoiceState : uint8_t {
 struct LocalVoiceStateHooks {
     void (*set_sleeping)();
     void (*set_listening)();
+    void (*set_dialog_sleeping)();
     void (*set_waiting)();
     void (*set_speaking)();
 };

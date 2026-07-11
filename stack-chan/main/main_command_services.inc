@@ -175,7 +175,7 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
             return true;
         }
         if (state == "sleep" || state == "sleeping" || state == "idle") {
-            show_sleep_dark_listening("state sleep command");
+            show_dialog_sleeping("state sleep command");
             return true;
         }
         if (state == "speak" || state == "speaking") {
@@ -340,7 +340,7 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
     if (type == "sleep") {
         supervisor_set_app2_stop_requested(true, "sleep command", SupervisorSafetyClass::LocalStop);
         codec_audio_output_stop();
-        show_sleep_dark_listening("sleep command");
+        show_dialog_sleeping("sleep command");
         return true;
     }
     if (type == "wake" || type == "listen" || type == "listening") {
@@ -726,8 +726,7 @@ static void start_background_services()
                 audio_service_register_heartbeat_task(heartbeat_task_handle);
             }
         }
-        // Temporarily disabled: periodic sedentary find-owner checks.
-        // start_sedentary_find_owner_service();
+        start_sedentary_find_owner_service();
         log_memory_snapshot("after helper tasks");
 
         if (!realtime_task_active.load()) {

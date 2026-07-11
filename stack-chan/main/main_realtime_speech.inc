@@ -480,6 +480,7 @@ private:
 static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder, int encoder_frame_samples,
                                        int encoder_outbuf_size, const int16_t* first_samples, int first_count)
 {
+    LocalVoiceState recognition_return_state = xiaopai_state_get().state;
     std::string start = make_listen_message("start");
     ESP_LOGI(TAG, "WS send listen start: %s", start.c_str());
     if (!send_ws_text(ws, start, "listen start")) {
@@ -570,7 +571,7 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     send_ws_text(ws, stop, "listen stop");
     recording_guard.finish();
 
-    set_light_strip_listening();
+    xiaopai_state_apply_outputs(xiaopai_state_get().state);
 
     if (interrupted) {
         ESP_LOGI(TAG, "Recognition interrupted by local state: paused=%d state=%s gen=%u->%u",
@@ -595,7 +596,10 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
         // Ending a recording moves the interaction state to WaitingReply.  When
         // ASR returns no text there will be no downstream reply to move it back
         // to Monitoring, so explicitly re-arm microphone sampling here.
-        xiaopai_state_set(LocalVoiceState::Listening, "ASR completed without STT text");
+        LocalVoiceState return_state = recognition_return_state == LocalVoiceState::DialogSleeping
+                                           ? LocalVoiceState::DialogSleeping
+                                           : LocalVoiceState::Listening;
+        xiaopai_state_set(return_state, "ASR completed without STT text");
     } else {
         set_app1_status("Recognized", stt_text.c_str(), "Listening again...", "", false, true);
     }
@@ -981,6 +985,7 @@ static void run_realtime_speech_loop()
     auto reconnect_ws = [&](const char* reason) -> bool {
         ESP_LOGW(TAG, "Realtime WebSocket reconnect requested: %s", reason != nullptr ? reason : "");
         close_ws();
+        bool resume_dialog_sleeping = xiaopai_state_get().state == LocalVoiceState::DialogSleeping;
         xiaopai_state_set(LocalVoiceState::Waiting, reason != nullptr ? reason : "websocket reconnect");
         set_app1_status("WS Reconnect", "Waiting for server", "Voice resumes automatically", "", true, false);
 
@@ -999,9 +1004,14 @@ static void run_realtime_speech_loop()
             }
             ws = open_realtime_websocket(parent);
             if (ws != nullptr) {
-                xiaopai_state_set(LocalVoiceState::Listening, "websocket connected");
-                set_app1_status("Listening", "WebSocket connected", "Ready for voice", "", true, false);
-                set_light_strip_listening();
+                LocalVoiceState resumed_state = resume_dialog_sleeping
+                                                    ? LocalVoiceState::DialogSleeping
+                                                    : LocalVoiceState::Listening;
+                xiaopai_state_set(resumed_state, "websocket connected");
+                set_app1_status(resume_dialog_sleeping ? "Dialog Sleeping" : "Listening",
+                                "WebSocket connected",
+                                resume_dialog_sleeping ? "Listening for wake word" : "Ready for voice",
+                                "", true, false);
                 return true;
             }
 
@@ -1019,9 +1029,8 @@ static void run_realtime_speech_loop()
         return;
     }
 
-    xiaopai_state_set(LocalVoiceState::Listening, "speech loop start");
     set_app1_status("Listening", "Ready for voice", "Speak to recognize", "", true, false);
-    set_light_strip_listening();
+    xiaopai_state_apply_outputs(xiaopai_state_get().state);
     std::vector<int16_t> probe(kVoiceProbeSamples);
     uint32_t last_status_ms = 0;
     uint32_t waiting_started_ms = 0;
@@ -1082,9 +1091,9 @@ static void run_realtime_speech_loop()
             waiting_started_ms = 0;
             stt_text.clear();
             xiaopai_state_apply_outputs(xiaopai_state_get().state);
-            if (xiaopai_state_get().state == LocalVoiceState::Idle) {
+            if (xiaopai_state_get().state == LocalVoiceState::Idle ||
+                xiaopai_state_get().state == LocalVoiceState::DialogSleeping) {
                 set_app1_status("Wake Listen", "Resumed", "Say 小派同学", "", true, false);
-                set_light_strip_listening();
             } else {
                 set_app1_status("Listening", "Resumed", "Speak to recognize", "", true, false);
             }
@@ -1111,7 +1120,8 @@ static void run_realtime_speech_loop()
                      audio_input_source_name(input.active_source),
                      audio_input_source_label(input.active_source),
                      static_cast<int>(input.dji_receiver_capture_ready));
-            if (xiaopai_state_get().state == LocalVoiceState::Idle) {
+            if (xiaopai_state_get().state == LocalVoiceState::Idle ||
+                xiaopai_state_get().state == LocalVoiceState::DialogSleeping) {
                 set_app1_status("Wake Listen", level_line, "Say 小派同学", "", true, false);
             } else {
                 set_app1_status("Listening", level_line, "Speak to recognize", "", true, false);
@@ -1139,7 +1149,9 @@ static void run_realtime_speech_loop()
                      static_cast<long>(level), kVoiceStartThreshold, xiaopai_state_name(xiaopai_state_get().state),
                      audio_input_source_name(input.active_source),
                      audio_input_source_label(input.active_source));
-            mark_user_interaction("voice activity");
+            if (xiaopai_state_get().state != LocalVoiceState::DialogSleeping) {
+                mark_user_interaction("voice activity");
+            }
             if (!run_one_speech_recognition(ws, encoder, encoder_frame_samples, encoder_outbuf_size, probe.data(),
                                             probe.size())) {
                 ESP_LOGW(TAG, "Speech recognition round failed; reconnecting WebSocket");
@@ -1148,7 +1160,7 @@ static void run_realtime_speech_loop()
                     break;
                 }
                 set_app1_status("Listening", "Reconnected", "Speak to recognize", "", true, false);
-                set_light_strip_listening();
+                xiaopai_state_apply_outputs(xiaopai_state_get().state);
             }
             last_status_ms = 0;
         }

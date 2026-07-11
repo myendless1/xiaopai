@@ -16,7 +16,7 @@ bool codec_audio_output_begin(int sample_rate, int volume_percent)
 
 bool codec_audio_output_write(const int16_t* samples, size_t sample_count)
 {
-    return audio_service_play_pcm_16k(samples, sample_count,
+    return audio_service_play_pcm_24k(samples, sample_count,
                                       AudioPlayOptions{.wait = true, .drop_oldest = false});
 }
 

@@ -78,10 +78,13 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
         }
     }
     if (esp_http_client_get_header(client, "X-Sample-Rate", &header_rate) == ESP_OK && header_rate != nullptr && header_rate[0] != '\0') {
-        if (strcmp(header_rate, "16000") != 0) {
-            ESP_LOGE(TAG, "Refusing playback: unsupported sample rate '%s' (expected 16000)", header_rate);
+        char expected_rate[12];
+        snprintf(expected_rate, sizeof(expected_rate), "%d", kTtsStreamSampleRate);
+        if (strcmp(header_rate, expected_rate) != 0) {
+            ESP_LOGE(TAG, "Refusing playback: unsupported sample rate '%s' (expected %s)",
+                     header_rate, expected_rate);
             if (update_tts_status) {
-                set_tts_status("Rate Err", "Expected 16000 Hz", header_rate, "", false, false);
+                set_tts_status("Rate Err", "Expected 24000 Hz", header_rate, "", false, false);
             }
             esp_http_client_close(client);
             esp_http_client_cleanup(client);
@@ -90,7 +93,7 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
     }
 
     if (update_tts_status) {
-        set_tts_status("Playing", "Receiving pcm_s16le", "16kHz mono stream", "");
+        set_tts_status("Playing", "Receiving pcm_s16le", "24kHz mono stream", "");
     }
 
     PcmPlaybackStats playback;
@@ -118,7 +121,7 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
             }
         }
         update_speaking_light_level(buffers[buffer_index], sample_pos);
-        bool ok = audio_service_play_pcm_16k(buffers[buffer_index], sample_pos,
+        bool ok = audio_service_play_pcm_24k(buffers[buffer_index], sample_pos,
                                              AudioPlayOptions{.wait = true, .drop_oldest = false});
         if (ok) {
             ++playback.queued_chunks;
@@ -220,13 +223,14 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
 static bool stream_tts_pcm_for_text(const char* text, const char* voice = nullptr, int sample_rate = 0, int volume = 0,
                                     int speech_rate = 0, int pitch_rate = 0, const char* cmd_id = "")
 {
+    (void)sample_rate;
     std::string url = make_server_url("/v3/tts");
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "device_id", mac_address().c_str());
     cJSON_AddStringToObject(root, "cmd_id", cmd_id != nullptr ? cmd_id : "");
     cJSON_AddStringToObject(root, "text", text != nullptr ? text : "");
     cJSON_AddStringToObject(root, "voice", voice != nullptr && voice[0] != '\0' ? voice : "default");
-    cJSON_AddNumberToObject(root, "sample_rate", sample_rate > 0 ? sample_rate : kTtsStreamSampleRate);
+    cJSON_AddNumberToObject(root, "sample_rate", kTtsStreamSampleRate);
     if (volume != 0) cJSON_AddNumberToObject(root, "volume", volume);
     if (speech_rate != 0) cJSON_AddNumberToObject(root, "speech_rate", speech_rate);
     if (pitch_rate != 0) cJSON_AddNumberToObject(root, "pitch_rate", pitch_rate);
@@ -604,6 +608,9 @@ static uint8_t listening_light_level_from_pcm(const int16_t* samples, size_t sam
 
 static void update_listening_light_level(const int16_t* samples, size_t sample_count)
 {
+    if (xiaopai_state_get().state == LocalVoiceState::DialogSleeping) {
+        return;
+    }
     uint32_t now = M5.millis();
     if (listening_light_last_update_ms != 0 &&
         static_cast<uint32_t>(now - listening_light_last_update_ms) < kListeningLightFrameMs) {

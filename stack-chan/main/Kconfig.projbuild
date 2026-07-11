@@ -70,8 +70,13 @@ menu "Xiaopai settings"
         default 24000
         range 16000 48000
 
-    config STACKCHAN_AUDIO_PROTOCOL_SAMPLE_RATE
-        int "Protocol sample rate"
+    config STACKCHAN_AUDIO_UPSTREAM_SAMPLE_RATE
+        int "Microphone/ASR upstream sample rate"
+        default 16000
+        range 8000 48000
+
+    config STACKCHAN_AUDIO_DOWNSTREAM_SAMPLE_RATE
+        int "TTS/playback downstream sample rate"
         default 24000
         range 8000 48000
 
@@ -99,7 +104,7 @@ menu "Xiaopai settings"
 
     config STACKCHAN_VOICE_START_THRESHOLD
         int "Voice start threshold"
-        default 2000
+        default 1500
 
     config STACKCHAN_VOICE_STOP_THRESHOLD
         int "Voice stop threshold"

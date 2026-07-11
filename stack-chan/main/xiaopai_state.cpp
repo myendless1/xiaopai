@@ -66,12 +66,16 @@ bool xiaopai_state_from_name(const char* name, LocalVoiceState* state)
     if (name == nullptr || state == nullptr) {
         return false;
     }
-    if (strcmp(name, "idle") == 0 || strcmp(name, "sleep") == 0 || strcmp(name, "sleeping") == 0) {
+    if (strcmp(name, "idle") == 0) {
         *state = LocalVoiceState::Idle;
         return true;
     }
     if (strcmp(name, "listening") == 0 || strcmp(name, "active") == 0 || strcmp(name, "awake") == 0) {
         *state = LocalVoiceState::Listening;
+        return true;
+    }
+    if (strcmp(name, "dialog_sleeping") == 0 || strcmp(name, "sleep") == 0 || strcmp(name, "sleeping") == 0) {
+        *state = LocalVoiceState::DialogSleeping;
         return true;
     }
     if (strcmp(name, "waiting") == 0 || strcmp(name, "thinking") == 0) {
@@ -90,6 +94,7 @@ InteractionState interaction_from_voice_state(LocalVoiceState state)
     switch (state) {
         case LocalVoiceState::Idle:
         case LocalVoiceState::Listening:
+        case LocalVoiceState::DialogSleeping:
             return InteractionState::Monitoring;
         case LocalVoiceState::Waiting:
             return InteractionState::WaitingReply;

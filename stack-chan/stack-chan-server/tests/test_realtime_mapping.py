@@ -3,6 +3,8 @@ import sys
 import types
 import unittest
 import asyncio
+import io
+import wave
 
 
 SRC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "src")
@@ -21,6 +23,7 @@ from realtime_server import (
     has_realtime_wake_word,
     is_realtime_wake_only_text,
     realtime_sleep_reply_event_for_text,
+    _wav_header,
 )
 from server import (
     AVAILABLE_ACTIONS,
@@ -39,6 +42,23 @@ from realtime_protocol import build_hello, build_stt
 
 
 class RealtimeMappingTest(unittest.TestCase):
+    def test_realtime_audio_rates_are_split_by_direction(self):
+        manager = RealtimeManager(RealtimeConfig(), logger=lambda _msg: None)
+        self.assertEqual(manager.config.upstream_sample_rate, 16000)
+        self.assertEqual(manager.upstream_opus.sample_rate, 16000)
+        self.assertEqual(manager.upstream_opus.samples_per_frame, 960)
+        self.assertEqual(manager.config.downstream_sample_rate, 24000)
+        self.assertEqual(manager.downstream_opus.sample_rate, 24000)
+        self.assertEqual(manager.downstream_opus.samples_per_frame, 1440)
+
+    def test_realtime_debug_wav_header_is_16khz(self):
+        pcm = b"\x00\x00" * 160
+        with wave.open(io.BytesIO(_wav_header(len(pcm), 16000) + pcm), "rb") as wav:
+            self.assertEqual(wav.getframerate(), 16000)
+            self.assertEqual(wav.getnchannels(), 1)
+            self.assertEqual(wav.getsampwidth(), 2)
+            self.assertEqual(wav.getnframes(), 160)
+
     def test_supported_face_values_are_expression_only(self):
         self.assertEqual(
             AVAILABLE_EXPRESSIONS,
@@ -164,7 +184,7 @@ class RealtimeMappingTest(unittest.TestCase):
         realtime_server.AliyunStreamingAsrSession = FakeAsrSession
         try:
             manager = RealtimeManager(RealtimeConfig(appkey="app", token_getter=lambda: "token"), logger=lambda _msg: None)
-            manager._opus = types.SimpleNamespace(decode=lambda _frame: b"pcm")
+            manager._upstream_opus = types.SimpleNamespace(decode=lambda _frame: b"pcm")
             submitted = []
             manager.submit_asr_text = lambda device_id, session_id, text, is_final: submitted.append(
                 (device_id, session_id, text, is_final)
@@ -252,6 +272,43 @@ class RealtimeMappingTest(unittest.TestCase):
         self.assertTrue(registered[0].dialog_awake)
         self.assertTrue(any('"type":"device_state"' in payload and '"state":"listening"' in payload for payload in websocket.sent))
         self.assertFalse(any('"type":"device_state"' in payload and '"state":"idle"' in payload for payload in websocket.sent))
+
+    def test_realtime_reconnect_preserves_dialog_sleep(self):
+        manager = RealtimeManager(RealtimeConfig(), logger=lambda _msg: None)
+        manager._dialog_awake_by_device["dev1"] = False
+        registered = []
+
+        class FakeWebSocket:
+            request_headers = {}
+
+            def __init__(self):
+                self.sent = []
+
+            async def send(self, payload):
+                self.sent.append(payload)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+            async def close(self, code=None, reason=None):
+                pass
+
+        original_register_session = manager._register_session
+
+        def capture_register_session(session):
+            registered.append(session)
+            original_register_session(session)
+
+        manager._register_session = capture_register_session
+        websocket = FakeWebSocket()
+        asyncio.run(manager._dispatch(websocket, "/ws?device_id=dev1"))
+
+        self.assertFalse(registered[0].dialog_awake)
+        self.assertTrue(any('"state":"sleep"' in payload for payload in websocket.sent))
+        self.assertFalse(any('"state":"listening"' in payload for payload in websocket.sent))
 
     def test_realtime_binary_without_listen_start_is_ignored(self):
         manager = RealtimeManager(RealtimeConfig(), logger=lambda _msg: None)
@@ -584,6 +641,36 @@ class RealtimeMappingTest(unittest.TestCase):
         self.assertIn((speak_payload["cache_name"], speak_payload["text"]), REALTIME_SLEEP_REPLY_REST_EVENTS)
         self.assertTrue(any('"type":"llm"' in payload for payload in sent))
         self.assertTrue(any('"state":"sleep"' in payload for payload in sent))
+
+    def test_realtime_sleeping_ignores_repeated_sleep_word(self):
+        class FakeWebSocket:
+            def __init__(self):
+                self.sent = []
+
+            async def send(self, payload):
+                self.sent.append(payload)
+
+        async def run_case():
+            manager = RealtimeManager(RealtimeConfig(), logger=lambda _msg: None)
+            spoken = []
+
+            async def fake_speak(_session, text, **_kwargs):
+                spoken.append(text)
+
+            manager._speak = fake_speak
+            websocket = FakeWebSocket()
+            session = RealtimeDeviceSession(device_id="dev1", websocket=websocket, session_id="sess1")
+            session.dialog_awake = True
+            await manager._handle_final_text(session, "拜拜")
+            await manager._handle_final_text(session, "今天天气怎么样")
+            await manager._handle_final_text(session, "拜拜")
+            return session.dialog_awake, spoken, websocket.sent, session.latency_marks
+
+        awake, spoken, sent, marks = asyncio.run(run_case())
+        self.assertFalse(awake)
+        self.assertEqual(len(spoken), 1)
+        self.assertIn("dialog_sleeping_ignore", marks)
+        self.assertEqual(sum('"state":"sleep"' in payload for payload in sent), 3)
 
     def test_tts_iter_pcm_chunks_streams_binary_frames(self):
         class FakeWebSocket:

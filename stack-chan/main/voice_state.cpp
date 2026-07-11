@@ -26,6 +26,8 @@ const char* local_voice_state_name(LocalVoiceState state_value)
             return "idle";
         case LocalVoiceState::Listening:
             return "listening";
+        case LocalVoiceState::DialogSleeping:
+            return "dialog_sleeping";
         case LocalVoiceState::Waiting:
             return "waiting";
         case LocalVoiceState::Speaking:
@@ -59,7 +61,8 @@ bool local_voice_is_speaking()
 
 bool local_voice_can_sample_mic()
 {
-    return state == LocalVoiceState::Idle || state == LocalVoiceState::Listening;
+    return state == LocalVoiceState::Idle || state == LocalVoiceState::Listening ||
+           state == LocalVoiceState::DialogSleeping;
 }
 
 void local_voice_apply_outputs(LocalVoiceState state_value)
@@ -71,6 +74,10 @@ void local_voice_apply_outputs(LocalVoiceState state_value)
     } else if (state_value == LocalVoiceState::Listening) {
         if (hooks.set_listening != nullptr) {
             hooks.set_listening();
+        }
+    } else if (state_value == LocalVoiceState::DialogSleeping) {
+        if (hooks.set_dialog_sleeping != nullptr) {
+            hooks.set_dialog_sleeping();
         }
     } else if (state_value == LocalVoiceState::Waiting) {
         if (hooks.set_waiting != nullptr) {

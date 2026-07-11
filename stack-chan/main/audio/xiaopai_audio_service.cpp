@@ -49,8 +49,11 @@
 #ifndef CONFIG_STACKCHAN_AUDIO_HW_SAMPLE_RATE
 #define CONFIG_STACKCHAN_AUDIO_HW_SAMPLE_RATE 24000
 #endif
-#ifndef CONFIG_STACKCHAN_AUDIO_PROTOCOL_SAMPLE_RATE
-#define CONFIG_STACKCHAN_AUDIO_PROTOCOL_SAMPLE_RATE 24000
+#ifndef CONFIG_STACKCHAN_AUDIO_UPSTREAM_SAMPLE_RATE
+#define CONFIG_STACKCHAN_AUDIO_UPSTREAM_SAMPLE_RATE 16000
+#endif
+#ifndef CONFIG_STACKCHAN_AUDIO_DOWNSTREAM_SAMPLE_RATE
+#define CONFIG_STACKCHAN_AUDIO_DOWNSTREAM_SAMPLE_RATE 24000
 #endif
 #ifndef CONFIG_STACKCHAN_AUDIO_INPUT_REFERENCE
 #define CONFIG_STACKCHAN_AUDIO_INPUT_REFERENCE 0
@@ -100,11 +103,14 @@ static constexpr i2c_port_t kCoreS3InternalI2cPort = I2C_NUM_1;
 static constexpr int kCoreS3InternalI2cSda = 12;
 static constexpr int kCoreS3InternalI2cScl = 11;
 static constexpr int kHwSampleRate = CONFIG_STACKCHAN_AUDIO_HW_SAMPLE_RATE;
-static constexpr int kProtocolSampleRate = CONFIG_STACKCHAN_AUDIO_PROTOCOL_SAMPLE_RATE;
-static_assert(kHwSampleRate == kProtocolSampleRate,
-              "Direct PCM playback requires matching hardware and protocol sample rates");
+static constexpr int kUpstreamSampleRate = CONFIG_STACKCHAN_AUDIO_UPSTREAM_SAMPLE_RATE;
+static constexpr int kDownstreamSampleRate = CONFIG_STACKCHAN_AUDIO_DOWNSTREAM_SAMPLE_RATE;
+static_assert(kHwSampleRate == kDownstreamSampleRate,
+              "Direct PCM playback requires matching hardware and downstream sample rates");
+static_assert(kUpstreamSampleRate == 16000, "The realtime Opus encoder and Aliyun ASR require 16 kHz upstream PCM");
+static_assert(kDownstreamSampleRate == 24000, "The realtime TTS Opus decoder requires 24 kHz downstream PCM");
 static constexpr int kOpusFrameDurationMs = 60;
-static constexpr int kProtocolFrameSamples = kProtocolSampleRate * kOpusFrameDurationMs / 1000;
+static constexpr int kDownstreamFrameSamples = kDownstreamSampleRate * kOpusFrameDurationMs / 1000;
 static constexpr bool kDeviceAecEnabled = CONFIG_STACKCHAN_AUDIO_DEVICE_AEC && CONFIG_STACKCHAN_AUDIO_INPUT_REFERENCE;
 static constexpr int kInputChannels = 2;
 static constexpr uint16_t kRawInputChannelMask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0) |
@@ -942,8 +948,8 @@ public:
             return true;
         }
 
-        // One block must hold a complete 60 ms Opus frame (1440 samples at 24 kHz).
-        play_pool_.block_capacity = kProtocolFrameSamples;
+        // One block must hold a complete 60 ms downstream Opus frame (1440 samples at 24 kHz).
+        play_pool_.block_capacity = kDownstreamFrameSamples;
         play_pool_.num_blocks = 12;
         play_pool_.free_queue = xQueueCreate(play_pool_.num_blocks, sizeof(AudioBlock*));
         if (play_pool_.free_queue == nullptr) {
@@ -1188,7 +1194,8 @@ public:
         ensure_afe_started("audio service start");
         ensure_afe_fetch_task_started();
 #endif
-        ESP_LOGI(TAG, "audio service started: hw=%d protocol=%d afe=%d", kHwSampleRate, kProtocolSampleRate,
+        ESP_LOGI(TAG, "audio service started: hw=%d upstream=%d downstream=%d afe=%d",
+                 kHwSampleRate, kUpstreamSampleRate, kDownstreamSampleRate,
                  static_cast<int>(afe_ready_));
         return true;
     }
@@ -1232,7 +1239,7 @@ public:
         codec_.set_volume(percent);
     }
 
-    bool play_pcm_16k(const int16_t* samples, size_t count, AudioPlayOptions options)
+    bool play_pcm_24k(const int16_t* samples, size_t count, AudioPlayOptions options)
     {
         if (samples == nullptr || count == 0) {
             return true;
@@ -1281,7 +1288,7 @@ public:
         return true;
     }
 
-    bool play_opus_frame_16k(const uint8_t* data, size_t len)
+    bool play_opus_frame_24k(const uint8_t* data, size_t len)
     {
         if (data == nullptr || len == 0) {
             return true;
@@ -1320,7 +1327,7 @@ public:
                      static_cast<unsigned>(len));
             return false;
         }
-        return play_pcm_16k(reinterpret_cast<int16_t*>(out_frame.buffer), out_frame.decoded_size / sizeof(int16_t),
+        return play_pcm_24k(reinterpret_cast<int16_t*>(out_frame.buffer), out_frame.decoded_size / sizeof(int16_t),
                             AudioPlayOptions{.wait = false, .drop_oldest = true});
     }
 
@@ -1464,11 +1471,11 @@ public:
         duration_ms = std::max(100, std::min(duration_ms, 10000));
         set_volume(volume_percent);
 
-        const int total_samples = kProtocolSampleRate * duration_ms / 1000;
+        const int total_samples = kDownstreamSampleRate * duration_ms / 1000;
         const int amplitude = 9000;
         std::vector<int16_t> buffer(kToneChunkSamples);
         float phase = 0.0f;
-        const float phase_step = kTwoPi * static_cast<float>(tone_hz) / static_cast<float>(kProtocolSampleRate);
+        const float phase_step = kTwoPi * static_cast<float>(tone_hz) / static_cast<float>(kDownstreamSampleRate);
         int generated = 0;
         while (generated < total_samples) {
             const int chunk = std::min<int>(buffer.size(), total_samples - generated);
@@ -1479,14 +1486,14 @@ public:
                     phase -= kTwoPi;
                 }
             }
-            if (!play_pcm_16k(buffer.data(), chunk, AudioPlayOptions{.wait = true, .drop_oldest = false})) {
+            if (!play_pcm_24k(buffer.data(), chunk, AudioPlayOptions{.wait = true, .drop_oldest = false})) {
                 return false;
             }
             generated += chunk;
         }
         wait_playback_idle(pdMS_TO_TICKS(duration_ms + 1000));
         ESP_LOGI(TAG, "Audio test tone done: requested_rate=%d playback_rate=%d samples=%d",
-                 sample_rate, kProtocolSampleRate, generated);
+                 sample_rate, kDownstreamSampleRate, generated);
         return true;
     }
 
@@ -1699,8 +1706,8 @@ private:
     {
         std::vector<int16_t> hw(kHwInputChunkSamples);
         std::vector<int16_t> in16;
-        std::vector<int16_t> usb16(kProtocolSampleRate / 25);
-        in16.reserve((kProtocolSampleRate / 100) * kInputChannels + kInputChannels);
+        std::vector<int16_t> usb16(kUpstreamSampleRate / 25);
+        in16.reserve((kUpstreamSampleRate / 100) * kInputChannels + kInputChannels);
 
         while (running_) {
             DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
@@ -1738,7 +1745,7 @@ private:
                 continue;
             }
             resample_linear_interleaved(hw.data(), kHwInputChunkFrames, kInputChannels, kHwSampleRate, in16,
-                                        kProtocolSampleRate);
+                                        kUpstreamSampleRate);
 #if CONFIG_STACKCHAN_AUDIO_DEVICE_AEC
             if (afe_ready_) {
                 feed_afe(in16);
@@ -2176,7 +2183,7 @@ private:
     std::mutex lifecycle_mutex_;
     AudioBlockPool play_pool_;
     AudioBlockPool rec_pool_;
-    uint8_t opus_decode_buffer_[kProtocolFrameSamples * sizeof(int16_t)] = {};
+    uint8_t opus_decode_buffer_[kDownstreamFrameSamples * sizeof(int16_t)] = {};
     QueueHandle_t play_queue_ = nullptr;
     QueueHandle_t clean_queue_ = nullptr;
     SemaphoreHandle_t read_mutex_ = nullptr;
@@ -2332,14 +2339,14 @@ void audio_service_set_volume_percent(int percent)
     g_audio_service.set_volume(percent);
 }
 
-bool audio_service_play_pcm_16k(const int16_t* samples, size_t count, AudioPlayOptions options)
+bool audio_service_play_pcm_24k(const int16_t* samples, size_t count, AudioPlayOptions options)
 {
-    return g_audio_service.play_pcm_16k(samples, count, options);
+    return g_audio_service.play_pcm_24k(samples, count, options);
 }
 
-bool audio_service_play_opus_frame_16k(const uint8_t* data, size_t len)
+bool audio_service_play_opus_frame_24k(const uint8_t* data, size_t len)
 {
-    return g_audio_service.play_opus_frame_16k(data, len);
+    return g_audio_service.play_opus_frame_24k(data, len);
 }
 
 size_t audio_service_read_clean_16k(int16_t* out, size_t samples, TickType_t timeout)
