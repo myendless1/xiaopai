@@ -35,5 +35,3 @@ esp-idf/
 # Tool caches/state
 .cache/
 .openclaw/
-
-event-audio

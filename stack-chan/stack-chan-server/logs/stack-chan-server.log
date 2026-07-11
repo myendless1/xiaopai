@@ -1111,3 +1111,69 @@
 [2026-07-11 15:16:07.368] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=38039 heap_psram=8098236 queue_depth=0
 [2026-07-11 15:16:07.369] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
 [2026-07-11 15:16:07.599] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=760683022&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 15:16:08.430] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=38027 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:08.431] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:09.989] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=38011 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:09.989] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:11.064] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=38027 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:11.065] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:12.136] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=38011 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:12.137] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:13.125] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=760683022&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 15:16:13.227] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=38027 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:13.227] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:13.961] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_start elapsed_ms=0
+[2026-07-11 15:16:14.194] 实时 ASR 已连接: device=44:1b:f6:df:5d:b8 task_id=8cb19339811b4a65bbd3caf6f5e6a481
+[2026-07-11 15:16:14.349] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=31527 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:14.349] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:14.565] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='上面，'
+[2026-07-11 15:16:14.566] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_first_partial elapsed_ms=605
+[2026-07-11 15:16:15.329] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='上面是规，'
+[2026-07-11 15:16:15.471] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=32895 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:15.471] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:15.807] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='上面是规划想'
+[2026-07-11 15:16:16.209] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='上面是规划想受，看他们'
+[2026-07-11 15:16:16.601] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=31475 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:16.601] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:16.759] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='上面是规划想受，看他们现在'
+[2026-07-11 15:16:17.163] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='上面是规划想受，看他们现在是哪'
+[2026-07-11 15:16:17.678] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=33015 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:17.679] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:17.813] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='上面是规划想受，看他们现在是哪讲的'
+[2026-07-11 15:16:18.168] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='上面是规划想受，看他们现在是哪讲的道具去'
+[2026-07-11 15:16:18.171] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=760683022&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 15:16:18.624] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='上面是规划想受，看他们现在是哪讲的道具去做，然后'
+[2026-07-11 15:16:18.776] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=31263 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:18.777] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:19.099] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=False text='上面是规划想受，看他们现在是哪讲的道具去做，然后他们'
+[2026-07-11 15:16:19.624] 实时 ASR 文本: device=44:1b:f6:df:5d:b8 final=True text='他们是规划想做，看他们现在是拿假的道具去做，然后他们想。'
+[2026-07-11 15:16:19.624] 延迟统计: device=44:1b:f6:df:5d:b8 stage=asr_final elapsed_ms=5663[2026-07-11 15:16:19.624] 实时 ASR 音频已保存: device=44:1b:f6:df:5d:b8 path=captures/audio/realtime-44_1b_f6_df_5d_b8-20260711-151613-962744.wav pcm_bytes=184320
+
+[2026-07-11 15:16:19.625] 延迟统计: device=44:1b:f6:df:5d:b8 stage=dialog_sleeping_ignore elapsed_ms=5664
+[2026-07-11 15:16:19.654] 实时 ASR 已丢弃未处于 listen:start 的音频帧: device_id=44:1b:f6:df:5d:b8 bytes=362
+[2026-07-11 15:16:19.665] 实时 ASR 已关闭: device=44:1b:f6:df:5d:b8 queued_frames=96 sent_frames=96
+[2026-07-11 15:16:19.714] 实时 ASR 已丢弃未处于 listen:start 的音频帧: device_id=44:1b:f6:df:5d:b8 bytes=362
+[2026-07-11 15:16:19.933] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=38007 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:19.933] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:21.012] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=38007 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:21.012] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:22.093] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=38007 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:22.093] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:23.193] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=38007 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:23.194] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:23.212] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=760683022&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 15:16:24.276] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=37995 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:24.276] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:25.398] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=37995 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:25.398] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:26.498] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=37995 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:26.498] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:27.606] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=37995 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:27.607] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:28.259] HTTP 请求: client=172.24.64.1 raw="GET /v3/device/next-command?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&boot_id=760683022&timeout=5 HTTP/1.1" 200 -
+[2026-07-11 15:16:28.692] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=38003 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:28.692] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:29.779] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=38003 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:29.779] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
+[2026-07-11 15:16:30.873] 设备心跳状态: device=44:1b:f6:df:5d:b8 boot=760683022 mode=dialog_sleeping face=sleep_dark heap_internal=38003 heap_psram=8098236 queue_depth=0
+[2026-07-11 15:16:30.874] HTTP 请求: client=172.24.64.1 raw="POST /v3/control/heartbeat HTTP/1.1" 200 -
