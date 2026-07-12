@@ -5,7 +5,7 @@
 #include "audio/dji_mic_uac_recorder.h"
 #include "audio/xiaopai_audio_service.h"
 #include "codec_audio_output.h"
-#include "debug_events.h"
+
 #include "expression_state.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -89,7 +89,7 @@ void run_wifi_connect_app();
 void run_camera_upload_app();
 void run_tracking_user_demo();
 static bool wifi_is_connected();
-static bool http_get_string(const std::string& url, std::string* response, int timeout_ms);
+static bool http_get_string(const std::string& url, std::string* response, int timeout_ms, bool log_result = true);
 static int json_int_value(const cJSON* root, const char* key, int default_value);
 static bool json_bool_value(const cJSON* root, const char* key, bool default_value);
 static void set_light_strip_listening();
@@ -164,7 +164,7 @@ static const char* reset_reason_name(esp_reset_reason_t reason)
 #include "main_camera_motion.inc"
 #include "main_tts_commands.inc"
 #include "main_head_touch.inc"
-#include "main_wifi_debug.inc"
+
 #include "main_command_services.inc"
 
 #if CONFIG_STACKCHAN_DJI_MIC_ENUM_ONLY || CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD
@@ -332,9 +332,17 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(init_nvs_once());
     create_realtime_task_early();
     create_command_task_early();
-    install_wifi_debug_log_sink();
+
+    // 不安装自定义 vprintf Hook。
+    // 所有 ESP_LOG 输出直接进入 ESP-IDF 默认 USB Serial/JTAG 控制台。
     esp_reset_reason_t reset_reason = esp_reset_reason();
-    ESP_LOGW(TAG, "Boot reset reason: %s (%d)", reset_reason_name(reset_reason), static_cast<int>(reset_reason));
+    const esp_app_desc_t* app = esp_app_get_description();
+    ESP_LOGW(TAG, "BOOT reset_reason=%s(%d) project=%s version=%s idf=%s",
+             reset_reason_name(reset_reason), static_cast<int>(reset_reason),
+             app != nullptr ? app->project_name : "unknown", app != nullptr ? app->version : "unknown",
+             app != nullptr ? app->idf_ver : "unknown");
+    ESP_LOGI(TAG, "BOOT console=usb_serial_jtag log_level=info device=%s",
+             mac_address().c_str());
     force_core_s3_display_board();
     m5_mutex = xSemaphoreCreateMutex();
     audio_mutex = xSemaphoreCreateMutex();

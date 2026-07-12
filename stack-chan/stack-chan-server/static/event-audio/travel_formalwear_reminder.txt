@@ -1,1 +1,1 @@
-{"appkey":"goL2yAc2saTaT42D","format":"pcm_s16le","pitch_rate":0,"sample_rate":24000,"speech_rate":0,"text":"查询到日程备注栏写着建议着正装，建议您带上一套，祝您一路平安！回来后见~","tts_url":"https://nls-gateway-cn-shanghai.aliyuncs.com/stream/v1/tts","version":2,"voice":"zhibing_emo","volume":70}
+{"appkey":"goL2yAc2saTaT42D","format":"pcm_s16le","pitch_rate":0,"sample_rate":24000,"speech_rate":0,"text":"查询到日程备注栏写着建议着正装，建议您带上一套，祝您一路平安！回来后见~","tts_url":"https://nls-gateway-cn-shanghai.aliyuncs.com/stream/v1/tts","version":2,"voice":"zhimiao_emo","volume":70}

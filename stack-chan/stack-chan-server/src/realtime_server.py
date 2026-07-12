@@ -171,7 +171,7 @@ class RealtimeConfig:
     token_getter: Callable[[], str] | None = None
     aliyun_asr_ws_url: str = ""
     aliyun_tts_ws_url: str = ""
-    voice: str = "zhibing_emo"
+    voice: str = "zhimiao_emo"
     upstream_sample_rate: int = 16000
     downstream_sample_rate: int = 24000
     volume: int = 80

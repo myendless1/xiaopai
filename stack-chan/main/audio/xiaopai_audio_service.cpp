@@ -1229,11 +1229,6 @@ public:
         heartbeat_task_handle_.store(handle);
     }
 
-    void register_wifi_debug_task(TaskHandle_t handle)
-    {
-        wifi_debug_task_handle_.store(handle);
-    }
-
     void set_volume(int percent)
     {
         codec_.set_volume(percent);
@@ -2192,7 +2187,6 @@ private:
     std::atomic<TaskHandle_t> input_task_{nullptr};
     std::atomic<TaskHandle_t> output_task_{nullptr};
     std::atomic<TaskHandle_t> heartbeat_task_handle_{nullptr};
-    std::atomic<TaskHandle_t> wifi_debug_task_handle_{nullptr};
     void* opus_decoder_ = nullptr;
     std::mutex opus_decoder_mutex_;
     std::atomic<uint32_t> play_dropped_count_{0};
@@ -2258,9 +2252,6 @@ void XiaopaiAudioService::log_diagnostics()
     log_watermark("audio_output_hw", output_task_.load());
     log_watermark("supervisor_task", xiaopai_supervisor_get_task_handle());
     log_watermark("heartbeat_task", heartbeat_task_handle_.load());
-#if CONFIG_STACKCHAN_WIFI_DEBUG
-    log_watermark("wifi_debug", wifi_debug_task_handle_.load());
-#endif
 #if CONFIG_STACKCHAN_AUDIO_DEVICE_AEC
     log_watermark("AFE fetch task", afe_task_);
 #endif
@@ -2402,9 +2393,4 @@ void audio_service_log_diagnostics()
 void audio_service_register_heartbeat_task(TaskHandle_t handle)
 {
     g_audio_service.register_heartbeat_task(handle);
-}
-
-void audio_service_register_wifi_debug_task(TaskHandle_t handle)
-{
-    g_audio_service.register_wifi_debug_task(handle);
 }

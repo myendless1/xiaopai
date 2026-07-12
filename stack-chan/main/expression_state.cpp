@@ -1,10 +1,12 @@
 #include "expression_state.h"
 
-#include "debug_events.h"
+#include "esp_log.h"
 
 #include <string.h>
 
 namespace {
+
+static constexpr const char* TAG = "ExpressionState";
 
 void report_expression_change(const ExpressionStateSnapshot& before, const char* reason)
 {
@@ -15,8 +17,12 @@ void report_expression_change(const ExpressionStateSnapshot& before, const char*
         before.animation_active == after.animation_active) {
         return;
     }
-    debug_events_push_expression_state(before.name, after.name, after.screen_visible, after.sleep_dark,
-                                       after.animation_active, reason);
+    ESP_LOGI(TAG,
+             "EXPRESSION from=%s to=%s visible=%d sleep_dark=%d "
+             "animation=%d reason=\"%s\"",
+             before.name != nullptr ? before.name : "", after.name != nullptr ? after.name : "",
+             after.screen_visible ? 1 : 0, after.sleep_dark ? 1 : 0, after.animation_active ? 1 : 0,
+             reason != nullptr ? reason : "");
 }
 
 } // namespace

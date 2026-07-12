@@ -49,7 +49,6 @@ void audio_service_abort_playback();
 void audio_service_dump_state();
 void audio_service_log_diagnostics();
 void audio_service_register_heartbeat_task(TaskHandle_t handle);
-void audio_service_register_wifi_debug_task(TaskHandle_t handle);
 bool audio_service_test_tone(int sample_rate, int tone_hz, int duration_ms, int volume_percent);
 
 bool audio_service_is_available();

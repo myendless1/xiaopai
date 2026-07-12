@@ -1,6 +1,6 @@
 #include "xiaopai_state.h"
 
-#include "debug_events.h"
+
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -130,14 +130,27 @@ void push_state_debug_if_changed(const XiaopaiStateSnapshot& before,
                                  const XiaopaiStateSnapshot& after,
                                  const char* reason)
 {
-    if (before.generation != after.generation || before.is_speaking != after.is_speaking ||
+    const bool changed =
+        before.generation != after.generation || before.is_speaking != after.is_speaking ||
         before.can_sample_mic != after.can_sample_mic || strcmp(before.name, after.name) != 0 ||
         before.system_mode != after.system_mode || before.interaction_state != after.interaction_state ||
         before.cancellation_generation != after.cancellation_generation ||
-        before.source_generation != after.source_generation) {
-        debug_events_push_xiaopai_state(before.name, after.name, after.generation, after.is_speaking,
-                                        after.can_sample_mic, reason);
+        before.source_generation != after.source_generation;
+
+    if (!changed) {
+        return;
     }
+
+    ESP_LOGI(TAG,
+             "STATE from=%s to=%s mode=%s interaction=%s "
+             "generation=%u cancel_generation=%u source_generation=%u "
+             "speaking=%d can_sample_mic=%d reason=\"%s\"",
+             before.name != nullptr ? before.name : "", after.name != nullptr ? after.name : "",
+             after.system_mode_name != nullptr ? after.system_mode_name : "",
+             after.interaction_state_name != nullptr ? after.interaction_state_name : "",
+             static_cast<unsigned>(after.generation), static_cast<unsigned>(after.cancellation_generation),
+             static_cast<unsigned>(after.source_generation), after.is_speaking ? 1 : 0, after.can_sample_mic ? 1 : 0,
+             reason != nullptr ? reason : "");
 }
 
 void bump_state_generation_if_changed(const XiaopaiStateSnapshot& before)

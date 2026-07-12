@@ -45,7 +45,7 @@ TTS_URLS = {
     "beijing": "https://nls-gateway-cn-beijing.aliyuncs.com/stream/v1/tts",
     "shenzhen": "https://nls-gateway-cn-shenzhen.aliyuncs.com/stream/v1/tts",
 }
-DEFAULT_TTS_VOICE = "zhibing_emo"
+DEFAULT_TTS_VOICE = "zhimiao_emo"
 DEFAULT_OTA_FIRMWARE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "firmware")
 
 TOKEN_META_ENDPOINT = "https://nls-meta.cn-shanghai.aliyuncs.com/"

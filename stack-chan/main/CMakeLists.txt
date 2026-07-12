@@ -7,7 +7,6 @@ idf_component_register(
         "expression_controller.cpp"
         "xiaopai_state.cpp"
         "expression_state.cpp"
-        "debug_events.cpp"
         "audio/dji_mic_receiver_input.cpp"
         "audio/dji_mic_uac_recorder.cpp"
     INCLUDE_DIRS "." "audio"

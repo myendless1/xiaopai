@@ -303,7 +303,7 @@ void run_stream_tts_demo()
     supervisor_set_speech_playback_active(false, "stream tts demo finished");
 }
 
-static bool http_get_string(const std::string& url, std::string* response, int timeout_ms)
+static bool http_get_string(const std::string& url, std::string* response, int timeout_ms, bool log_result)
 {
     esp_http_client_config_t config = {};
     config.url = url.c_str();
@@ -314,13 +314,18 @@ static bool http_get_string(const std::string& url, std::string* response, int t
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == nullptr) {
+        if (log_result) {
+            ESP_LOGE(TAG, "HTTP GET init failed: %s", url.c_str());
+        }
         return false;
     }
 
     esp_http_client_set_header(client, "Accept", "application/json");
     esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "HTTP GET open failed: %s", esp_err_to_name(err));
+        if (log_result) {
+            ESP_LOGE(TAG, "HTTP GET open failed: url=%s err=%s", url.c_str(), esp_err_to_name(err));
+        }
         esp_http_client_cleanup(client);
         return false;
     }
@@ -342,13 +347,21 @@ static bool http_get_string(const std::string& url, std::string* response, int t
     }
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
-    ESP_LOGI(TAG, "HTTP GET %s -> status=%d content_length=%d response_len=%u", url.c_str(), status, content_length,
-             response != nullptr ? static_cast<unsigned>(response->size()) : 0);
-    return status >= 200 && status < 300;
+    const bool ok = status >= 200 && status < 300;
+    if (log_result) {
+        if (ok) {
+            ESP_LOGI(TAG, "HTTP GET %s -> status=%d content_length=%d response_len=%u", url.c_str(), status,
+                     content_length, response != nullptr ? static_cast<unsigned>(response->size()) : 0);
+        } else {
+            ESP_LOGW(TAG, "HTTP GET failed: url=%s status=%d content_length=%d", url.c_str(), status,
+                     content_length);
+        }
+    }
+    return ok;
 }
 
 static bool http_post_json_string(const std::string& url, const std::string& body, std::string* response,
-                                  int timeout_ms)
+                                  int timeout_ms, bool log_result = true)
 {
     esp_http_client_config_t config = {};
     config.url = url.c_str();
@@ -359,6 +372,9 @@ static bool http_post_json_string(const std::string& url, const std::string& bod
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == nullptr) {
+        if (log_result) {
+            ESP_LOGE(TAG, "HTTP POST init failed: %s", url.c_str());
+        }
         return false;
     }
 
@@ -378,9 +394,16 @@ static bool http_post_json_string(const std::string& url, const std::string& bod
         }
     }
     esp_http_client_cleanup(client);
-    ESP_LOGI(TAG, "HTTP POST %s -> err=%s status=%d response_len=%u", url.c_str(), esp_err_to_name(err), status,
-             response != nullptr ? static_cast<unsigned>(response->size()) : 0);
-    return err == ESP_OK && status >= 200 && status < 300;
+    const bool ok = err == ESP_OK && status >= 200 && status < 300;
+    if (log_result) {
+        if (ok) {
+            ESP_LOGI(TAG, "HTTP POST %s -> status=%d response_len=%u", url.c_str(), status,
+                     response != nullptr ? static_cast<unsigned>(response->size()) : 0);
+        } else {
+            ESP_LOGW(TAG, "HTTP POST failed: url=%s err=%s status=%d", url.c_str(), esp_err_to_name(err), status);
+        }
+    }
+    return ok;
 }
 
 static double json_number_value(const cJSON* root, const char* key, double default_value)
@@ -565,13 +588,19 @@ static bool send_command_ack(const char* cmd_id, const char* status, const char*
     cJSON_Delete(root);
 
     std::string v3_response;
-    if (http_post_json_string(v3_url, body, &v3_response, 5000)) {
+    if (http_post_json_string(v3_url, body, &v3_response, 5000, false)) {
+        ESP_LOGI(TAG, "COMMAND ack id=%s state=%s seq=%u attempt=%u",
+                 cmd_id != nullptr ? cmd_id : "", state, static_cast<unsigned>(ack_seq),
+                 static_cast<unsigned>(attempt));
         if (dedupe_entry != nullptr) {
             dedupe_entry->ack_pending = false;
         }
         return true;
     }
 
+    ESP_LOGW(TAG, "COMMAND ack pending id=%s state=%s seq=%u attempt=%u",
+             cmd_id != nullptr ? cmd_id : "", state, static_cast<unsigned>(ack_seq),
+             static_cast<unsigned>(attempt));
     return false;
 }
 

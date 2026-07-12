@@ -60,6 +60,15 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         self.assertNotIn("OpenClaw", self.speech)
         self.assertIn("Morrow is thinking", self.speech)
 
+    def test_ota_checks_do_not_mark_user_interaction(self):
+        helper_start = self.commands.index("static bool command_marks_user_interaction")
+        helper_end = self.commands.index("static bool execute_command_object_internal", helper_start)
+        helper = self.commands[helper_start:helper_end]
+        for command_type in ('"check_ota"', '"ota_check"', '"firmware_ota"'):
+            self.assertIn(f"type != {command_type}", helper)
+        self.assertIn("if (command_marks_user_interaction(type))", self.commands)
+        self.assertIn("if (command_marks_user_interaction(cmd_type))", self.commands)
+
 
 if __name__ == "__main__":
     unittest.main()

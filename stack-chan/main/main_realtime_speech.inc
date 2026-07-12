@@ -1071,8 +1071,7 @@ static void run_realtime_speech_loop()
                         if (!send_ws_text(ws, abort_message, "waiting timeout abort")) {
                             ESP_LOGW(TAG, "Failed to notify server about waiting timeout");
                         }
-                        xiaopai_state_set(LocalVoiceState::Listening, "Morrow waiting timeout");
-                        expression_state_set(kDefaultExpression);
+                        xiaopai_state_set(current.state, "Morrow waiting timeout");
                         waiting_started_ms = 0;
                         break;
                     }

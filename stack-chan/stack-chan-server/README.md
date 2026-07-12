@@ -368,7 +368,7 @@ Environment variables:
 | `STACKCHAN_REALTIME_LOCAL_TOKEN` | empty | Optional bearer token for realtime WebSocket clients |
 | `STACKCHAN_ALIYUN_REGION` | `shanghai` | Aliyun NLS region: `shanghai`, `beijing`, or `shenzhen` |
 | `STACKCHAN_ALIYUN_TTS_URL` | empty | Override TTS URL |
-| `STACKCHAN_ALIYUN_VOICE` | `zhibing_emo` | Aliyun TTS voice |
+| `STACKCHAN_ALIYUN_VOICE` | `zhimiao_emo` | Aliyun TTS voice |
 | `STACKCHAN_ALIYUN_ASR_SAMPLE_RATE` | `16000` | Microphone/Opus/ASR upstream sample rate |
 | `STACKCHAN_ALIYUN_SAMPLE_RATE` | `24000` | TTS/Opus/playback downstream sample rate |
 | `STACKCHAN_ALIYUN_VOLUME` | `80` | TTS volume |

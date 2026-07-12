@@ -1259,7 +1259,7 @@ static bool refine_head_toward_face(const FaceTarget& target, uint16_t duration_
     return move_head_to_tracking_angles(next_yaw, next_pitch, duration_ms);
 }
 
-static FindOwnerResult run_find_owner_detection(int rounds, float gain_x = kFindOwnerYawGain,
+static FindOwnerResult run_find_owner_detection(float gain_x = kFindOwnerYawGain,
                                                 float gain_y = kFindOwnerPitchGain,
                                                 float stop_pixels = kFindOwnerStopPixels,
                                                 bool preserve_speech_playback = false,
@@ -1295,54 +1295,48 @@ static FindOwnerResult run_find_owner_detection(int rounds, float gain_x = kFind
     }
     VoiceListenerPauseGuard voice_pause("find owner");
 
-    int capped_rounds = std::max(1, std::min(rounds, kFindOwnerMaxRounds));
     gain_x = std::max(0.0f, gain_x);
     gain_y = std::max(0.0f, gain_y);
     stop_pixels = std::max(0.0f, stop_pixels);
-    bool reset_to_home_before_capture = true;
-    for (int round = 1; round <= capped_rounds; ++round) {
-        if (reset_to_home_before_capture) {
-            if (!move_to_camera_home_pose("Find Owner", "Detecting face next")) {
-                set_tracking_status("Servo Fail", "Camera home failed", "Check ID/wiring", "", false, false);
-                return result;
+
+    const float initial_yaw = tracking_yaw_deg;
+    const float initial_pitch = tracking_pitch_deg;
+    FaceTarget target;
+    ESP_LOGI(TAG, "Find owner initial capture at current pose yaw=%.1f pitch=%.1f",
+             initial_yaw, initial_pitch);
+    bool detected = capture_face_at_current_pose("Find Owner", "Initial photo", "Detecting face", &target);
+    if (!detected) {
+        ESP_LOGI(TAG, "Find owner initial photo found no face; starting wide scan");
+        detected = scan_for_face_near_home(&target);
+    }
+    if (!detected) {
+        if (!tracking_stop_requested) {
+            ESP_LOGI(TAG, "Find owner no face; restoring initial pose yaw=%.1f pitch=%.1f",
+                     initial_yaw, initial_pitch);
+            if (!move_head_to_tracking_angles(initial_yaw, initial_pitch, 650)) {
+                ESP_LOGW(TAG, "Find owner failed to restore initial pose yaw=%.1f pitch=%.1f",
+                         initial_yaw, initial_pitch);
             }
-            reset_to_home_before_capture = false;
+        } else {
+            ESP_LOGW(TAG, "Find owner stopped; skip initial pose restore for safety");
         }
+        ESP_LOGI(TAG, "Find owner finished: saw_face=0 aligned=0");
+        return result;
+    }
 
-        FaceTarget target;
-        char line1[48];
-        snprintf(line1, sizeof(line1), "round %d/%d", round, capped_rounds);
-        bool detected = capture_face_at_current_pose("Find Owner", line1, "Detecting face", &target);
-        if (!detected && round == 1) {
-            detected = scan_for_face_near_home(&target);
-        }
-        if (!detected) {
-            reset_to_home_before_capture = true;
-            vTaskDelay(pdMS_TO_TICKS(220));
-            continue;
-        }
-
-        result.saw_face = true;
-        float dx = target.center_x - kTrackingCx;
-        float dy = target.center_y - kTrackingCy;
-        float pixel_error = std::sqrt(dx * dx + dy * dy);
-        if (pixel_error <= stop_pixels) {
-            result.aligned = true;
-            ESP_LOGI(TAG, "Find owner aligned: err=%.1f", pixel_error);
-            break;
-        }
-
-        if (round == capped_rounds && capped_rounds > 1) {
-            ESP_LOGI(TAG, "Find owner reached final capture: err=%.1f, skip final adjustment", pixel_error);
-            break;
-        }
-
-        if (!refine_head_toward_face(target, 520, gain_x, gain_y)) {
-            set_tracking_status("Servo Fail", "Find-owner move failed", "Check ID/wiring", "", false, false);
-            break;
-        }
-        reset_to_home_before_capture = false;
-        vTaskDelay(pdMS_TO_TICKS(650));
+    result.saw_face = true;
+    const float dx = target.center_x - kTrackingCx;
+    const float dy = target.center_y - kTrackingCy;
+    const float pixel_error = std::sqrt(dx * dx + dy * dy);
+    if (pixel_error <= stop_pixels) {
+        result.aligned = true;
+        ESP_LOGI(TAG, "Find owner first face already aligned: err=%.1f", pixel_error);
+    } else if (refine_head_toward_face(target, 520, gain_x, gain_y)) {
+        result.aligned = true;
+        ESP_LOGI(TAG, "Find owner first face adjusted once: err=%.1f", pixel_error);
+    } else {
+        set_tracking_status("Servo Fail", "Find-owner move failed", "Check ID/wiring", "", false, false);
+        ESP_LOGW(TAG, "Find owner detected face but alignment move failed: err=%.1f", pixel_error);
     }
 
     ESP_LOGI(TAG, "Find owner finished: saw_face=%d aligned=%d", result.saw_face, result.aligned);
@@ -1353,7 +1347,10 @@ static bool run_find_owner_command(int rounds, const char* reply, float gain_x =
                                    float gain_y = kFindOwnerPitchGain, float stop_pixels = kFindOwnerStopPixels,
                                    bool preserve_speech_playback = false, bool wait_for_speech = false)
 {
-    FindOwnerResult result = run_find_owner_detection(rounds, gain_x, gain_y, stop_pixels, preserve_speech_playback,
+    // Keep rounds in the command API for backward compatibility. Detection now
+    // stops immediately after the first face and performs at most one movement.
+    (void)rounds;
+    FindOwnerResult result = run_find_owner_detection(gain_x, gain_y, stop_pixels, preserve_speech_playback,
                                                       wait_for_speech);
     if (!result.ready) {
         return false;
@@ -1379,6 +1376,8 @@ static void play_sedentary_reminder(int reminder_index)
 
 static void run_sedentary_find_owner_loop()
 {
+    ESP_LOGI(TAG, "Sedentary owner service started: interval_ms=%u hits_required=%d",
+             static_cast<unsigned>(kSedentaryFindOwnerIntervalMs), kSedentaryOwnerHitsRequired);
     uint32_t next_find_ms = M5.millis() + kSedentaryFindOwnerIntervalMs;
     int consecutive_owner_hits = 0;
     int reminder_index = 0;
@@ -1401,7 +1400,7 @@ static void run_sedentary_find_owner_loop()
         }
 
         supervisor_set_tracking_stop_requested(false, "find owner command");
-        FindOwnerResult result = run_find_owner_detection(kFindOwnerMaxRounds, kFindOwnerYawGain, kFindOwnerPitchGain,
+        FindOwnerResult result = run_find_owner_detection(kFindOwnerYawGain, kFindOwnerPitchGain,
                                                           kFindOwnerStopPixels, true, false);
         if (!result.saw_face) {
             consecutive_owner_hits = 0;
@@ -1423,9 +1422,13 @@ static void start_sedentary_find_owner_service()
     if (sedentary_task_handle != nullptr) {
         return;
     }
-    xTaskCreatePinnedToCore([](void*) {
+    BaseType_t created = xTaskCreatePinnedToCore([](void*) {
         run_sedentary_find_owner_loop();
     }, "vision_health_task", kTrackingTaskStackBytes, nullptr, 2, &sedentary_task_handle, 0);
+    if (created != pdPASS) {
+        sedentary_task_handle = nullptr;
+        ESP_LOGE(TAG, "Failed to create sedentary owner service task");
+    }
 }
 
 void run_camera_upload_app()

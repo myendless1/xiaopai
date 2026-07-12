@@ -108,6 +108,12 @@ static bool execute_command_object(const cJSON* command)
     return execute_command_object_internal(command, false, nullptr);
 }
 
+static bool command_marks_user_interaction(const std::string& type)
+{
+    return type != "sleep" && type != "state" && type != "device_state" &&
+           type != "check_ota" && type != "ota_check" && type != "firmware_ota";
+}
+
 static bool execute_command_object_internal(const cJSON* command, bool in_sequence,
                                             bool* sequence_sleep_or_stop_executed)
 {
@@ -120,7 +126,7 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
     if (in_sequence && sequence_sleep_or_stop_executed != nullptr && command_is_sleep_or_stop(command)) {
         *sequence_sleep_or_stop_executed = true;
     }
-    if (type != "sleep" && type != "state" && type != "device_state") {
+    if (command_marks_user_interaction(type)) {
         mark_user_interaction("command");
     }
 
@@ -394,7 +400,7 @@ static bool handle_command_response(const std::string& response)
         cJSON_Delete(root);
         return true;
     }
-    if (cmd_type != "sleep" && cmd_type != "state" && cmd_type != "device_state") {
+    if (command_marks_user_interaction(cmd_type)) {
         mark_user_interaction("http command");
     }
     wake_for_server_command(cmd_type.c_str());
@@ -424,6 +430,9 @@ static bool handle_command_response(const std::string& response)
             send_command_ack(cmd_id.c_str(), "received", "", attempt);
             if (persist_dedupe) command_dedupe_mark_persistent(cmd_id.c_str());
         }
+        ESP_LOG_LEVEL(queued ? ESP_LOG_INFO : ESP_LOG_ERROR, TAG,
+                      "COMMAND queued id=%s type=speak result=%s attempt=%u",
+                      cmd_id.c_str(), queued ? "ok" : "failed", static_cast<unsigned>(attempt));
         cJSON_Delete(root);
         return queued;
     }
@@ -442,6 +451,9 @@ static bool handle_command_response(const std::string& response)
         snprintf(message, sizeof(message), "command execution failed: %s", cmd_type.c_str());
     }
     send_command_ack(cmd_id.c_str(), ok ? "done" : "failed", message, attempt);
+    ESP_LOG_LEVEL(ok ? ESP_LOG_INFO : ESP_LOG_ERROR, TAG,
+                  "COMMAND completed id=%s type=%s result=%s attempt=%u",
+                  cmd_id.c_str(), cmd_type.c_str(), ok ? "ok" : "failed", static_cast<unsigned>(attempt));
     cJSON_Delete(root);
     return ok;
 }
@@ -473,7 +485,12 @@ static bool send_v3_control_hello()
     }
     cJSON_Delete(root);
     std::string response;
-    return http_post_json_string(make_server_url("/v3/control/hello"), body, &response, 5000);
+    const bool ok = http_post_json_string(make_server_url("/v3/control/hello"), body, &response, 5000, false);
+    ESP_LOG_LEVEL(ok ? ESP_LOG_INFO : ESP_LOG_ERROR, TAG,
+                  "CONTROL hello %s device=%s boot=%u firmware=%s protocol=3",
+                  ok ? "connected" : "failed", mac_address().c_str(), static_cast<unsigned>(xiaopai_boot_id),
+                  app != nullptr ? app->version : "unknown");
+    return ok;
 }
 
 static bool send_v3_control_heartbeat()
@@ -501,16 +518,48 @@ static bool send_v3_control_heartbeat()
     }
     cJSON_Delete(root);
     std::string response;
-    return http_post_json_string(make_server_url("/v3/control/heartbeat"), body, &response, 2000);
+    return http_post_json_string(make_server_url("/v3/control/heartbeat"), body, &response, 2000, false);
+}
+
+static void log_heap_health(const char* reason)
+{
+    const uint32_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const uint32_t internal_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const uint32_t internal_min = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const uint32_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
+    ESP_LOGI("Memory", "HEAP reason=%s internal_free=%u internal_largest=%u internal_min=%u psram_free=%u",
+             reason != nullptr ? reason : "", static_cast<unsigned>(internal_free),
+             static_cast<unsigned>(internal_largest), static_cast<unsigned>(internal_min),
+             static_cast<unsigned>(psram_free));
 }
 
 static void run_heartbeat_loop()
 {
     ESP_LOGI(TAG, "Heartbeat task started");
     uint32_t count = 0;
+    uint32_t consecutive_failures = 0;
     while (true) {
         if (wifi_is_connected() && active_server_selected) {
-            send_v3_control_heartbeat();
+            const bool ok = send_v3_control_heartbeat();
+            if (ok && consecutive_failures > 0) {
+                ESP_LOGI(TAG, "CONTROL heartbeat recovered after %u failures",
+                         static_cast<unsigned>(consecutive_failures));
+                consecutive_failures = 0;
+            } else if (!ok) {
+                ++consecutive_failures;
+                if (consecutive_failures == 1 || consecutive_failures % 30 == 0) {
+                    ESP_LOGW(TAG, "CONTROL heartbeat failed consecutive=%u",
+                             static_cast<unsigned>(consecutive_failures));
+                }
+            }
+        } else if (consecutive_failures > 0) {
+            ESP_LOGW(TAG, "CONTROL heartbeat paused: network unavailable failures=%u",
+                     static_cast<unsigned>(consecutive_failures));
+            consecutive_failures = 0;
+        }
+        if (count % 30 == 0) {
+            log_heap_health("heartbeat");
         }
         if (++count % 30 == 0) {
             audio_service_log_diagnostics();
@@ -529,6 +578,7 @@ static void run_command_http_loop()
     expression_state_set(kDefaultExpression);
     restore_terminal_command_dedupe_log();
     send_v3_control_hello();
+    uint32_t consecutive_poll_failures = 0;
 
     while (true) {
         if (xiaopai_boot_id == 0) {
@@ -542,11 +592,21 @@ static void run_command_http_loop()
         url += std::to_string(xiaopai_boot_id);
         url += "&timeout=";
         url += std::to_string(kCommandLongPollSeconds);
-        ESP_LOGI(TAG, "HTTP command poll: %s", url.c_str());
         std::string response;
-        if (http_get_string(url, &response, kCommandLongPollHttpTimeoutMs) && !response.empty()) {
+        const bool poll_ok = http_get_string(url, &response, kCommandLongPollHttpTimeoutMs, false);
+        if (poll_ok && !response.empty()) {
+            if (consecutive_poll_failures > 0) {
+                ESP_LOGI(TAG, "CONTROL command poll recovered after %u failures",
+                         static_cast<unsigned>(consecutive_poll_failures));
+                consecutive_poll_failures = 0;
+            }
             handle_command_response(response);
         } else {
+            ++consecutive_poll_failures;
+            if (consecutive_poll_failures == 1 || consecutive_poll_failures % 12 == 0) {
+                ESP_LOGW(TAG, "CONTROL command poll failed consecutive=%u",
+                         static_cast<unsigned>(consecutive_poll_failures));
+            }
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
     }
@@ -631,7 +691,6 @@ static void log_memory_snapshot(const char* reason)
     log_task_stack_watermark("boot", boot_task_handle);
     log_task_stack_watermark("realtime_audio_task", realtime_task_handle);
     log_task_stack_watermark("control_transport_task", command_task_handle);
-    log_task_stack_watermark("wifi_debug", wifi_debug_task_handle);
     log_task_stack_watermark("speech_task", speak_command_task_handle);
     log_task_stack_watermark("ui_task", head_touch_task_handle);
     log_task_stack_watermark("touch_audio", head_touch_audio_task_handle);
@@ -714,7 +773,6 @@ static void start_background_services()
 
         start_head_touch_services();
         start_speak_command_service();
-        start_wifi_debug_service();
         if (heartbeat_task_handle == nullptr) {
             xTaskCreatePinnedToCore([](void*) {
                 run_heartbeat_loop();
@@ -726,7 +784,8 @@ static void start_background_services()
                 audio_service_register_heartbeat_task(heartbeat_task_handle);
             }
         }
-        start_sedentary_find_owner_service();
+        // 暂时关闭 20 KB 常驻视觉健康任务以节省 SRAM。
+        // start_sedentary_find_owner_service();
         log_memory_snapshot("after helper tasks");
 
         if (!realtime_task_active.load()) {
