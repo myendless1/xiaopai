@@ -37,3 +37,17 @@ esp-idf/
 .openclaw/
 
 stack-chan-server.log
+
+# Runtime state
+/stack-chan/logs/
+/stack-chan/stack-chan-server/logs/*.log
+/stack-chan/stack-chan-server/data/*.sqlite3
+/stack-chan/stack-chan-server/data/*.sqlite3-wal
+/stack-chan/stack-chan-server/data/*.sqlite3-shm
+
+# Local archives
+/repo.zip
+/gemini.sh
+
+# Generated previews
+/stack-chan/tools/eye_expression_preview/
