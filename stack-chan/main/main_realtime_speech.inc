@@ -387,7 +387,7 @@ static bool send_opus_frame(esp_transport_handle_t ws, void* encoder, const int1
     }
 
     if (!send_ws_frame(ws, WS_TRANSPORT_OPCODES_BINARY, reinterpret_cast<const char*>(out.buffer), out.encoded_bytes,
-                       "audio")) {
+                       "audio", kRealtimeAudioWriteTimeoutMs, 1)) {
         return false;
     }
     ESP_LOGD(TAG, "Sent opus frame: pcm=%d encoded=%u", samples, static_cast<unsigned>(out.encoded_bytes));
@@ -506,22 +506,33 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     int32_t stop_smooth_level = average_abs_level(first_samples, first_count);
     bool got_hello = true;
     std::string stt_text;
+    bool stt_is_final = false;
     uint32_t state_generation = xiaopai_state_get().generation;
 
     auto append_and_send = [&](const int16_t* samples, int count) -> bool {
         int offset = 0;
-        while (offset < count && xiaopai_state_get().generation == state_generation && !xiaopai_state_get().is_speaking) {
+        while (offset < count && !stt_is_final && xiaopai_state_get().generation == state_generation &&
+               !xiaopai_state_get().is_speaking) {
             int n = std::min(count - offset, encoder_frame_samples - frame_pos);
             memcpy(frame.data() + frame_pos, samples + offset, n * sizeof(int16_t));
             frame_pos += n;
             offset += n;
             if (frame_pos == encoder_frame_samples) {
+                // Read control messages before sending another frame. A final STT
+                // means the Server has closed this ASR turn and must stop upstream audio.
+                if (!receive_ws_once(ws, 0, got_hello, stt_text, &stt_is_final)) {
+                    return false;
+                }
+                if (stt_is_final) {
+                    frame_pos = 0;
+                    break;
+                }
                 if (!send_opus_frame(ws, encoder, frame.data(), encoder_frame_samples, encoder_outbuf_size)) {
                     return false;
                 }
                 frame_pos = 0;
                 elapsed_ms += kOpusFrameDurationMs;
-                if (!receive_ws_once(ws, 0, got_hello, stt_text)) {
+                if (!receive_ws_once(ws, 0, got_hello, stt_text, &stt_is_final)) {
                     return false;
                 }
             }
@@ -534,7 +545,8 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     }
 
     std::vector<int16_t> chunk(kVoiceProbeSamples);
-    while (!app1_stop_requested && !voice_listener_paused && xiaopai_state_get().generation == state_generation &&
+    while (!app1_stop_requested && !voice_listener_paused && !stt_is_final &&
+           xiaopai_state_get().generation == state_generation &&
            !xiaopai_state_get().is_speaking && elapsed_ms < kRecordMaxMs) {
         if (!mic_record_blocking(chunk.data(), chunk.size(), kAudioSampleRate)) {
             ESP_LOGW(TAG, "Mic record returned false while recording");
@@ -557,9 +569,13 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
         }
     }
 
+    if (stt_is_final) {
+        ESP_LOGI(TAG, "Stop recording because final STT was received: %s", stt_text.c_str());
+    }
+
     bool interrupted = voice_listener_paused || xiaopai_state_get().generation != state_generation || xiaopai_state_get().is_speaking;
 
-    if (!interrupted && frame_pos > 0) {
+    if (!interrupted && !stt_is_final && frame_pos > 0) {
         memset(frame.data() + frame_pos, 0, (encoder_frame_samples - frame_pos) * sizeof(int16_t));
         if (!send_opus_frame(ws, encoder, frame.data(), encoder_frame_samples, encoder_outbuf_size)) {
             return false;
@@ -567,8 +583,12 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     }
 
     std::string stop = make_listen_message("stop");
-    ESP_LOGI(TAG, "WS send listen stop: %s", stop.c_str());
-    send_ws_text(ws, stop, "listen stop");
+    if (stt_is_final) {
+        ESP_LOGI(TAG, "Skip listen stop because Server already finalized the ASR turn");
+    } else {
+        ESP_LOGI(TAG, "WS send listen stop: %s", stop.c_str());
+        send_ws_text(ws, stop, "listen stop");
+    }
     recording_guard.finish();
 
     xiaopai_state_apply_outputs(xiaopai_state_get().state);
@@ -584,8 +604,8 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     set_app1_status("Recognizing", "Waiting for STT text", "See USB serial log", "");
 
     int64_t deadline = esp_timer_get_time() + static_cast<int64_t>(kRealtimeSttDrainTimeoutMs) * 1000LL;
-    while (stt_text.empty() && esp_timer_get_time() < deadline && !app1_stop_requested && !voice_listener_paused) {
-        if (!receive_ws_once(ws, 1000, got_hello, stt_text)) {
+    while (!stt_is_final && esp_timer_get_time() < deadline && !app1_stop_requested && !voice_listener_paused) {
+        if (!receive_ws_once(ws, 1000, got_hello, stt_text, &stt_is_final)) {
             return false;
         }
     }

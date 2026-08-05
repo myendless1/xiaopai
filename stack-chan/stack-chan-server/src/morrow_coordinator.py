@@ -13,6 +13,7 @@ from morrow_protocol import MorrowEvent
 
 
 HARD_PUNCTUATION = frozenset("。！？!?；;\n")
+SUPPORTED_EXPRESSIONS = frozenset({"happy", "thinking", "surprised"})
 
 
 class StreamingTextSegmenter:
@@ -47,6 +48,57 @@ class StreamingTextSegmenter:
             output.append(segment)
 
 
+class StreamingExpressionTagParser:
+    """Remove angle-bracket metadata while selecting one leading expression."""
+
+    def __init__(self) -> None:
+        self.expression = "calm"
+        self._leading = True
+        self._selected = False
+        self._tag_buffer = ""
+
+    def feed(self, text: str) -> str:
+        output: list[str] = []
+        for char in str(text or ""):
+            if self._tag_buffer:
+                if char == ">":
+                    self._finish_tag()
+                elif char == "<":
+                    self._tag_buffer = "<"
+                else:
+                    self._tag_buffer += char
+                continue
+
+            if char == "<":
+                self._tag_buffer = "<"
+                continue
+
+            output.append(char)
+            if not char.isspace():
+                self._leading = False
+        return "".join(output)
+
+    def flush(self) -> str:
+        # An unterminated tag is metadata, never speech.
+        self._tag_buffer = ""
+        return ""
+
+    def _finish_tag(self) -> None:
+        tag = self._tag_buffer[1:].strip().lower()
+        self._tag_buffer = ""
+        if self._leading and not self._selected and tag in SUPPORTED_EXPRESSIONS:
+            self.expression = tag
+            self._selected = True
+
+
+def parse_expression_tags(text: str) -> tuple[str, str]:
+    """Parse a complete notice using the same rules as streamed replies."""
+    parser = StreamingExpressionTagParser()
+    cleaned = parser.feed(text)
+    cleaned += parser.flush()
+    return cleaned, parser.expression
+
+
 @dataclass
 class MorrowRequest:
     request_id: str
@@ -56,6 +108,7 @@ class MorrowRequest:
     created_at: float
     expires_at: float
     generation: int
+    expression: str = "calm"
 
 
 @dataclass
@@ -68,22 +121,34 @@ class TurnOutcome:
 
 
 SegmentSink = Callable[[MorrowRequest, str, int], None]
+ReplyEndSink = Callable[[MorrowRequest, int, str], None]
 CancelSink = Callable[[str, int], None]
 
 
-def command_store_segment_sink(command_store, *, ttl_ms: int = 30_000, enqueue=None) -> SegmentSink:
+def command_store_segment_sink(
+    command_store,
+    *,
+    ttl_ms: int = 30_000,
+    enqueue=None,
+    speaker_volume=10,
+) -> SegmentSink:
     """Build a sink that persists every dialogue segment before device delivery."""
     from schemas import AdmissionPolicy, CommandEnvelope, future_time_ms, new_id
 
     def persist(request: MorrowRequest, text: str, segment_index: int) -> None:
+        resolved_speaker_volume = speaker_volume() if callable(speaker_volume) else speaker_volume
         command = CommandEnvelope(
                 cmd_id=new_id("cmd"),
                 device_id=request.device_id,
                 type="speak",
                 payload={
                     "text": text,
+                    "expression": request.expression,
+                    "turn_id": request.request_id,
                     "segment_index": segment_index,
                     "generation": request.generation,
+                    "reply_end": False,
+                    "speaker_volume": int(resolved_speaker_volume),
                 },
                 priority=50,
                 ttl_ms=ttl_ms,
@@ -102,22 +167,60 @@ def command_store_segment_sink(command_store, *, ttl_ms: int = 30_000, enqueue=N
     return persist
 
 
+def command_store_reply_end_sink(command_store, *, ttl_ms: int = 30_000, enqueue=None) -> ReplyEndSink:
+    """Build a FIFO sentinel marking the end (or cancellation) of a reply."""
+    from schemas import AdmissionPolicy, CommandEnvelope, future_time_ms, new_id
+
+    def persist(request: MorrowRequest, segment_index: int, outcome: str) -> None:
+        command = CommandEnvelope(
+            cmd_id=new_id("cmd"),
+            device_id=request.device_id,
+            type="speak",
+            payload={
+                "text": "",
+                "expression": request.expression,
+                "turn_id": request.request_id,
+                "segment_index": segment_index,
+                "generation": request.generation,
+                "reply_end": True,
+                "reply_cancelled": outcome != "saved",
+            },
+            priority=50,
+            ttl_ms=ttl_ms,
+            turn_id=request.request_id,
+            admission=AdmissionPolicy(),
+            expires_at=future_time_ms(ttl_ms),
+            source_type="dialogue",
+            source_id=request.request_id,
+            segment_index=segment_index,
+            turn_generation=request.generation,
+        )
+        command_store.create_command(command)
+        if enqueue is not None:
+            enqueue(request.device_id, command.to_device_command())
+
+    return persist
+
+
 class MorrowTurnCoordinator:
     def __init__(
         self,
         client,
         segment_sink: SegmentSink,
         *,
+        reply_end_sink: ReplyEndSink | None = None,
         cancel_sink: CancelSink | None = None,
         queue_size: int = 8,
         request_ttl: float = 60,
         turn_timeout: float = 120,
         max_segment_chars: int = 120,
         max_segment_bytes: int = 480,
+        initial_generations: dict[str, int] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.client = client
         self.segment_sink = segment_sink
+        self.reply_end_sink = reply_end_sink
         self.cancel_sink = cancel_sink
         self.request_ttl = max(0.01, float(request_ttl))
         self.turn_timeout = max(0.01, float(turn_timeout))
@@ -129,12 +232,16 @@ class MorrowTurnCoordinator:
         self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
         self._active: MorrowRequest | None = None
-        self._generations: dict[str, int] = {}
+        self._generations = {
+            str(device_id): max(0, int(generation))
+            for device_id, generation in (initial_generations or {}).items()
+        }
         self._outcomes: dict[str, TurnOutcome] = {}
         self.metrics = {
             "morrow_turn_submitted_total": 0,
             "morrow_turn_rejected_total": 0,
             "morrow_turn_timeout_total": 0,
+            "morrow_reply_end_error_total": 0,
             "morrow_first_delta_latency_ms": 0.0,
             "morrow_first_speech_command_latency_ms": 0.0,
         }
@@ -147,6 +254,12 @@ class MorrowTurnCoordinator:
     @property
     def queued_turns(self) -> int:
         return self._queue.qsize()
+
+    def generation_for_device(self, device_id: str) -> int:
+        """Return the generation that new speech for this device must use."""
+        device_id = str(device_id or "default")
+        with self._lock:
+            return self._generations.get(device_id, 0)
 
     def start(self) -> None:
         self.client.start()
@@ -252,6 +365,7 @@ class MorrowTurnCoordinator:
             max_chars=self.max_segment_chars,
             max_bytes=self.max_segment_bytes,
         )
+        tag_parser = StreamingExpressionTagParser()
         saw_delta = False
         final_message = ""
         deadline = self.clock() + self.turn_timeout
@@ -278,13 +392,18 @@ class MorrowTurnCoordinator:
                             self.metrics["morrow_first_delta_latency_ms"] = (self.clock() - submitted_at) * 1000
                         saw_delta = True
                         outcome.state = "streaming"
-                        self._deliver(request, outcome, segmenter.feed(text))
+                        cleaned = tag_parser.feed(text)
+                        request.expression = tag_parser.expression
+                        self._deliver(request, outcome, segmenter.feed(cleaned))
                     elif event_type == "agent_message":
                         final_message = text
                     continue
                 if event.type == "turn_saved":
                     if not saw_delta and final_message:
-                        self._deliver(request, outcome, segmenter.feed(final_message))
+                        cleaned = tag_parser.feed(final_message)
+                        request.expression = tag_parser.expression
+                        self._deliver(request, outcome, segmenter.feed(cleaned))
+                    segmenter.feed(tag_parser.flush())
                     self._deliver(request, outcome, segmenter.flush())
                     self._finish(outcome, "saved")
                     return
@@ -307,6 +426,13 @@ class MorrowTurnCoordinator:
         except Exception as exc:
             self._finish(outcome, "disconnected", str(exc))
         finally:
+            if outcome.finished.is_set() and outcome.segment_count and self.reply_end_sink is not None:
+                try:
+                    self.reply_end_sink(request, outcome.segment_count, outcome.state)
+                except Exception as exc:
+                    self.metrics["morrow_reply_end_error_total"] += 1
+                    if not outcome.message:
+                        outcome.message = f"reply-end enqueue failed: {exc}"
             with self._lock:
                 if self._active is request:
                     self._active = None

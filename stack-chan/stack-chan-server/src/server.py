@@ -24,7 +24,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue import Empty
 
 from morrow_client import MorrowClient
-from morrow_coordinator import MorrowTurnCoordinator, command_store_segment_sink
+from morrow_coordinator import (
+    MorrowTurnCoordinator,
+    command_store_reply_end_sink,
+    command_store_segment_sink,
+    parse_expression_tags,
+)
 from realtime_server import RealtimeConfig, RealtimeManager
 from realtime_protocol import ota_config
 from yunet_service import YunetFaceService
@@ -55,6 +60,7 @@ TOKEN_REFRESH_MARGIN_SECONDS = 300
 DEVICE_ONLINE_TTL_SECONDS = 90
 DIALOG_AWAKE_SECONDS = 180
 DEFAULT_OTA_CHECK_INTERVAL_SECONDS = 300
+DEFAULT_SEDENTARY_REMINDER_INTERVAL_SECONDS = 30 * 60
 LOG_TEXT_MAX_CHARS = 2000
 DEVICE_LOG_MAX_ITEMS = 500
 DEVICE_RECORDING_MAX_ITEMS = 100
@@ -122,22 +128,11 @@ SUPPRESSED_FALLBACK_SPEECH_NORMALIZED = {
 
 AVAILABLE_EXPRESSIONS = (
     "calm",
+    "happy",
+    "thinking",
+    "surprised",
     "sleep_dark",
     "screen_off",
-    "shy",
-    "thinking",
-    "relaxed",
-    "smile_blink",
-    "blink_half",
-    "blink_closed",
-    "wink_half",
-    "wink_closed",
-    "heart_small",
-    "heart",
-    "nod_soft",
-    "nod_down",
-    "happy_squint",
-    "happy_squint_soft",
 )
 
 AVAILABLE_ACTIONS = (
@@ -156,6 +151,9 @@ AVAILABLE_ACTIONS = (
 PHYSICAL_ACTIONS = {"node_head", "nod_head"}
 
 COMMAND_QUEUE_MAX_SIZE = 24
+SPEAKER_VOLUME_MIN = 5
+SPEAKER_VOLUME_MAX = 100
+SPEAKER_VOLUME_DEFAULT = 10
 COMMAND_DEFAULT_PRIORITIES = {
     "stop": 100,
     "volume": 90,
@@ -318,9 +316,11 @@ EXPRESSION_ALIASES = {
     "wink": "wink",
     "blink": "blink",
     "shy": "shy",
-    "happy": "happy_squint",
+    "happy": "happy",
+    "surprised": "surprised",
     "calm": "calm",
-    "开心": "happy_squint",
+    "开心": "happy",
+    "惊讶": "surprised",
     "微笑眨眼": "smile_blink",
     "眨眼微笑": "smile_blink",
     "舒缓": "relaxed",
@@ -1082,6 +1082,83 @@ def normalize_command_speech_payload(command_type: str, payload) -> None:
                         step["cache_name"] = cache_name
 
 
+def clamp_speaker_volume(value) -> int:
+    try:
+        percent = int(value)
+    except (TypeError, ValueError):
+        percent = SPEAKER_VOLUME_DEFAULT
+    return max(SPEAKER_VOLUME_MIN, min(SPEAKER_VOLUME_MAX, percent))
+
+
+def apply_global_speaker_volume(command_type: str, payload, speaker_volume) -> None:
+    """Attach the Server-owned hardware volume to every command that can speak."""
+    percent = clamp_speaker_volume(speaker_volume)
+    if command_type == "speak" and isinstance(payload, dict):
+        payload["speaker_volume"] = percent
+        return
+    if command_type in ("find_owner", "locate_owner") and isinstance(payload, dict):
+        payload["speaker_volume"] = percent
+        return
+    if command_type == "sequence" and isinstance(payload, list):
+        for step in payload:
+            if not isinstance(step, dict):
+                continue
+            step_type = str(step.get("type") or "")
+            step_payload = step.get("payload")
+            if not isinstance(step_payload, (dict, list)):
+                step_payload = step
+            apply_global_speaker_volume(step_type, step_payload, percent)
+
+
+def normalize_server_volume_command(server, payload) -> int:
+    """Resolve a relative volume command and update the Server source of truth."""
+    if not isinstance(payload, dict):
+        payload = {}
+    current = clamp_speaker_volume(getattr(server, "speaker_volume", SPEAKER_VOLUME_DEFAULT))
+    direction = str(payload.get("direction") or payload.get("action") or payload.get("type") or "").lower()
+    mode = str(payload.get("mode") or "").lower()
+    if mode == "set" or "value" in payload:
+        target = clamp_speaker_volume(payload.get("value", current))
+    else:
+        try:
+            step = abs(int(payload.get("step", 10))) or 10
+        except (TypeError, ValueError):
+            step = 10
+        if direction in ("down", "lower", "small", "quiet"):
+            target = clamp_speaker_volume(current - step)
+        else:
+            target = clamp_speaker_volume(current + step)
+    server.speaker_volume = target
+    payload["mode"] = "set"
+    payload["value"] = target
+    payload.pop("direction", None)
+    payload.pop("action", None)
+    payload.pop("step", None)
+    return target
+
+
+def prepare_server_command_audio(server, command_type: str, payload) -> None:
+    """Apply volume changes in command order and stamp speech with the active global value."""
+    if command_type in ("volume", "sound"):
+        normalize_server_volume_command(server, payload)
+        return
+    if command_type == "sequence" and isinstance(payload, list):
+        for step in payload:
+            if not isinstance(step, dict):
+                continue
+            step_type = str(step.get("type") or "")
+            step_payload = step.get("payload")
+            if not isinstance(step_payload, (dict, list)):
+                step_payload = step
+            prepare_server_command_audio(server, step_type, step_payload)
+        return
+    apply_global_speaker_volume(
+        command_type,
+        payload,
+        getattr(server, "speaker_volume", SPEAKER_VOLUME_DEFAULT),
+    )
+
+
 class DeviceCommandQueue:
     def __init__(self, max_size: int = COMMAND_QUEUE_MAX_SIZE):
         self.max_size = max(1, int(max_size))
@@ -1202,6 +1279,7 @@ class AliyunVoiceServer(ThreadingHTTPServer):
     asr_sample_rate: int
     sample_rate: int
     volume: int
+    speaker_volume: int
     speech_rate: int
     pitch_rate: int
     max_sentence_chars: int
@@ -1250,6 +1328,9 @@ class AliyunVoiceServer(ThreadingHTTPServer):
     ota_public_base_url: str
     ota_force: bool
     ota_check_interval_seconds: int
+    sedentary_reminder_interval_seconds: int
+    sedentary_reminder_trigger_total: int
+    sedentary_reminder_queued_total: int
     device_queues: dict[str, DeviceCommandQueue]
     last_ack: dict[str, dict]
     last_seen: dict[str, float]
@@ -1320,6 +1401,7 @@ class Handler(BaseHTTPRequestHandler):
                     "tts_sample_rate": self.server.sample_rate,
                     "channels": 1,
                     "voice": self.server.voice,
+                    "speaker_volume": self.server.speaker_volume,
                     "expressions": list(AVAILABLE_EXPRESSIONS),
                     "actions": list(AVAILABLE_ACTIONS),
                     "head_touch_events": HEAD_TOUCH_EVENT_TEXT,
@@ -1343,6 +1425,12 @@ class Handler(BaseHTTPRequestHandler):
                         "gain_x": self.server.find_owner_gain_x,
                         "gain_y": self.server.find_owner_gain_y,
                         "stop_pixels": self.server.find_owner_stop_pixels,
+                    },
+                    "sedentary_reminder": {
+                        "enabled": self.server.sedentary_reminder_interval_seconds > 0,
+                        "interval_seconds": self.server.sedentary_reminder_interval_seconds,
+                        "trigger_total": self.server.sedentary_reminder_trigger_total,
+                        "queued_total": self.server.sedentary_reminder_queued_total,
                     },
                     "morrow": self._morrow_health(),
                     "commands": self._command_health(),
@@ -2192,6 +2280,8 @@ class Handler(BaseHTTPRequestHandler):
             payload["expression"] = normalize_expression_name(payload.get("expression") or payload.get("face") or "calm")
         elif command_wire_type == "speak" and isinstance(payload, dict):
             payload.setdefault("pause_listener", True)
+            payload["expression"] = normalize_expression_name(payload.get("expression") or "calm")
+            payload.setdefault("reply_end", True)
         elif command_wire_type == "sequence" and isinstance(payload, list):
             for step in payload:
                 if isinstance(step, dict) and step.get("type") == "face":
@@ -2355,6 +2445,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _enqueue_http_command(self, device_id: str, command: dict) -> bool:
         device_id = safe_device_id(device_id)
+        command_type = str(command.get("type") or "")
+        payload = command.get("payload")
+        prepare_server_command_audio(self.server, command_type, payload)
         command_store = getattr(self.server, "command_store", None)
         if command_store is not None:
             try:
@@ -3595,7 +3688,7 @@ def is_placeholder_device_id(device_id: str) -> bool:
 
 
 def normalize_expression_name(expression: str) -> str:
-    value = str(expression or "").strip()
+    value = str(expression or "").strip().lower()
     if not value:
         return "calm"
     return EXPRESSION_ALIASES.get(value, value)
@@ -3681,6 +3774,7 @@ def enqueue_server_command(server, device_id: str, command: dict, *, persist: bo
 
     command_type = str(command.get("type") or "")
     payload = command.get("payload")
+    prepare_server_command_audio(server, command_type, payload)
     normalize_command_speech_payload(command_type, payload)
     command_store = getattr(server, "command_store", None)
     if persist and command_store is not None:
@@ -3703,6 +3797,92 @@ def enqueue_server_command(server, device_id: str, command: dict, *, persist: bo
         return True
     log_print(f"周期命令已丢弃: type={command.get('type')} device={device_id} stats={stats}")
     return False
+
+
+def enqueue_sedentary_reminder_once(server, reminder_index: int = 0, *, trigger_id: str = "") -> int:
+    """Ask each online device to face its owner and speak only if a face is found."""
+    device_ids = connected_device_ids(server)
+    if not device_ids:
+        return 0
+
+    _name, text = SEDENTARY_REMINDER_EVENTS[reminder_index % len(SEDENTARY_REMINDER_EVENTS)]
+    trigger_id = trigger_id or f"sedentary:{int(time.time())}"
+    queued = 0
+    for device_id in device_ids:
+        command = make_command(
+            "find_owner",
+            {
+                "rounds": 1,
+                "reply": text,
+                "trigger_id": trigger_id,
+                "speak": True,
+                "preserve_speech": True,
+                "wait_for_speech": True,
+                "gain_x": float(getattr(server, "find_owner_gain_x", 1.0)),
+                "gain_y": float(getattr(server, "find_owner_gain_y", 0.8)),
+                "stop_pixels": float(getattr(server, "find_owner_stop_pixels", 32.0)),
+            },
+            priority=COMMAND_DEFAULT_PRIORITIES["find_owner"],
+            interrupt=False,
+            ttl_seconds=300,
+            discardable=True,
+            coalesce_key="sedentary_timer",
+        )
+        command["source_type"] = "sedentary_timer"
+        command["source_id"] = device_id
+        command["segment_index"] = time.time_ns()
+        command_store = getattr(server, "command_store", None)
+        if command_store is not None:
+            command_store.cancel_pending_by_source(
+                "sedentary_timer",
+                device_id,
+                "superseded by newer sedentary timer",
+            )
+        if enqueue_server_command(server, device_id, command):
+            queued += 1
+
+    server.sedentary_reminder_queued_total = int(
+        getattr(server, "sedentary_reminder_queued_total", 0)
+    ) + queued
+    return queued
+
+
+def run_periodic_sedentary_reminder_loop(server) -> None:
+    interval = int(
+        getattr(
+            server,
+            "sedentary_reminder_interval_seconds",
+            DEFAULT_SEDENTARY_REMINDER_INTERVAL_SECONDS,
+        )
+        or 0
+    )
+    if interval <= 0:
+        log_print("定时久坐提醒已禁用")
+        return
+
+    log_print(f"定时久坐提醒已启用: 间隔={interval}s，播报前需检测到人脸")
+    next_due = time.monotonic() + interval
+    reminder_index = 0
+    while True:
+        remaining = next_due - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
+        now = time.monotonic()
+        next_due += interval
+        if next_due <= now:
+            # Do not burst missed reminders after a long process stall.
+            next_due = now + interval
+
+        server.sedentary_reminder_trigger_total = int(
+            getattr(server, "sedentary_reminder_trigger_total", 0)
+        ) + 1
+        trigger_id = f"sedentary:{int(time.time())}"
+        queued = enqueue_sedentary_reminder_once(server, reminder_index, trigger_id=trigger_id)
+        if queued:
+            reminder_index += 1
+            log_print(f"定时久坐找人命令已入队: trigger={trigger_id} devices={queued}")
+        else:
+            log_print(f"定时久坐提醒跳过: trigger={trigger_id} 无在线设备")
 
 
 def run_periodic_ota_check_loop(server) -> None:
@@ -3832,6 +4012,10 @@ def submit_morrow_notice_text(server, notice_id: str) -> bool:
         return False
         
     device_id = device_ids[0]
+
+    coordinator = getattr(server, "morrow_coordinator", None)
+    generation_getter = getattr(coordinator, "generation_for_device", None)
+    generation = int(generation_getter(device_id)) if callable(generation_getter) else 0
     
     if kind == "meeting_reminder":
         prio = 80
@@ -3847,17 +4031,30 @@ def submit_morrow_notice_text(server, notice_id: str) -> bool:
     queued_count = 0
     segment_index = 0
     last_cmd_id = ""
-    
-    for raw_segment in split_sentences(text, int(getattr(server, "max_sentence_chars", 120) or 120)):
+
+    cleaned_text, expression = parse_expression_tags(text)
+    speech_segments = []
+    for raw_segment in split_sentences(cleaned_text, int(getattr(server, "max_sentence_chars", 120) or 120)):
         segment = normalize_speech_text_for_voice(str(raw_segment or ""))
         if not segment or speech_text_is_temporarily_suppressed(segment):
             continue
+        speech_segments.append(segment)
+
+    for offset, segment in enumerate(speech_segments):
         segment_index += 1
         command = make_command(
             "speak",
-            {"text": segment, "pause_listener": True},
+            {
+                "text": segment,
+                "expression": expression,
+                "turn_id": stream_id,
+                "segment_index": offset,
+                "generation": generation,
+                "reply_end": offset == len(speech_segments) - 1,
+                "pause_listener": True,
+            },
             priority=prio,
-            interrupt=segment_index == 1,
+            interrupt=False,
             ttl_seconds=remaining_ttl,
             discardable=False,
             coalesce_key=f"{stream_id}:{segment_index}",
@@ -3865,6 +4062,7 @@ def submit_morrow_notice_text(server, notice_id: str) -> bool:
         command["source_type"] = "morrow_notice"
         command["source_id"] = notice_id
         command["segment_index"] = segment_index
+        command["turn_generation"] = generation
         last_cmd_id = command.get("cmd_id", "")
         if enqueue_server_command(server, device_id, command):
             queued_count += 1
@@ -3909,6 +4107,7 @@ def run_morrow_notice_outbox_loop(server) -> None:
                 """
                 SELECT notice_id FROM morrow_notices
                  WHERE state='received' AND expires_at >= ?
+                   AND (command_id IS NULL OR command_id='')
                  ORDER BY received_at ASC
                  LIMIT 8
                 """,
@@ -3964,6 +4163,12 @@ def command_payload_from_query(command_type: str, query: dict):
         return {"expression": normalize_expression_name(expression)}
     if command_type == "speak":
         payload = {"text": first_value(query, "text") or "你好呀"}
+        expression = first_value(query, "expression")
+        if expression:
+            payload["expression"] = normalize_expression_name(expression)
+        reply_end = first_value(query, "reply_end")
+        if reply_end:
+            payload["reply_end"] = parse_bool(reply_end)
         voice = first_value(query, "voice")
         if voice:
             payload["voice"] = voice
@@ -4214,6 +4419,12 @@ def main():
     )
     parser.add_argument("--sample-rate", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_SAMPLE_RATE", "24000")))
     parser.add_argument("--volume", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_VOLUME", "80")))
+    parser.add_argument(
+        "--speaker-volume",
+        type=int,
+        default=int(os.environ.get("STACKCHAN_SPEAKER_VOLUME", str(SPEAKER_VOLUME_DEFAULT))),
+        help="Global Xiaopai hardware speaker volume percent attached to every speech command.",
+    )
     parser.add_argument("--speech-rate", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_SPEECH_RATE", "0")))
     parser.add_argument("--pitch-rate", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_PITCH_RATE", "0")))
     parser.add_argument("--max-sentence-chars", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_MAX_SENTENCE_CHARS", "120")))
@@ -4432,6 +4643,17 @@ def main():
         default=int(os.environ.get("STACKCHAN_OTA_CHECK_INTERVAL_SECONDS", str(DEFAULT_OTA_CHECK_INTERVAL_SECONDS))),
         help="Interval for queuing check_ota commands to online devices. Set 0 to disable.",
     )
+    parser.add_argument(
+        "--sedentary-reminder-interval-seconds",
+        type=int,
+        default=int(
+            os.environ.get(
+                "STACKCHAN_SEDENTARY_REMINDER_INTERVAL_SECONDS",
+                str(DEFAULT_SEDENTARY_REMINDER_INTERVAL_SECONDS),
+            )
+        ),
+        help="Interval for face-gated sedentary reminders. Defaults to 1800 seconds; set 0 to disable.",
+    )
     parser.add_argument("--aliyun-asr-ws-url", default=os.environ.get("STACKCHAN_ALIYUN_ASR_WS_URL", ""))
     parser.add_argument("--aliyun-tts-ws-url", default=os.environ.get("STACKCHAN_ALIYUN_TTS_WS_URL", ""))
     parser.add_argument("--audio-upstream-format", default=os.environ.get("STACKCHAN_AUDIO_UPSTREAM_FORMAT", "opus"))
@@ -4476,6 +4698,7 @@ def main():
     httpd.asr_sample_rate = args.asr_sample_rate
     httpd.sample_rate = args.sample_rate
     httpd.volume = args.volume
+    httpd.speaker_volume = clamp_speaker_volume(args.speaker_volume)
     httpd.speech_rate = args.speech_rate
     httpd.pitch_rate = args.pitch_rate
     httpd.max_sentence_chars = args.max_sentence_chars
@@ -4529,6 +4752,9 @@ def main():
     httpd.ota_public_base_url = args.ota_public_base_url
     httpd.ota_force = args.ota_force
     httpd.ota_check_interval_seconds = args.ota_check_interval_seconds
+    httpd.sedentary_reminder_interval_seconds = max(0, args.sedentary_reminder_interval_seconds)
+    httpd.sedentary_reminder_trigger_total = 0
+    httpd.sedentary_reminder_queued_total = 0
     httpd.device_lock = threading.Lock()
     httpd.device_queues = {}
     httpd.last_ack = {}
@@ -4549,6 +4775,10 @@ def main():
     def enqueue_morrow_command(device_id: str, command: dict) -> bool:
         return enqueue_server_command(httpd, device_id, command, persist=False)
 
+    def cancel_morrow_generation(device_id: str, generation: int) -> int:
+        httpd.command_store.set_speech_generation(device_id, generation)
+        return httpd.command_store.cancel_pending_before_generation(device_id, generation)
+
     httpd.morrow_client = MorrowClient(
         base_url=args.morrow_base_url,
         session=args.morrow_session,
@@ -4559,12 +4789,23 @@ def main():
     ) if args.morrow_base_url else None
     httpd.morrow_coordinator = MorrowTurnCoordinator(
         httpd.morrow_client,
-        command_store_segment_sink(httpd.command_store, ttl_ms=60_000, enqueue=enqueue_morrow_command),
-        cancel_sink=lambda device_id, generation: httpd.command_store.cancel_pending_before_generation(device_id, generation),
+        command_store_segment_sink(
+            httpd.command_store,
+            ttl_ms=60_000,
+            enqueue=enqueue_morrow_command,
+            speaker_volume=lambda: httpd.speaker_volume,
+        ),
+        reply_end_sink=command_store_reply_end_sink(
+            httpd.command_store,
+            ttl_ms=60_000,
+            enqueue=enqueue_morrow_command,
+        ),
+        cancel_sink=cancel_morrow_generation,
         queue_size=8,
         request_ttl=60,
         turn_timeout=args.morrow_turn_timeout,
         max_segment_chars=args.max_sentence_chars,
+        initial_generations=httpd.command_store.speech_generations(),
     ) if httpd.morrow_client else None
     if httpd.morrow_coordinator:
         if not httpd.morrow_client.check_status():
@@ -4629,6 +4870,12 @@ def main():
 
 
     threading.Thread(target=run_periodic_ota_check_loop, args=(httpd,), name="ota-check", daemon=True).start()
+    threading.Thread(
+        target=run_periodic_sedentary_reminder_loop,
+        args=(httpd,),
+        name="sedentary-reminder",
+        daemon=True,
+    ).start()
     threading.Thread(target=run_morrow_notice_outbox_loop, args=(httpd,), name="morrow-outbox", daemon=True).start()
     if httpd.morrow_client:
         threading.Thread(target=run_morrow_notice_listener, args=(httpd,), name="morrow-notice-listener", daemon=True).start()
@@ -4649,6 +4896,10 @@ def main():
     log_print(f"  设备日志文件: {httpd.device_log_dir}")
     log_print(f"  视觉跟踪: {'启用' if args.visual_tracking_enabled else '禁用'}")
     log_print(f"  命令队列: max_size={args.command_queue_max_size}")
+    log_print(
+        f"  音量: speaker={httpd.speaker_volume}% "
+        f"aliyun_synthesis={args.volume}"
+    )
     log_print(f"  Morrow: {'启用' if httpd.morrow_coordinator else '禁用'} session={args.morrow_session}")
     ota_firmware = find_latest_ota_firmware(httpd.ota_firmware_file, httpd.ota_firmware_dir)
     log_print(
@@ -4662,6 +4913,14 @@ def main():
     log_print(
         "  OTA 检查命令: "
         + (f"每 {args.ota_check_interval_seconds}s" if args.ota_check_interval_seconds > 0 else "禁用")
+    )
+    log_print(
+        "  定时久坐提醒: "
+        + (
+            f"每 {httpd.sedentary_reminder_interval_seconds}s（检测到人脸后播报）"
+            if httpd.sedentary_reminder_interval_seconds > 0
+            else "禁用"
+        )
     )
     log_print(
         "  实时语音: "

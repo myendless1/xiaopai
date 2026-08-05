@@ -184,8 +184,10 @@ Queues the full command schema as JSON:
 }
 ```
 
-ASR phrases containing `声音` plus `大` or `小` adjust Xiaopai speaker volume by 10 on a 10-100 scale. If the phrase
-also contains `最`, `声音最大` sets 100 and `声音最小` sets 10. The device then replies `已经将声音调到XXX`.
+ASR phrases containing `声音` plus `大` or `小` adjust the Server-owned Xiaopai speaker volume by 10 on a 10-100
+scale. If the phrase also contains `最`, `声音最大` sets 100 and `声音最小` sets 10. The Server converts relative
+changes to an absolute value and attaches it as `speaker_volume` to subsequent speech commands. The device then
+replies `已经将声音调到XXX`.
 
 `POST /upload`
 
@@ -371,7 +373,8 @@ Environment variables:
 | `STACKCHAN_ALIYUN_VOICE` | `zhimiao_emo` | Aliyun TTS voice |
 | `STACKCHAN_ALIYUN_ASR_SAMPLE_RATE` | `16000` | Microphone/Opus/ASR upstream sample rate |
 | `STACKCHAN_ALIYUN_SAMPLE_RATE` | `24000` | TTS/Opus/playback downstream sample rate |
-| `STACKCHAN_ALIYUN_VOLUME` | `80` | TTS volume |
+| `STACKCHAN_ALIYUN_VOLUME` | `80` | Aliyun TTS synthesis amplitude; this is not the physical speaker volume |
+| `STACKCHAN_SPEAKER_VOLUME` | `10` | Global Xiaopai hardware speaker volume attached to every speech command |
 | `STACKCHAN_ALIYUN_SPEECH_RATE` | `0` | TTS speech rate |
 | `STACKCHAN_ALIYUN_PITCH_RATE` | `0` | TTS pitch rate |
 | `STACKCHAN_ALIYUN_MAX_SENTENCE_CHARS` | `120` | Sentence chunk size for TTS |

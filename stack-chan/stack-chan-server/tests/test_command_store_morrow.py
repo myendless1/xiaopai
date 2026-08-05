@@ -10,7 +10,11 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from command_store import CommandStore  # noqa: E402
 from database import Database  # noqa: E402
-from morrow_coordinator import MorrowRequest, command_store_segment_sink  # noqa: E402
+from morrow_coordinator import (  # noqa: E402
+    MorrowRequest,
+    command_store_reply_end_sink,
+    command_store_segment_sink,
+)
 
 
 class MorrowCommandStoreTest(unittest.TestCase):
@@ -22,7 +26,7 @@ class MorrowCommandStoreTest(unittest.TestCase):
     def test_segment_sink_persists_source_order_and_generation(self):
         store = self.make_store()
         sink = command_store_segment_sink(store)
-        request = MorrowRequest("req-1", "问题", "robot-1", "voice", 1, 60, 3)
+        request = MorrowRequest("req-1", "问题", "robot-1", "voice", 1, 60, 3, "happy")
         sink(request, "第一句。", 0)
         sink(request, "第二句。", 1)
 
@@ -30,13 +34,58 @@ class MorrowCommandStoreTest(unittest.TestCase):
         store.record_ack({"cmd_id": first["cmd_id"], "state": "rendered"})
         second = store.lease_next_command("robot-1")
 
-        self.assertEqual(first["payload"], {"text": "第一句。", "segment_index": 0, "generation": 3})
+        self.assertEqual(
+            first["payload"],
+            {
+                "text": "第一句。",
+                "expression": "happy",
+                "turn_id": "req-1",
+                "segment_index": 0,
+                "generation": 3,
+                "reply_end": False,
+                "speaker_volume": 10,
+            },
+        )
         self.assertEqual(second["payload"]["segment_index"], 1)
         with store.database.connect() as conn:
             rows = conn.execute("SELECT * FROM commands ORDER BY segment_index").fetchall()
         self.assertEqual(rows[0]["source_type"], "dialogue")
         self.assertEqual(rows[0]["source_id"], "req-1")
         self.assertEqual(rows[0]["turn_generation"], 3)
+
+    def test_segment_sink_reads_current_global_speaker_volume(self):
+        store = self.make_store()
+        current = {"value": 10}
+        sink = command_store_segment_sink(store, speaker_volume=lambda: current["value"])
+        request = MorrowRequest("req-1", "问题", "robot-1", "voice", 1, 60, 3, "happy")
+
+        sink(request, "第一句。", 0)
+        current["value"] = 30
+        sink(request, "第二句。", 1)
+
+        first = store.lease_next_command("robot-1")
+        store.record_ack({"cmd_id": first["cmd_id"], "state": "rendered"})
+        second = store.lease_next_command("robot-1")
+        self.assertEqual(first["payload"]["speaker_volume"], 10)
+        self.assertEqual(second["payload"]["speaker_volume"], 30)
+
+    def test_reply_end_sink_follows_segments_in_the_same_fifo(self):
+        store = self.make_store()
+        segment_sink = command_store_segment_sink(store)
+        end_sink = command_store_reply_end_sink(store)
+        request = MorrowRequest("req-1", "问题", "robot-1", "voice", 1, 60, 3, "surprised")
+        segment_sink(request, "回复。", 0)
+        end_sink(request, 1, "saved")
+
+        first = store.lease_next_command("robot-1")
+        store.record_ack({"cmd_id": first["cmd_id"], "state": "rendered"})
+        ending = store.lease_next_command("robot-1")
+
+        self.assertEqual(ending["payload"]["text"], "")
+        self.assertEqual(ending["payload"]["expression"], "surprised")
+        self.assertTrue(ending["payload"]["reply_end"])
+        self.assertFalse(ending["payload"]["reply_cancelled"])
+        self.assertEqual(ending["payload"]["segment_index"], 1)
 
     def test_source_segment_unique_constraint_prevents_duplicate_speech(self):
         store = self.make_store()
@@ -59,6 +108,13 @@ class MorrowCommandStoreTest(unittest.TestCase):
         self.assertEqual(store.cancel_pending_before_generation("robot-1", 1), 1)
         leased = store.lease_next_command("robot-1")
         self.assertEqual(leased["turn_id"], "new")
+
+    def test_speech_generation_is_monotonic_and_persistent(self):
+        store = self.make_store()
+        store.set_speech_generation("robot-1", 19)
+        store.set_speech_generation("robot-1", 7)
+
+        self.assertEqual(store.speech_generations(), {"robot-1": 19})
 
     def test_find_terminal_ack(self):
         store = self.make_store()

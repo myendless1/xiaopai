@@ -1,6 +1,17 @@
 static bool execute_command_object_internal(const cJSON* command, bool in_sequence,
                                             bool* sequence_sleep_or_stop_executed);
 
+static void apply_command_speaker_volume(const cJSON* payload)
+{
+    const int requested = json_int_value(payload, "speaker_volume", -1);
+    if (requested < 0) {
+        return;
+    }
+    speaker_volume_percent = clamp_speaker_volume_percent(requested);
+    apply_speaker_volume();
+    ESP_LOGI(TAG, "Applied command speaker volume: percent=%d", speaker_volume_percent);
+}
+
 static const cJSON* command_payload_or_self(const cJSON* command)
 {
     const cJSON* payload = cJSON_GetObjectItemCaseSensitive(command, "payload");
@@ -108,6 +119,169 @@ static bool execute_command_object(const cJSON* command)
     return execute_command_object_internal(command, false, nullptr);
 }
 
+static void log_serial_debug_status()
+{
+    const XiaopaiStateSnapshot state = xiaopai_state_get();
+    const ExpressionStateSnapshot expression = expression_state_get();
+    ESP_LOGI(TAG,
+             "SERIAL_CMD status state=%s expression=%s volume=%d wifi=%d server=%d recording=%d speaking=%d",
+             state.name, expression.name, speaker_volume_percent,
+             wifi_is_connected() ? 1 : 0, active_server_selected ? 1 : 0,
+             voice_recording_active.load() ? 1 : 0, state.is_speaking ? 1 : 0);
+}
+
+static bool enqueue_serial_debug_speak(const cJSON* command)
+{
+    const cJSON* payload = command_payload_or_self(command);
+    const std::string text = json_string_value(payload, "text");
+    const std::string cache_name = json_string_value(payload, "cache_name");
+    const std::string voice = json_string_value(payload, "voice");
+    std::string expression = json_string_value(payload, "expression");
+    if (expression.empty()) {
+        expression = kDefaultExpression;
+    }
+    const int sample_rate = json_int_value(payload, "sample_rate", 0);
+    const int volume = json_int_value(payload, "volume", 0);
+    const int speaker_volume = json_int_value(payload, "speaker_volume", -1);
+    const int speech_rate = json_int_value(payload, "speech_rate", 0);
+    const int pitch_rate = json_int_value(payload, "pitch_rate", 0);
+    const bool pause_listener = json_bool_value(payload, "pause_listener", true) ||
+                                json_bool_value(payload, "pause_voice_listener", false);
+    const bool reply_end = json_bool_value(payload, "reply_end", true);
+    return enqueue_speak_command("", text.c_str(), cache_name.c_str(), pause_listener, voice.c_str(),
+                                 sample_rate, volume, speech_rate, pitch_rate, 0, 0, 0, 30000,
+                                 nullptr, expression.c_str(), reply_end, false, speaker_volume);
+}
+
+static bool serial_sequence_contains_speak(const cJSON* command)
+{
+    const cJSON* payload = command_payload_or_self(command);
+    if (!cJSON_IsArray(payload)) {
+        return false;
+    }
+    const int count = cJSON_GetArraySize(payload);
+    for (int i = 0; i < count; ++i) {
+        if (json_string_value(cJSON_GetArrayItem(payload, i), "type") == "speak") {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool execute_serial_debug_line(char* line)
+{
+    if (line == nullptr) {
+        return false;
+    }
+
+    while (*line != '\0' && std::isspace(static_cast<unsigned char>(*line))) {
+        ++line;
+    }
+    size_t length = strlen(line);
+    while (length > 0 && std::isspace(static_cast<unsigned char>(line[length - 1]))) {
+        line[--length] = '\0';
+    }
+    if (length == 0) {
+        return true;
+    }
+    if (strcmp(line, "help") == 0) {
+        ESP_LOGI(TAG,
+                 "SERIAL_CMD help: send one JSON command per line, for example "
+                 "{\"type\":\"speak\",\"payload\":{\"text\":\"串口测试\",\"speaker_volume\":10}}");
+        ESP_LOGI(TAG,
+                 "SERIAL_CMD help: speak runs on the speech queue; sequences containing speak are rejected; "
+                 "plain commands: help, status");
+        return true;
+    }
+    if (strcmp(line, "status") == 0) {
+        log_serial_debug_status();
+        return true;
+    }
+
+    cJSON* root = cJSON_Parse(line);
+    if (root == nullptr) {
+        ESP_LOGW(TAG, "SERIAL_CMD result=error reason=invalid_json");
+        return false;
+    }
+
+    const cJSON* command = root;
+    if (json_string_value(root, "type") == "command") {
+        const cJSON* wrapped_command = cJSON_GetObjectItemCaseSensitive(root, "command");
+        if (cJSON_IsObject(wrapped_command)) {
+            command = wrapped_command;
+        }
+    }
+    const std::string type = json_string_value(command, "type");
+    bool ok = false;
+    if (type == "speak") {
+        ok = enqueue_serial_debug_speak(command);
+    } else if (type == "sequence" && serial_sequence_contains_speak(command)) {
+        ESP_LOGW(TAG, "SERIAL_CMD result=error type=sequence reason=speak_sequence_not_supported");
+        cJSON_Delete(root);
+        return false;
+    } else {
+        ok = execute_command_object(command);
+    }
+    ESP_LOG_LEVEL(ok ? ESP_LOG_INFO : ESP_LOG_ERROR, TAG,
+                  "SERIAL_CMD result=%s type=%s", ok ? (type == "speak" ? "queued" : "ok") : "failed",
+                  type.c_str());
+    cJSON_Delete(root);
+    return ok;
+}
+
+static void serial_debug_command_task(void*)
+{
+    ESP_LOGI(TAG, "SERIAL_CMD ready transport=usb_serial_jtag format=jsonl");
+    char chunk[256] = {};
+    char line[2048] = {};
+    size_t line_length = 0;
+    bool discard_until_newline = false;
+    while (true) {
+        if (fgets(chunk, sizeof(chunk), stdin) != nullptr) {
+            const size_t chunk_length = strlen(chunk);
+            for (size_t i = 0; i < chunk_length; ++i) {
+                const char ch = chunk[i];
+                if (ch == '\n') {
+                    if (!discard_until_newline) {
+                        line[line_length] = '\0';
+                        execute_serial_debug_line(line);
+                    }
+                    line_length = 0;
+                    discard_until_newline = false;
+                    continue;
+                }
+                if (ch == '\r' || discard_until_newline) {
+                    continue;
+                }
+                if (line_length + 1 >= sizeof(line)) {
+                    ESP_LOGW(TAG, "SERIAL_CMD result=error reason=line_too_long");
+                    line_length = 0;
+                    discard_until_newline = true;
+                    continue;
+                }
+                line[line_length++] = ch;
+            }
+            continue;
+        }
+        clearerr(stdin);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
+static void start_serial_debug_command_service()
+{
+    static TaskHandle_t task_handle = nullptr;
+    if (task_handle != nullptr) {
+        return;
+    }
+    const BaseType_t created = xTaskCreatePinnedToCore(
+        serial_debug_command_task, "serial_command", 6 * 1024, nullptr, 2, &task_handle, 0);
+    if (created != pdPASS) {
+        task_handle = nullptr;
+        ESP_LOGE(TAG, "SERIAL_CMD failed to create command task");
+    }
+}
+
 static bool command_marks_user_interaction(const std::string& type)
 {
     return type != "sleep" && type != "state" && type != "device_state" &&
@@ -197,15 +371,18 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
         std::string voice = json_string_value(payload, "voice");
         int sample_rate = json_int_value(payload, "sample_rate", 0);
         int volume = json_int_value(payload, "volume", 0);
+        int speaker_volume = json_int_value(payload, "speaker_volume", -1);
         int speech_rate = json_int_value(payload, "speech_rate", 0);
         int pitch_rate = json_int_value(payload, "pitch_rate", 0);
         bool pause_listener = json_bool_value(payload, "pause_listener", false) ||
                               json_bool_value(payload, "pause_voice_listener", false);
         if (voice_recording_active && !in_sequence) {
             bool queued = enqueue_speak_command("", text.c_str(), cache_name.c_str(), pause_listener, voice.c_str(),
-                                                sample_rate, volume, speech_rate, pitch_rate);
+                                                sample_rate, volume, speech_rate, pitch_rate, 0, 0, 0, 30000,
+                                                nullptr, "calm", true, false, speaker_volume);
             return queued;
         }
+        apply_command_speaker_volume(payload);
         if (in_sequence) {
             wait_for_voice_recording_to_finish();
             if (voice_recording_active) {
@@ -248,6 +425,7 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
         }
         bool preserve_speech = json_bool_value(payload, "preserve_speech", false);
         bool wait_for_speech = json_bool_value(payload, "wait_for_speech", false);
+        apply_command_speaker_volume(payload);
         return run_find_owner_command(rounds, reply.c_str(), gain_x, gain_y, stop_pixels, preserve_speech,
                                       wait_for_speech);
     }
@@ -339,7 +517,8 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
     if (type == "stop") {
         supervisor_set_app2_stop_requested(true, "stop command", SupervisorSafetyClass::LocalStop);
         codec_audio_output_stop();
-        expression_state_set("stopped");
+        expression_state_reply_cancel("stop command");
+        expression_state_set(kDefaultExpression);
         xiaopai_state_set(LocalVoiceState::Idle, "stop command");
         return true;
     }
@@ -386,6 +565,7 @@ static bool handle_command_response(const std::string& response)
     const cJSON* command = cJSON_GetObjectItemCaseSensitive(root, "command");
     std::string cmd_id = json_string_value(command, "cmd_id");
     std::string cmd_type = json_string_value(command, "type");
+    std::string command_turn_id = json_string_value(command, "turn_id");
     uint32_t attempt = static_cast<uint32_t>(json_int_value(command, "attempt", 0));
     uint32_t ttl_ms = static_cast<uint32_t>(json_int_value(command, "ttl_ms", 30000));
     bool persist_dedupe = cmd_type == "speak" || cmd_type == "sequence" || cmd_type == "motion" ||
@@ -415,17 +595,29 @@ static bool handle_command_response(const std::string& response)
         std::string voice = json_string_value(payload, "voice");
         int sample_rate = json_int_value(payload, "sample_rate", 0);
         int volume = json_int_value(payload, "volume", 0);
+        int speaker_volume = json_int_value(payload, "speaker_volume", -1);
         int speech_rate = json_int_value(payload, "speech_rate", 0);
         int pitch_rate = json_int_value(payload, "pitch_rate", 0);
         uint32_t generation = static_cast<uint32_t>(json_int_value(payload, "generation", 0));
         uint16_t segment_index = static_cast<uint16_t>(json_int_value(payload, "segment_index", 0));
+        std::string turn_id = json_string_value(payload, "turn_id");
+        if (turn_id.empty()) {
+            turn_id = command_turn_id.empty() ? cmd_id : command_turn_id;
+        }
+        std::string expression = json_string_value(payload, "expression");
+        if (expression.empty()) {
+            expression = kDefaultExpression;
+        }
+        bool reply_end = json_bool_value(payload, "reply_end", true);
+        bool reply_cancelled = json_bool_value(payload, "reply_cancelled", false);
         bool pause_listener = json_bool_value(payload, "pause_listener", false) ||
                               json_bool_value(payload, "pause_voice_listener", false);
         bool queued = enqueue_speak_command(cmd_id.c_str(), text.c_str(), cache_name.c_str(), pause_listener,
                                             voice.c_str(), sample_rate, volume, speech_rate, pitch_rate,
-                                            attempt, generation, segment_index, ttl_ms);
+                                            attempt, generation, segment_index, ttl_ms, turn_id.c_str(),
+                                            expression.c_str(), reply_end, reply_cancelled, speaker_volume);
         if (!queued) {
-            send_command_ack(cmd_id.c_str(), "failed", "speak queue unavailable or empty text", attempt);
+            send_command_ack(cmd_id.c_str(), "failed", "speak queue unavailable or invalid control item", attempt);
         } else {
             send_command_ack(cmd_id.c_str(), "received", "", attempt);
             if (persist_dedupe) command_dedupe_mark_persistent(cmd_id.c_str());

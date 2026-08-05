@@ -63,6 +63,25 @@ class CommandStore:
             )
         return row
 
+    def speech_generations(self) -> dict[str, int]:
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                "SELECT device_id, speech_generation FROM devices WHERE speech_generation > 0"
+            ).fetchall()
+        return {str(row["device_id"]): int(row["speech_generation"] or 0) for row in rows}
+
+    def set_speech_generation(self, device_id: str, generation: int) -> None:
+        with self.database.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO devices(device_id, speech_generation)
+                VALUES (?, ?)
+                ON CONFLICT(device_id) DO UPDATE SET
+                  speech_generation=MAX(devices.speech_generation, excluded.speech_generation)
+                """,
+                (str(device_id or "default"), max(0, int(generation))),
+            )
+
     def lease_command(self, cmd_id: str, *, boot_id: int = 0, lease_ms: int = DEFAULT_LEASE_MS) -> dict[str, Any] | None:
         now = utc_now()
         lease_expires_at = future_time_ms(lease_ms)
@@ -165,7 +184,9 @@ class CommandStore:
                         )
                         # Link ACK to morrow_notices state
                         notice_state = state
-                        if state == "running":
+                        if state in ("received", "queued"):
+                            notice_state = "queued"
+                        elif state in ("running", "leased"):
                             notice_state = "leased"
                         conn.execute(
                             """

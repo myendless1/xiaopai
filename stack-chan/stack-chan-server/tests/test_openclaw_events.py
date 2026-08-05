@@ -52,6 +52,52 @@ class MorrowEventContentTest(unittest.TestCase):
 
 
 class CommandPayloadTest(unittest.TestCase):
+    def test_global_speaker_volume_is_distinct_from_tts_synthesis_volume(self):
+        payload = {"text": "你好", "volume": 80, "speaker_volume": 70}
+
+        server.apply_global_speaker_volume("speak", payload, 10)
+
+        self.assertEqual(payload["volume"], 80)
+        self.assertEqual(payload["speaker_volume"], 10)
+
+    def test_global_speaker_volume_reaches_sequence_and_find_owner_speech(self):
+        sequence = [
+            {"type": "face", "expression": "happy"},
+            {"type": "speak", "text": "完成了"},
+            {"type": "find_owner", "reply": "该活动一下了"},
+        ]
+
+        server.apply_global_speaker_volume("sequence", sequence, 10)
+
+        self.assertNotIn("speaker_volume", sequence[0])
+        self.assertEqual(sequence[1]["speaker_volume"], 10)
+        self.assertEqual(sequence[2]["speaker_volume"], 10)
+
+    def test_volume_command_updates_server_global_and_becomes_absolute(self):
+        fake_server = type("FakeServer", (), {"speaker_volume": 10})()
+        payload = {"direction": "up", "step": 10}
+
+        result = server.normalize_server_volume_command(fake_server, payload)
+
+        self.assertEqual(result, 20)
+        self.assertEqual(fake_server.speaker_volume, 20)
+        self.assertEqual(payload, {"mode": "set", "value": 20})
+
+    def test_sequence_volume_change_updates_global_before_later_speech(self):
+        fake_server = type("FakeServer", (), {"speaker_volume": 10})()
+        payload = [
+            {"type": "speak", "text": "先用原音量"},
+            {"type": "volume", "direction": "up", "step": 10},
+            {"type": "speak", "text": "再用新音量"},
+        ]
+
+        server.prepare_server_command_audio(fake_server, "sequence", payload)
+
+        self.assertEqual(payload[0]["speaker_volume"], 10)
+        self.assertEqual(payload[1], {"type": "volume", "mode": "set", "value": 20})
+        self.assertEqual(payload[2]["speaker_volume"], 20)
+        self.assertEqual(fake_server.speaker_volume, 20)
+
     def test_sequence_query_speak_step_pauses_listener(self):
         payload = server.command_payload_from_query(
             "sequence",

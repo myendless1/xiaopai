@@ -14,6 +14,10 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         cls.realtime = (ROOT / "main" / "main_realtime_transport.inc").read_text()
         cls.touch = (ROOT / "main" / "main_head_touch.inc").read_text()
         cls.speech = (ROOT / "main" / "main_realtime_speech.inc").read_text()
+        cls.expression_state = (ROOT / "main" / "expression_state.cpp").read_text()
+        cls.expression_header = (ROOT / "main" / "expression_state.h").read_text()
+        cls.expression_controller = (ROOT / "main" / "expression_controller.cpp").read_text()
+        cls.main = (ROOT / "main" / "main.cpp").read_text()
 
     def test_tts_uses_post_v3_endpoint_without_legacy_ack_fallback(self):
         self.assertIn('make_server_url("/v3/tts")', self.tts)
@@ -29,9 +33,37 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         self.assertGreater(received, enqueue)
 
     def test_speech_item_has_delivery_metadata_and_utf8_capacity(self):
-        for field in ("attempt", "generation", "segment_index", "deadline_tick"):
+        for field in (
+            "attempt",
+            "generation",
+            "segment_index",
+            "deadline_tick",
+            "turn_id",
+            "expression",
+            "reply_end",
+            "reply_cancelled",
+            "speaker_volume",
+        ):
             self.assertIn(field, self.state)
         self.assertIn("kSpeakCommandMaxTextBytes = 768", self.state)
+
+    def test_server_speaker_volume_is_applied_at_playback_and_to_find_owner(self):
+        self.assertIn('json_int_value(payload, "speaker_volume", -1)', self.commands)
+        self.assertIn("item.speaker_volume = speaker_volume", self.tts)
+        self.assertIn("item.speaker_volume >= 0", self.tts)
+        self.assertIn("clamp_speaker_volume_percent(item.speaker_volume)", self.tts)
+        find_owner = self.commands.index('if (type == "find_owner" || type == "locate_owner")')
+        apply_volume = self.commands.index("apply_command_speaker_volume(payload)", find_owner)
+        run_find_owner = self.commands.index("return run_find_owner_command", find_owner)
+        self.assertLess(apply_volume, run_find_owner)
+
+    def test_firmware_fallback_speaker_volume_is_ten_percent(self):
+        kconfig = (ROOT / "main" / "Kconfig.projbuild").read_text()
+        defaults = (ROOT / "sdkconfig.defaults").read_text()
+        audio_service = (ROOT / "main" / "audio" / "xiaopai_audio_service.cpp").read_text()
+        self.assertIn('int "Default output volume percent"\n        default 10', kconfig)
+        self.assertIn("CONFIG_STACKCHAN_AUDIO_OUTPUT_VOLUME_DEFAULT=10", defaults)
+        self.assertIn("#define CONFIG_STACKCHAN_AUDIO_OUTPUT_VOLUME_DEFAULT 10", audio_service)
 
     def test_dedupe_ack_replay_and_generation_stop_exist(self):
         self.assertIn("command_dedupe_entries[64]", self.state)
@@ -42,6 +74,25 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         self.assertNotIn('type == "mcp"', self.realtime)
         self.assertNotIn('type == "command"', self.realtime)
         self.assertNotIn("tools/call", self.realtime)
+
+    def test_realtime_final_stt_stops_audio_upstream_without_long_write_block(self):
+        self.assertIn('json_bool_value(root, "is_final", false)', self.realtime)
+        self.assertIn("bool* stt_is_final", self.realtime)
+        self.assertIn("!stt_is_final", self.speech)
+        self.assertIn("Stop recording because final STT was received", self.speech)
+        self.assertIn("Skip listen stop because Server already finalized", self.speech)
+        self.assertIn('"audio", kRealtimeAudioWriteTimeoutMs, 1', self.speech)
+        self.assertIn("kRealtimeAudioWriteTimeoutMs = 500", self.state)
+
+    def test_usb_serial_debug_interface_reuses_device_command_protocol(self):
+        self.assertIn("SERIAL_CMD ready transport=usb_serial_jtag format=jsonl", self.commands)
+        self.assertIn("execute_serial_debug_line", self.commands)
+        self.assertIn("execute_command_object(command)", self.commands)
+        self.assertIn("discard_until_newline", self.commands)
+        self.assertIn("reason=line_too_long", self.commands)
+        self.assertIn("enqueue_serial_debug_speak", self.commands)
+        self.assertIn("speak_sequence_not_supported", self.commands)
+        self.assertIn("start_serial_debug_command_service();", self.main)
 
     def test_local_long_press_stops_and_reports_generation(self):
         self.assertIn("kLocalStopLongPressMs = 1200", self.touch)
@@ -68,6 +119,32 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
             self.assertIn(f"type != {command_type}", helper)
         self.assertIn("if (command_marks_user_interaction(type))", self.commands)
         self.assertIn("if (command_marks_user_interaction(cmd_type))", self.commands)
+
+    def test_reply_expression_starts_on_first_pcm_and_ends_from_fifo_control_item(self):
+        enqueue = self.tts.index("audio_service_play_pcm_24k")
+        expression_start = self.tts.index("expression_state_reply_audio_started", enqueue)
+        self.assertGreater(expression_start, enqueue)
+        self.assertIn("expression_state_reply_prepare(item.turn_id", self.tts)
+        self.assertIn("if (item.text[0] == '\\0')", self.tts)
+        self.assertIn("expression_state_reply_end(item.turn_id", self.tts)
+        self.assertIn("expression_state_reply_segment_finished(item.turn_id", self.tts)
+
+    def test_reply_state_has_release_hold_watchdog_and_generation_matching(self):
+        for phase in ("PendingAudio", "Playing", "BetweenSegments", "Releasing"):
+            self.assertIn(phase, self.expression_header)
+        self.assertIn("kReplyReleaseMs = 200", self.expression_state)
+        self.assertIn("kReplyWatchdogMs = 10000", self.expression_state)
+        self.assertIn("reply_session.generation == generation", self.expression_state)
+        self.assertIn('show_expression(kDefaultExpression)', self.expression_state)
+
+    def test_expression_renderer_uses_only_the_four_eye_brow_faces(self):
+        draw_start = self.expression_controller.index("static void draw_face_locked")
+        draw_end = self.expression_controller.index("static bool ensure_face_canvas_locked", draw_start)
+        draw_face = self.expression_controller[draw_start:draw_end]
+        self.assertIn("draw_eye_only_face_locked", draw_face)
+        self.assertNotIn("draw_mouth_locked", draw_face)
+        for expression in ("Happy", "Thinking", "Surprised", "Calm"):
+            self.assertIn(f"FaceKind::{expression}", self.expression_controller)
 
 
 if __name__ == "__main__":

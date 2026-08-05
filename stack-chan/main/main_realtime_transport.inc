@@ -80,14 +80,14 @@ static std::string make_listen_message(const char* state)
 }
 
 static bool send_ws_frame(esp_transport_handle_t ws, ws_transport_opcodes_t opcode, const char* data, size_t len,
-                          const char* label, int timeout_ms = 5000)
+                          const char* label, int timeout_ms = 5000, int max_zero_write_retries = 3)
 {
     static constexpr int kWsFinalFrameBit = 0x80;
-    static constexpr int kMaxZeroWriteRetries = 3;
+    max_zero_write_retries = std::max(1, max_zero_write_retries);
     ws_transport_opcodes_t final_opcode = static_cast<ws_transport_opcodes_t>(
         static_cast<int>(opcode) | kWsFinalFrameBit);
     int written = -1;
-    for (int attempt = 1; attempt <= kMaxZeroWriteRetries; ++attempt) {
+    for (int attempt = 1; attempt <= max_zero_write_retries; ++attempt) {
         written = esp_transport_ws_send_raw(ws, final_opcode, data, len, timeout_ms);
         ESP_LOGI(TAG, "WS发送%s opcode=%d 第%d次 written=%d expected=%u", label,
                  static_cast<int>(final_opcode), attempt, written, static_cast<unsigned>(len));
@@ -97,7 +97,7 @@ static bool send_ws_frame(esp_transport_handle_t ws, ws_transport_opcodes_t opco
         if (written > 0) {
             break;
         }
-        if (attempt < kMaxZeroWriteRetries) {
+        if (attempt < max_zero_write_retries) {
             vTaskDelay(pdMS_TO_TICKS(30 * attempt));
         }
     }
@@ -133,7 +133,7 @@ static void wake_for_server_command(const char* command_type)
 }
 
 static bool handle_ws_text_message(esp_transport_handle_t ws, const char* data, size_t len, bool& got_hello,
-                                   std::string& stt_text)
+                                   std::string& stt_text, bool* stt_is_final = nullptr)
 {
     ESP_LOGI(TAG, "WS text (%u bytes): %.*s", static_cast<unsigned>(len), static_cast<int>(len), data);
 
@@ -151,7 +151,11 @@ static bool handle_ws_text_message(esp_transport_handle_t ws, const char* data, 
         ESP_LOGI(TAG, "WS hello transport=%s session_id=%s", transport.c_str(), realtime_config.session_id.c_str());
     } else if (type == "stt") {
         stt_text = json_string_value(root, "text");
-        ESP_LOGI(TAG, "STT result: %s", stt_text.c_str());
+        const bool is_final = json_bool_value(root, "is_final", false);
+        if (stt_is_final != nullptr) {
+            *stt_is_final = is_final;
+        }
+        ESP_LOGI(TAG, "STT result: final=%d text=%s", static_cast<int>(is_final), stt_text.c_str());
         show_recognition_text("Speech Text", stt_text.c_str());
     } else if (type == "tts") {
         std::string state = json_string_value(root, "state");
@@ -193,7 +197,8 @@ static bool handle_ws_text_message(esp_transport_handle_t ws, const char* data, 
     return true;
 }
 
-static bool receive_ws_once(esp_transport_handle_t ws, int timeout_ms, bool& got_hello, std::string& stt_text)
+static bool receive_ws_once(esp_transport_handle_t ws, int timeout_ms, bool& got_hello, std::string& stt_text,
+                            bool* stt_is_final = nullptr)
 {
     int polled = esp_transport_poll_read(ws, timeout_ms);
     if (polled == 0) {
@@ -214,7 +219,7 @@ static bool receive_ws_once(esp_transport_handle_t ws, int timeout_ms, bool& got
     ws_transport_opcodes_t opcode = esp_transport_ws_get_read_opcode(ws);
     if (opcode == WS_TRANSPORT_OPCODES_TEXT) {
         buffer[read_len] = '\0';
-        return handle_ws_text_message(ws, buffer, read_len, got_hello, stt_text);
+        return handle_ws_text_message(ws, buffer, read_len, got_hello, stt_text, stt_is_final);
     }
     if (opcode == WS_TRANSPORT_OPCODES_BINARY) {
         ESP_LOGD(TAG, "WS binary audio from server (%d bytes)", read_len);

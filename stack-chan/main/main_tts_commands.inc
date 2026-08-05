@@ -124,6 +124,9 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
         bool ok = audio_service_play_pcm_24k(buffers[buffer_index], sample_pos,
                                              AudioPlayOptions{.wait = true, .drop_oldest = false});
         if (ok) {
+            if (playback.queued_chunks == 0 && active_speak_turn_id[0] != '\0') {
+                expression_state_reply_audio_started(active_speak_turn_id, active_speak_generation);
+            }
             ++playback.queued_chunks;
             playback.played_samples += sample_pos;
         }
@@ -722,6 +725,7 @@ static void request_speak_preempt(const char* reason)
     } else {
         codec_audio_output_stop();
     }
+    expression_state_reply_cancel(reason);
     ESP_LOGI(TAG, "Speak preempt requested: %s", reason != nullptr ? reason : "unspecified");
 }
 
@@ -733,6 +737,7 @@ static void advance_speech_generation(uint32_t generation)
     if (speak_command_queue != nullptr) {
         xQueueReset(speak_command_queue);
     }
+    expression_state_reply_cancel("speech generation advanced");
     ESP_LOGI(TAG, "Speech generation advanced: generation=%u", speech_command_generation);
 }
 
@@ -810,9 +815,10 @@ static void wait_for_voice_recording_to_finish()
 static bool enqueue_speak_command(const char* cmd_id, const char* text, const char* cache_name, bool pause_voice_listener,
                                   const char* voice, int sample_rate, int volume, int speech_rate, int pitch_rate,
                                   uint32_t attempt, uint32_t generation, uint16_t segment_index,
-                                  uint32_t ttl_ms)
+                                  uint32_t ttl_ms, const char* turn_id, const char* expression,
+                                  bool reply_end, bool reply_cancelled, int speaker_volume)
 {
-    if (speak_command_queue == nullptr || text == nullptr || text[0] == '\0') {
+    if (speak_command_queue == nullptr || text == nullptr || (text[0] == '\0' && !reply_end)) {
         return false;
     }
 
@@ -826,6 +832,14 @@ static bool enqueue_speak_command(const char* cmd_id, const char* text, const ch
         speech_command_generation = generation;
     }
     snprintf(item.cmd_id, sizeof(item.cmd_id), "%s", cmd_id != nullptr ? cmd_id : "");
+    if (turn_id != nullptr && turn_id[0] != '\0') {
+        snprintf(item.turn_id, sizeof(item.turn_id), "%s", turn_id);
+    } else if (server_command) {
+        snprintf(item.turn_id, sizeof(item.turn_id), "%s", cmd_id);
+    } else {
+        snprintf(item.turn_id, sizeof(item.turn_id), "local-%u", static_cast<unsigned>(M5.millis()));
+    }
+    snprintf(item.expression, sizeof(item.expression), "%s", expression != nullptr ? expression : "calm");
     item.attempt = attempt;
     item.generation = server_command ? generation : speech_command_generation;
     item.segment_index = segment_index;
@@ -835,9 +849,12 @@ static bool enqueue_speak_command(const char* cmd_id, const char* text, const ch
     snprintf(item.voice, sizeof(item.voice), "%s", voice != nullptr ? voice : "");
     item.sample_rate = sample_rate;
     item.volume = volume;
+    item.speaker_volume = speaker_volume;
     item.speech_rate = speech_rate;
     item.pitch_rate = pitch_rate;
     item.pause_voice_listener = pause_voice_listener;
+    item.reply_end = reply_end;
+    item.reply_cancelled = reply_cancelled;
     return xQueueSend(speak_command_queue, &item, 0) == pdPASS;
 }
 
@@ -863,9 +880,32 @@ static void run_speak_command_loop()
         speak_command_active = true;
         uint32_t started_at_tick = static_cast<uint32_t>(esp_timer_get_time() / 1000);
         send_command_ack(item.cmd_id, "running", "", item.attempt, started_at_tick);
-        bool ok = execute_speak_command_internal(item.text, item.pause_voice_listener, item.cache_name, item.voice,
-                                                 item.sample_rate, item.volume, item.speech_rate, item.pitch_rate,
-                                                 item.cmd_id);
+        if (item.text[0] != '\0' && item.speaker_volume >= 0) {
+            speaker_volume_percent = clamp_speaker_volume_percent(item.speaker_volume);
+            apply_speaker_volume();
+            ESP_LOGI(TAG, "Applied command speaker volume: percent=%d", speaker_volume_percent);
+        }
+        expression_state_reply_prepare(item.turn_id, item.generation, item.expression);
+        bool ok = true;
+        if (item.text[0] == '\0') {
+            expression_state_reply_end(item.turn_id, item.generation, item.reply_cancelled);
+        } else {
+            snprintf(active_speak_turn_id, sizeof(active_speak_turn_id), "%s", item.turn_id);
+            active_speak_generation = item.generation;
+            ok = execute_speak_command_internal(item.text, item.pause_voice_listener, item.cache_name, item.voice,
+                                                item.sample_rate, item.volume, item.speech_rate, item.pitch_rate,
+                                                item.cmd_id);
+            active_speak_turn_id[0] = '\0';
+            active_speak_generation = 0;
+            if (ok) {
+                expression_state_reply_segment_finished(item.turn_id, item.generation);
+                if (item.reply_end) {
+                    expression_state_reply_end(item.turn_id, item.generation, false);
+                }
+            } else {
+                expression_state_reply_failed(item.turn_id, item.generation);
+            }
+        }
         speak_command_active = false;
         if (item.cmd_id[0] != '\0') {
             send_command_ack(item.cmd_id, ok ? "rendered" : "failed",

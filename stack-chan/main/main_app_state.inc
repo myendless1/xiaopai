@@ -28,6 +28,7 @@ static constexpr int kVoiceStopThreshold = CONFIG_STACKCHAN_VOICE_STOP_THRESHOLD
 static constexpr int kRecordMaxMs = CONFIG_STACKCHAN_RECORD_MAX_MS;
 static constexpr int kSilenceStopMs = CONFIG_STACKCHAN_SILENCE_STOP_MS;
 static constexpr int kRealtimeSttDrainTimeoutMs = 1800;
+static constexpr int kRealtimeAudioWriteTimeoutMs = 500;
 static constexpr uint32_t kWaitingReplyTimeoutMs = 30 * 1000;
 static constexpr int kTtsStreamSampleRate = 24000;
 static constexpr size_t kTtsStreamBufferSamples = 1024;
@@ -252,6 +253,8 @@ enum class HeadTouchEvent : uint8_t {
 
 struct SpeakCommandItem {
     char cmd_id[40];
+    char turn_id[40];
+    char expression[16];
     uint32_t attempt;
     uint32_t generation;
     uint16_t segment_index;
@@ -261,10 +264,16 @@ struct SpeakCommandItem {
     char voice[kSpeakCommandVoiceBytes];
     int sample_rate;
     int volume;
+    int speaker_volume;
     int speech_rate;
     int pitch_rate;
     bool pause_voice_listener;
+    bool reply_end;
+    bool reply_cancelled;
 };
+
+char active_speak_turn_id[40] = {};
+uint32_t active_speak_generation = 0;
 
 struct WifiCandidate {
     const char* ssid;

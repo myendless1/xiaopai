@@ -43,6 +43,7 @@ class Database:
                       last_seen_at TEXT NOT NULL DEFAULT '',
                       last_heartbeat_at TEXT NOT NULL DEFAULT '',
                       last_ack_seq INTEGER NOT NULL DEFAULT 0,
+                      speech_generation INTEGER NOT NULL DEFAULT 0,
                       online INTEGER NOT NULL DEFAULT 0
                     );
 
@@ -168,10 +169,40 @@ class Database:
                     """
                 )
                 self._migrate_commands(conn)
+                self._migrate_devices(conn)
                 self._migrate_notices(conn)
                 conn.commit()
             finally:
                 conn.close()
+
+    @staticmethod
+    def _migrate_devices(conn: sqlite3.Connection) -> None:
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(devices)")}
+        if "speech_generation" not in columns:
+            conn.execute(
+                "ALTER TABLE devices ADD COLUMN speech_generation INTEGER NOT NULL DEFAULT 0"
+            )
+        # Older databases already contain the generation on dialogue commands.
+        # Backfill it so a Server restart cannot make new speech stale.
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO devices(device_id, speech_generation)
+            SELECT device_id, MAX(turn_generation) FROM commands GROUP BY device_id
+            """
+        )
+        conn.execute(
+            """
+            UPDATE devices
+               SET speech_generation=MAX(
+                     speech_generation,
+                     COALESCE((
+                       SELECT MAX(commands.turn_generation)
+                         FROM commands
+                        WHERE commands.device_id=devices.device_id
+                     ), 0)
+                   )
+            """
+        )
 
     @staticmethod
     def _migrate_commands(conn: sqlite3.Connection) -> None:

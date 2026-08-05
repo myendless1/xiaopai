@@ -91,7 +91,7 @@ menu "Xiaopai settings"
 
     config STACKCHAN_AUDIO_OUTPUT_VOLUME_DEFAULT
         int "Default output volume percent"
-        default 70
+        default 10
         range 0 100
 
     config STACKCHAN_RECORD_CHUNK_MS

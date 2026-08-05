@@ -111,7 +111,10 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
 static bool enqueue_speak_command(const char* cmd_id, const char* text, const char* cache_name, bool pause_voice_listener,
                                   const char* voice = nullptr, int sample_rate = 0, int volume = 0, int speech_rate = 0,
                                   int pitch_rate = 0, uint32_t attempt = 0, uint32_t generation = 0,
-                                  uint16_t segment_index = 0, uint32_t ttl_ms = 30000);
+                                  uint16_t segment_index = 0, uint32_t ttl_ms = 30000,
+                                  const char* turn_id = nullptr, const char* expression = "calm",
+                                  bool reply_end = true, bool reply_cancelled = false,
+                                  int speaker_volume = -1);
 static void request_speak_preempt(const char* reason);
 static void advance_speech_generation(uint32_t generation = 0);
 static bool run_find_owner_command(int rounds, const char* reply, float gain_x, float gain_y, float stop_pixels,
@@ -419,6 +422,7 @@ extern "C" void app_main(void)
     run_light_strip_boot_probe();
 
     start_background_services();
+    start_serial_debug_command_service();
 
 #if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT && !CONFIG_STACKCHAN_DJI_MIC_AUTO_START
     schedule_dji_mic_after_boot();

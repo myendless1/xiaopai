@@ -121,6 +121,17 @@ class MorrowP4NoticesTest(unittest.TestCase):
         with self.server.v3_database.connect() as conn:
             row = conn.execute("SELECT * FROM morrow_notices WHERE notice_id='meeting:ack-test'").fetchone()
             self.assertEqual(row["state"], "queued")
+
+        # A transport-level received ACK must not move the notice back to the
+        # outbox's "received" state, which would enqueue duplicate speech.
+        self.server.command_store.record_ack({
+            "cmd_id": cmd_id,
+            "device_id": "device-1",
+            "state": "received"
+        })
+        with self.server.v3_database.connect() as conn:
+            row = conn.execute("SELECT * FROM morrow_notices WHERE notice_id='meeting:ack-test'").fetchone()
+            self.assertEqual(row["state"], "queued")
             
         # Simulate device sending running ACK
         self.server.command_store.record_ack({
@@ -142,6 +153,55 @@ class MorrowP4NoticesTest(unittest.TestCase):
             row = conn.execute("SELECT * FROM morrow_notices WHERE notice_id='meeting:ack-test'").fetchone()
             self.assertEqual(row["state"], "rendered")
             self.assertIsNotNone(row["rendered_at"])
+
+    def test_notice_expression_tag_is_removed_and_last_segment_ends_reply(self):
+        notice = {
+            "id": "meeting:expression",
+            "kind": "meeting_reminder",
+            "text": "<SuRpRiSeD>第一句。<unknown>第二句。",
+        }
+        srv_module.save_morrow_notice(self.server, notice)
+        self.server.last_seen["device-1"] = srv_module.time.time()
+        self.server.device_order.append("device-1")
+
+        self.assertTrue(srv_module.submit_morrow_notice_text(self.server, notice["id"]))
+        first = self.server.command_store.lease_next_command("device-1")
+        self.server.command_store.record_ack({"cmd_id": first["cmd_id"], "state": "rendered"})
+        second = self.server.command_store.lease_next_command("device-1")
+
+        self.assertEqual(first["payload"]["text"], "第一句。")
+        self.assertEqual(second["payload"]["text"], "第二句。")
+        self.assertEqual(first["payload"]["expression"], "surprised")
+        self.assertEqual(second["payload"]["expression"], "surprised")
+        self.assertFalse(first["payload"]["reply_end"])
+        self.assertTrue(second["payload"]["reply_end"])
+
+    def test_notice_uses_current_device_generation(self):
+        class FakeCoordinator:
+            @staticmethod
+            def generation_for_device(device_id):
+                return 19 if device_id == "device-1" else 0
+
+        self.server.morrow_coordinator = FakeCoordinator()
+        notice = {
+            "id": "meeting:generation",
+            "kind": "meeting_reminder",
+            "text": "十五分钟后开会。",
+        }
+        srv_module.save_morrow_notice(self.server, notice)
+        self.server.last_seen["device-1"] = srv_module.time.time()
+        self.server.device_order.append("device-1")
+
+        self.assertTrue(srv_module.submit_morrow_notice_text(self.server, notice["id"]))
+        command = self.server.command_store.lease_next_command("device-1")
+
+        self.assertEqual(command["payload"]["generation"], 19)
+        with self.server.v3_database.connect() as conn:
+            row = conn.execute(
+                "SELECT turn_generation FROM commands WHERE cmd_id=?",
+                (command["cmd_id"],),
+            ).fetchone()
+        self.assertEqual(row["turn_generation"], 19)
 
     def test_reboot_recovery_and_expiration(self):
         # Notice in received state (representing saved but server restarted before queuing)

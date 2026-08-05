@@ -22,13 +22,8 @@ namespace FaceLayout {
 // from these points; only explicit expression offsets may move them.
 static constexpr int kCanvasWidth = 320;
 static constexpr int kCanvasHeight = 240;
-static constexpr Point kLeftEyeCenter = {88, 101};
-static constexpr Point kRightEyeCenter = {232, 101};
-static constexpr Point kLeftBrowCenter = {88, 72};
-static constexpr Point kRightBrowCenter = {232, 72};
-static constexpr Point kMouthCenter = {160, 152};
-static constexpr Point kLeftCheekCenter = {47, 141};
-static constexpr Point kRightCheekCenter = {273, 141};
+static constexpr Point kLeftEyeCenter = {92, 122};
+static constexpr Point kRightEyeCenter = {228, 122};
 static constexpr int kMaxIntentionalOffsetX = 10;
 static constexpr int kMaxIntentionalOffsetY = 18;
 } // namespace FaceLayout
@@ -38,59 +33,20 @@ enum class FaceKind : uint8_t {
     CalmBlink,
     SleepDark,
     Thinking,
-    ThinkingBlink,
-    Shy,
-    ShyBlink,
-    Smile,
-    SmileBlink,
     Happy,
-    Relaxed,
-    WinkOpen,
-    WinkBlink,
-    Grin,
-    GrinBlink,
+    Surprised,
 };
 
 enum class EyeStyle : uint8_t {
     Open,
     ClosedLine,
-    ClosedHappy,
-    ClosedRelaxed,
-    WinkRight,
-};
-
-enum class BrowStyle : uint8_t {
-    None,
-    Thinking,
-};
-
-enum class MouthShape : uint8_t {
-    Closed,
-    Frown,
-    Smile,
-    SmileWide,
-    HappyOpen,
-    Grin,
-};
-
-enum class CheekStyle : uint8_t {
-    None,
-    Shy,
 };
 
 struct FacePose {
     EyeStyle left_eye = EyeStyle::Open;
     EyeStyle right_eye = EyeStyle::Open;
-    BrowStyle left_brow = BrowStyle::None;
-    BrowStyle right_brow = BrowStyle::None;
-    MouthShape default_mouth = MouthShape::Closed;
-    CheekStyle cheeks = CheekStyle::None;
     int offset_x = 0;
     int offset_y = 0;
-    int mouth_y_offset = 0;
-    int mouth_width = 42;
-    int mouth_height = 8;
-    int mouth_radius = 4;
     bool sleep_dark = false;
 };
 
@@ -102,10 +58,10 @@ struct ExpressionAnimation {
 };
 
 static constexpr FaceKind kHappyDynamicFrames[] = {
-    FaceKind::Smile,
     FaceKind::Happy,
-    FaceKind::Smile,
+    FaceKind::Calm,
     FaceKind::Happy,
+    FaceKind::Calm,
 };
 
 static constexpr ExpressionAnimation kExpressionAnimations[] = {
@@ -196,16 +152,6 @@ static uint16_t line_color_locked()
     return draw_target_locked().color565(245, 248, 255);
 }
 
-static uint16_t cheek_color_locked()
-{
-    return draw_target_locked().color565(255, 155, 185);
-}
-
-static uint16_t tooth_line_color_locked()
-{
-    return draw_target_locked().color565(216, 221, 230);
-}
-
 static bool face_kind_from_name(const char* expression, FaceKind* kind)
 {
     if (kind == nullptr) {
@@ -225,78 +171,35 @@ static bool face_kind_from_name(const char* expression, FaceKind* kind)
         *kind = FaceKind::Calm;
         return true;
     }
-    if (strcmp(name, "calm_blink") == 0) {
+    if (strcmp(name, "calm_blink") == 0 || strcmp(name, "blink") == 0 ||
+        strcmp(name, "blink_half") == 0 || strcmp(name, "blink_closed") == 0) {
         *kind = FaceKind::CalmBlink;
         return true;
     }
-    if (strcmp(name, "shy") == 0) {
-        *kind = FaceKind::Shy;
-        return true;
-    }
-    if (strcmp(name, "shy_blink") == 0) {
-        *kind = FaceKind::ShyBlink;
-        return true;
-    }
     if (strcmp(name, "thinking") == 0 || strcmp(name, "waiting") == 0 ||
-        strcmp(name, "wait") == 0) {
+        strcmp(name, "wait") == 0 || strcmp(name, "thinking_blink") == 0 ||
+        strcmp(name, "waiting_blink") == 0 || strcmp(name, "wait_blink") == 0) {
         *kind = FaceKind::Thinking;
         return true;
     }
-    if (strcmp(name, "thinking_blink") == 0 || strcmp(name, "waiting_blink") == 0 ||
-        strcmp(name, "wait_blink") == 0) {
-        *kind = FaceKind::ThinkingBlink;
-        return true;
-    }
-    if (strcmp(name, "relaxed") == 0) {
-        *kind = FaceKind::Relaxed;
-        return true;
-    }
-    if (strcmp(name, "smile") == 0) {
-        *kind = FaceKind::Smile;
-        return true;
-    }
-    if (strcmp(name, "smile_blink") == 0) {
-        *kind = FaceKind::SmileBlink;
-        return true;
-    }
-    if (strcmp(name, "wink") == 0 || strcmp(name, "wink_open") == 0 || strcmp(name, "wink open") == 0) {
-        *kind = FaceKind::WinkOpen;
-        return true;
-    }
-    if (strcmp(name, "wink_half") == 0 || strcmp(name, "wink_closed") == 0 ||
-        strcmp(name, "wink_blink") == 0 || strcmp(name, "wink blink") == 0) {
-        *kind = FaceKind::WinkBlink;
-        return true;
-    }
-    if (strcmp(name, "grin") == 0) {
-        *kind = FaceKind::Grin;
-        return true;
-    }
-    if (strcmp(name, "grin_blink") == 0 || strcmp(name, "grin blink") == 0) {
-        *kind = FaceKind::GrinBlink;
-        return true;
-    }
-    if (strcmp(name, "happy") == 0 || strcmp(name, "happy_squint") == 0) {
+    if (strcmp(name, "happy") == 0 || strcmp(name, "happy_squint") == 0 ||
+        strcmp(name, "happy_squint_soft") == 0 || strcmp(name, "smile") == 0 ||
+        strcmp(name, "smile_blink") == 0 || strcmp(name, "shy") == 0 ||
+        strcmp(name, "shy_blink") == 0 || strcmp(name, "relaxed") == 0 ||
+        strcmp(name, "wink") == 0 || strcmp(name, "wink_open") == 0 ||
+        strcmp(name, "wink_half") == 0 || strcmp(name, "wink_closed") == 0 ||
+        strcmp(name, "wink_blink") == 0 || strcmp(name, "grin") == 0 ||
+        strcmp(name, "grin_blink") == 0 || strcmp(name, "heart") == 0 ||
+        strcmp(name, "heart_action") == 0 || strcmp(name, "heart_small") == 0 ||
+        strcmp(name, "nod") == 0 || strcmp(name, "nodding") == 0 ||
+        strcmp(name, "nod_soft") == 0 || strcmp(name, "nod_down") == 0) {
         *kind = FaceKind::Happy;
         return true;
     }
-    if (strcmp(name, "happy_squint_soft") == 0) {
-        *kind = FaceKind::Smile;
+    if (strcmp(name, "surprised") == 0) {
+        *kind = FaceKind::Surprised;
         return true;
     }
-    if (strcmp(name, "blink") == 0 || strcmp(name, "blink_half") == 0 ||
-        strcmp(name, "blink_closed") == 0) {
-        *kind = FaceKind::Relaxed;
-        return true;
-    }
-    if (strcmp(name, "heart") == 0 || strcmp(name, "heart_action") == 0 ||
-        strcmp(name, "heart_small") == 0 ||
-        strcmp(name, "nod") == 0 || strcmp(name, "nodding") == 0 ||
-        strcmp(name, "nod_soft") == 0 || strcmp(name, "nod_down") == 0) {
-        *kind = FaceKind::Smile;
-        return true;
-    }
-
     return false;
 }
 
@@ -311,28 +214,10 @@ static const char* face_kind_name(FaceKind kind)
             return "calm_blink";
         case FaceKind::Thinking:
             return "thinking";
-        case FaceKind::ThinkingBlink:
-            return "thinking_blink";
-        case FaceKind::Shy:
-            return "shy";
-        case FaceKind::ShyBlink:
-            return "shy_blink";
-        case FaceKind::Smile:
-            return "smile";
-        case FaceKind::SmileBlink:
-            return "smile_blink";
         case FaceKind::Happy:
             return "happy";
-        case FaceKind::Relaxed:
-            return "relaxed";
-        case FaceKind::WinkOpen:
-            return "wink_open";
-        case FaceKind::WinkBlink:
-            return "wink_blink";
-        case FaceKind::Grin:
-            return "grin";
-        case FaceKind::GrinBlink:
-            return "grin_blink";
+        case FaceKind::Surprised:
+            return "surprised";
     }
     return kDefaultExpression;
 }
@@ -354,89 +239,13 @@ static FacePose pose_for_kind(FaceKind kind)
     switch (kind) {
     case FaceKind::SleepDark:
         pose.sleep_dark = true;
-        pose.cheeks = CheekStyle::None;
         break;
     case FaceKind::CalmBlink:
         pose.left_eye = EyeStyle::ClosedLine;
         pose.right_eye = EyeStyle::ClosedLine;
-        pose.mouth_width = 38;
-        pose.mouth_height = 7;
-        pose.mouth_radius = 4;
-        break;
-    case FaceKind::Thinking:
-        pose.left_brow = BrowStyle::Thinking;
-        pose.default_mouth = MouthShape::Frown;
-        pose.mouth_y_offset = -3;
-        break;
-    case FaceKind::ThinkingBlink:
-        pose.left_eye = EyeStyle::ClosedLine;
-        pose.right_eye = EyeStyle::ClosedLine;
-        pose.left_brow = BrowStyle::Thinking;
-        pose.default_mouth = MouthShape::Frown;
-        pose.mouth_y_offset = -3;
-        break;
-    case FaceKind::Shy:
-    case FaceKind::WinkOpen:
-        pose.default_mouth = MouthShape::Smile;
-        pose.cheeks = CheekStyle::Shy;
-        pose.mouth_y_offset = -4;
-        break;
-    case FaceKind::ShyBlink:
-        pose.left_eye = EyeStyle::ClosedLine;
-        pose.right_eye = EyeStyle::ClosedLine;
-        pose.default_mouth = MouthShape::Smile;
-        pose.cheeks = CheekStyle::Shy;
-        pose.mouth_y_offset = -4;
-        break;
-    case FaceKind::Smile:
-        pose.default_mouth = MouthShape::SmileWide;
-        pose.cheeks = CheekStyle::Shy;
-        pose.mouth_y_offset = -5;
-        break;
-    case FaceKind::SmileBlink:
-        pose.left_eye = EyeStyle::ClosedLine;
-        pose.right_eye = EyeStyle::ClosedLine;
-        pose.default_mouth = MouthShape::SmileWide;
-        pose.cheeks = CheekStyle::Shy;
-        pose.mouth_y_offset = -5;
-        break;
-    case FaceKind::Happy:
-        pose.left_eye = EyeStyle::ClosedHappy;
-        pose.right_eye = EyeStyle::ClosedHappy;
-        pose.default_mouth = MouthShape::HappyOpen;
-        pose.cheeks = CheekStyle::Shy;
-        pose.mouth_y_offset = -4;
-        break;
-    case FaceKind::Relaxed:
-        pose.left_eye = EyeStyle::ClosedRelaxed;
-        pose.right_eye = EyeStyle::ClosedRelaxed;
-        pose.default_mouth = MouthShape::Smile;
-        pose.cheeks = CheekStyle::Shy;
-        pose.mouth_y_offset = -6;
-        break;
-    case FaceKind::WinkBlink:
-        pose.right_eye = EyeStyle::WinkRight;
-        pose.default_mouth = MouthShape::Smile;
-        pose.cheeks = CheekStyle::Shy;
-        pose.mouth_y_offset = -5;
-        break;
-    case FaceKind::Grin:
-        pose.default_mouth = MouthShape::Grin;
-        pose.cheeks = CheekStyle::Shy;
-        pose.mouth_y_offset = 5;
-        break;
-    case FaceKind::GrinBlink:
-        pose.left_eye = EyeStyle::ClosedLine;
-        pose.right_eye = EyeStyle::ClosedLine;
-        pose.default_mouth = MouthShape::Grin;
-        pose.cheeks = CheekStyle::Shy;
-        pose.mouth_y_offset = 5;
         break;
     case FaceKind::Calm:
     default:
-        pose.mouth_width = 38;
-        pose.mouth_height = 7;
-        pose.mouth_radius = 4;
         break;
     }
     return pose;
@@ -446,11 +255,6 @@ static bool face_kind_is_blink_variant(FaceKind kind)
 {
     switch (kind) {
     case FaceKind::CalmBlink:
-    case FaceKind::ThinkingBlink:
-    case FaceKind::ShyBlink:
-    case FaceKind::SmileBlink:
-    case FaceKind::WinkBlink:
-    case FaceKind::GrinBlink:
         return true;
     default:
         return false;
@@ -462,16 +266,6 @@ static FaceKind open_face_kind_for(FaceKind kind)
     switch (kind) {
     case FaceKind::CalmBlink:
         return FaceKind::Calm;
-    case FaceKind::ThinkingBlink:
-        return FaceKind::Thinking;
-    case FaceKind::ShyBlink:
-        return FaceKind::Shy;
-    case FaceKind::SmileBlink:
-        return FaceKind::Smile;
-    case FaceKind::WinkBlink:
-        return FaceKind::WinkOpen;
-    case FaceKind::GrinBlink:
-        return FaceKind::Grin;
     default:
         return kind;
     }
@@ -485,21 +279,6 @@ static bool blink_face_kind_for(FaceKind kind, FaceKind* blink_kind)
     switch (open_face_kind_for(kind)) {
     case FaceKind::Calm:
         *blink_kind = FaceKind::CalmBlink;
-        return true;
-    case FaceKind::Thinking:
-        *blink_kind = FaceKind::ThinkingBlink;
-        return true;
-    case FaceKind::Shy:
-        *blink_kind = FaceKind::ShyBlink;
-        return true;
-    case FaceKind::Smile:
-        *blink_kind = FaceKind::SmileBlink;
-        return true;
-    case FaceKind::WinkOpen:
-        *blink_kind = FaceKind::WinkBlink;
-        return true;
-    case FaceKind::Grin:
-        *blink_kind = FaceKind::GrinBlink;
         return true;
     default:
         return false;
@@ -523,56 +302,16 @@ static void stroke_segment_locked(Point a, Point b, int width, uint16_t color)
     display.fillCircle(b.x, b.y, radius, color);
 }
 
-static Point oval_point(Point center, int rx, int ry, int angle_deg)
-{
-    const float rad = static_cast<float>(angle_deg) * 3.14159265358979323846f / 180.0f;
-    return {
-        static_cast<int>(lroundf(static_cast<float>(center.x) + static_cast<float>(rx) * cosf(rad))),
-        static_cast<int>(lroundf(static_cast<float>(center.y) + static_cast<float>(ry) * sinf(rad))),
-    };
-}
-
-static void stroke_oval_arc_locked(Point center, int rx, int ry, int start_deg, int end_deg, int width, uint16_t color)
-{
-    int sweep = end_deg - start_deg;
-    if (sweep <= 0) {
-        sweep += 360;
-    }
-    const int steps = std::max(12, (sweep + 3) / 4);
-    Point previous = oval_point(center, rx, ry, start_deg);
-    for (int i = 1; i <= steps; ++i) {
-        const int angle = start_deg + (sweep * i) / steps;
-        Point current = oval_point(center, rx, ry, angle);
-        stroke_segment_locked(previous, current, width, color);
-        previous = current;
-    }
-    const int cap_radius = std::max(2, (width + 1) / 2);
-    auto& display = draw_target_locked();
-    display.fillCircle(oval_point(center, rx, ry, start_deg).x,
-                       oval_point(center, rx, ry, start_deg).y, cap_radius, color);
-    display.fillCircle(previous.x, previous.y, cap_radius, color);
-}
-
 static void draw_eye_locked(Point center, EyeStyle style, uint16_t color)
 {
     auto& display = draw_target_locked();
     switch (style) {
-    case EyeStyle::ClosedHappy:
-        stroke_oval_arc_locked({center.x, center.y - 4}, 30, 24, 205, 335, 7, color);
-        break;
-    case EyeStyle::ClosedRelaxed:
-        stroke_oval_arc_locked({center.x, center.y - 4}, 31, 17, 35, 145, 6, color);
-        break;
     case EyeStyle::ClosedLine:
         display.fillRoundRect(center.x - 15, center.y - 4, 30, 8, 4, color);
         break;
-    case EyeStyle::WinkRight:
-        stroke_segment_locked({center.x + 20, center.y - 18}, {center.x - 15, center.y}, 7, color);
-        stroke_segment_locked({center.x - 15, center.y}, {center.x + 18, center.y + 15}, 7, color);
-        break;
     case EyeStyle::Open:
     default:
-        display.fillCircle(center.x, center.y, 15, color);
+        display.fillCircle(center.x, center.y, 16, color);
         break;
     }
 }
@@ -581,60 +320,6 @@ static void draw_eye_pair_for_pose_locked(const FacePose& pose, uint16_t color)
 {
     draw_eye_locked(anchor_point_locked(FaceLayout::kLeftEyeCenter, pose), pose.left_eye, color);
     draw_eye_locked(anchor_point_locked(FaceLayout::kRightEyeCenter, pose), pose.right_eye, color);
-}
-
-static void draw_brow_locked(Point center, BrowStyle style, bool left, uint16_t color)
-{
-    if (style == BrowStyle::None) {
-        return;
-    }
-    (void)left;
-    stroke_oval_arc_locked({center.x, center.y - 5}, 23, 12, 205, 335, 4, color);
-}
-
-static void fill_round_rect_locked(Point center, int width, int height, int radius, uint16_t color)
-{
-    auto& display = draw_target_locked();
-    display.fillRoundRect(center.x - width / 2, center.y - height / 2, width, height, radius, color);
-}
-
-static void draw_happy_mouth_locked(Point center, uint16_t color)
-{
-    auto& display = draw_target_locked();
-    const int rx = 31;
-    const int ry = 35;
-    const int flat_y = center.y - 8;
-    const int bottom_y = center.y + 27;
-    for (int y = flat_y; y <= bottom_y; ++y) {
-        const float t = static_cast<float>(y - flat_y) / static_cast<float>(ry);
-        const int half = static_cast<int>(lroundf(static_cast<float>(rx) * sqrtf(std::max(0.0f, 1.0f - t * t))));
-        display.drawFastHLine(center.x - half, y, half * 2 + 1, color);
-    }
-    display.fillRoundRect(center.x - 31, flat_y - 3, 62, 13, 9, color);
-}
-
-static void draw_grin_mouth_locked(Point center, uint16_t color)
-{
-    auto& display = draw_target_locked();
-    const int rx = 49;
-    const int ry = 44;
-    const int flat_y = center.y - 8;
-    const int bottom_y = center.y + 36;
-    for (int y = flat_y; y <= bottom_y; ++y) {
-        const float t = static_cast<float>(y - flat_y) / static_cast<float>(ry);
-        const int half = static_cast<int>(lroundf(static_cast<float>(rx) * sqrtf(std::max(0.0f, 1.0f - t * t))));
-        display.drawFastHLine(center.x - half, y, half * 2 + 1, color);
-    }
-    display.fillRoundRect(center.x - rx, flat_y - 4, rx * 2, 20, 10, color);
-
-    const uint16_t divider = tooth_line_color_locked();
-    static constexpr int kDividerOffsets[] = {-16, 16};
-    for (int xoff : kDividerOffsets) {
-        const float dx = static_cast<float>(xoff) / static_cast<float>(rx);
-        const int divider_bottom = flat_y + static_cast<int>(lroundf(static_cast<float>(ry) *
-                                    sqrtf(std::max(0.0f, 1.0f - dx * dx)))) - 3;
-        stroke_segment_locked({center.x + xoff, flat_y + 3}, {center.x + xoff, divider_bottom}, 2, divider);
-    }
 }
 
 static void clear_eye_regions_locked(const FacePose& pose)
@@ -650,46 +335,59 @@ static void clear_eye_regions_locked(const FacePose& pose)
                      kEyeRegionHalfWidth * 2, kEyeRegionHalfHeight * 2, TFT_BLACK);
 }
 
-static void draw_mouth_locked(const FacePose& pose, uint16_t color)
+static void stroke_quadratic_locked(Point start, Point control, Point end, int width, uint16_t color)
 {
-    const MouthShape shape = pose.default_mouth;
-    Point center = anchor_point_locked(FaceLayout::kMouthCenter, pose, 0, pose.mouth_y_offset);
-    switch (shape) {
-    case MouthShape::Frown:
-        stroke_oval_arc_locked({center.x, center.y + 11}, 18, 14, 200, 340, 5, color);
-        break;
-    case MouthShape::Smile:
-        stroke_oval_arc_locked({center.x, center.y - 2}, 20, 17, 35, 145, 5, color);
-        break;
-    case MouthShape::SmileWide:
-        stroke_oval_arc_locked({center.x, center.y - 3}, 34, 23, 35, 145, 6, color);
-        break;
-    case MouthShape::HappyOpen:
-        draw_happy_mouth_locked(center, color);
-        break;
-    case MouthShape::Grin:
-        draw_grin_mouth_locked(center, color);
-        break;
-    case MouthShape::Closed:
-    default:
-        fill_round_rect_locked(center, pose.mouth_width, pose.mouth_height, pose.mouth_radius, color);
-        break;
+    Point previous = start;
+    static constexpr int kSteps = 24;
+    for (int i = 1; i <= kSteps; ++i) {
+        const float t = static_cast<float>(i) / static_cast<float>(kSteps);
+        const float u = 1.0f - t;
+        Point current = {
+            static_cast<int>(lroundf(u * u * start.x + 2.0f * u * t * control.x + t * t * end.x)),
+            static_cast<int>(lroundf(u * u * start.y + 2.0f * u * t * control.y + t * t * end.y)),
+        };
+        stroke_segment_locked(previous, current, width, color);
+        previous = current;
     }
 }
 
-static void draw_cheek_pair_locked(const FacePose& pose)
+static void draw_eye_only_face_locked(FaceKind kind, uint16_t color)
 {
-    if (pose.cheeks == CheekStyle::None) {
-        return;
-    }
-    const uint16_t color = cheek_color_locked();
-    Point left = anchor_point_locked(FaceLayout::kLeftCheekCenter, pose);
-    Point right = anchor_point_locked(FaceLayout::kRightCheekCenter, pose);
+    auto& display = draw_target_locked();
+    const int ox = canvas_origin_x_locked();
+    const int oy = canvas_origin_y_locked();
+    auto point = [ox, oy](int x, int y) -> Point { return {ox + x, oy + y}; };
 
-    static constexpr int kOffsets[] = {-13, 0, 13};
-    for (int xoff : kOffsets) {
-        stroke_segment_locked({left.x + xoff - 3, left.y + 7}, {left.x + xoff + 3, left.y - 7}, 4, color);
-        stroke_segment_locked({right.x + xoff + 4, right.y + 7}, {right.x + xoff - 4, right.y - 7}, 4, color);
+    switch (kind) {
+    case FaceKind::Happy:
+        stroke_quadratic_locked(point(68, 128), point(92, 101), point(116, 128), 7, color);
+        stroke_quadratic_locked(point(204, 128), point(228, 101), point(252, 128), 7, color);
+        return;
+    case FaceKind::Thinking:
+        display.fillCircle(ox + 92, oy + 124, 12, color);
+        display.fillCircle(ox + 228, oy + 119, 18, color);
+        stroke_segment_locked(point(76, 91), point(108, 91), 7, color);
+        stroke_segment_locked(point(212, 78), point(244, 78), 7, color);
+        return;
+    case FaceKind::Surprised:
+        for (Point center : {point(92, 123), point(228, 123)}) {
+            display.fillCircle(center.x, center.y, 21, color);
+            display.fillCircle(center.x, center.y, 13, TFT_BLACK);
+        }
+        stroke_quadratic_locked(point(71, 91), point(92, 76), point(113, 91), 7, color);
+        stroke_quadratic_locked(point(207, 91), point(228, 76), point(249, 91), 7, color);
+        return;
+    case FaceKind::CalmBlink:
+        display.fillRoundRect(ox + 76, oy + 118, 32, 8, 4, color);
+        display.fillRoundRect(ox + 212, oy + 118, 32, 8, 4, color);
+        return;
+    case FaceKind::SleepDark:
+        return;
+    case FaceKind::Calm:
+    default:
+        display.fillCircle(ox + 92, oy + 122, 16, color);
+        display.fillCircle(ox + 228, oy + 122, 16, color);
+        return;
     }
 }
 
@@ -708,12 +406,7 @@ static void draw_face_locked(FaceKind kind)
     }
 
     const uint16_t line = line_color_locked();
-
-    draw_brow_locked(anchor_point_locked(FaceLayout::kLeftBrowCenter, pose), pose.left_brow, true, line);
-    draw_brow_locked(anchor_point_locked(FaceLayout::kRightBrowCenter, pose), pose.right_brow, false, line);
-    draw_eye_pair_for_pose_locked(pose, line);
-    draw_cheek_pair_locked(pose);
-    draw_mouth_locked(pose, line);
+    draw_eye_only_face_locked(kind, line);
 
     last_lit_expression_ms = M5.millis();
 }
