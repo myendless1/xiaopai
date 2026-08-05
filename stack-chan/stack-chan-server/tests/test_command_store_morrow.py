@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from command_store import CommandStore  # noqa: E402
 from database import Database  # noqa: E402
 from morrow_coordinator import (  # noqa: E402
+    DIALOGUE_COMMAND_TTL_MS,
     MorrowRequest,
     command_store_reply_end_sink,
     command_store_segment_sink,
@@ -52,6 +53,8 @@ class MorrowCommandStoreTest(unittest.TestCase):
         self.assertEqual(rows[0]["source_type"], "dialogue")
         self.assertEqual(rows[0]["source_id"], "req-1")
         self.assertEqual(rows[0]["turn_generation"], 3)
+        self.assertEqual(rows[0]["ttl_ms"], DIALOGUE_COMMAND_TTL_MS)
+        self.assertEqual(rows[0]["expires_at"], "")
 
     def test_segment_sink_reads_current_global_speaker_volume(self):
         store = self.make_store()
@@ -86,6 +89,72 @@ class MorrowCommandStoreTest(unittest.TestCase):
         self.assertTrue(ending["payload"]["reply_end"])
         self.assertFalse(ending["payload"]["reply_cancelled"])
         self.assertEqual(ending["payload"]["segment_index"], 1)
+
+    def test_full_device_queue_leaves_speech_queued_on_server(self):
+        store = self.make_store()
+        sink = command_store_segment_sink(store)
+        request = MorrowRequest("req-credit", "问题", "robot-1", "voice", 1, 60, 3, "happy")
+        sink(request, "等设备有空位再播放。", 0)
+
+        self.assertIsNone(store.lease_next_command("robot-1", allow_speak=False))
+        with store.database.connect() as conn:
+            state = conn.execute("SELECT state FROM commands").fetchone()[0]
+        self.assertEqual(state, "queued")
+
+        leased = store.lease_next_command("robot-1", allow_speak=True)
+        self.assertEqual(leased["payload"]["text"], "等设备有空位再播放。")
+
+    def test_device_deferred_ack_requeues_without_losing_order(self):
+        store = self.make_store()
+        sink = command_store_segment_sink(store)
+        request = MorrowRequest("req-retry", "问题", "robot-1", "voice", 1, 60, 3, "happy")
+        sink(request, "第一句。", 0)
+        sink(request, "第二句。", 1)
+
+        first = store.lease_next_command("robot-1")
+        for _ in range(5):
+            result = store.record_ack(
+                {
+                    "cmd_id": first["cmd_id"],
+                    "state": "deferred",
+                    "message": "speak queue full; retry",
+                    "attempt": first["attempt"],
+                }
+            )
+            self.assertEqual(result["state"], "queued")
+            first = store.lease_next_command("robot-1")
+            self.assertEqual(first["attempt"], 1)
+
+        store.record_ack(
+            {
+                "cmd_id": first["cmd_id"],
+                "state": "deferred",
+                "message": "speak queue full; retry",
+                "attempt": first["attempt"],
+            }
+        )
+        retried = store.lease_next_command("robot-1")
+        self.assertEqual(retried["cmd_id"], first["cmd_id"])
+        self.assertEqual(retried["payload"]["segment_index"], 0)
+        store.record_ack({"cmd_id": retried["cmd_id"], "state": "rendered"})
+        second = store.lease_next_command("robot-1")
+        self.assertEqual(second["payload"]["segment_index"], 1)
+
+    def test_live_queue_keeps_every_segment_and_end_control_in_fifo_order(self):
+        store = self.make_store()
+        enqueued = []
+        segment_sink = command_store_segment_sink(store, enqueue=lambda _device, command: enqueued.append(command))
+        end_sink = command_store_reply_end_sink(store, enqueue=lambda _device, command: enqueued.append(command))
+        request = MorrowRequest("req-fifo", "问题", "robot-1", "voice", 1, 60, 3, "happy")
+
+        segment_sink(request, "第一句。", 0)
+        segment_sink(request, "第二句。", 1)
+        end_sink(request, 2, "saved")
+
+        self.assertEqual([item["payload"]["segment_index"] for item in enqueued], [0, 1, 2])
+        self.assertEqual(len({item["coalesce_key"] for item in enqueued}), 3)
+        self.assertTrue(all(item["discardable"] is False for item in enqueued))
+        self.assertTrue(enqueued[-1]["payload"]["reply_end"])
 
     def test_source_segment_unique_constraint_prevents_duplicate_speech(self):
         store = self.make_store()

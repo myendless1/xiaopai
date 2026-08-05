@@ -98,6 +98,7 @@ static void set_dialog_sleeping_outputs();
 static void set_light_strip_speaking();
 static void set_light_strip_sleeping();
 static void set_waiting_outputs();
+static void set_light_strip_demo_lock();
 static void set_light_strip_listening_bar(uint8_t level);
 static void update_listening_light_level(const int16_t* samples, size_t sample_count);
 static void update_speaking_light_level(const int16_t* samples, size_t sample_count);
@@ -107,7 +108,8 @@ static void apply_speaker_volume();
 static bool execute_speak_command(const char* text);
 static bool execute_speak_command_internal(const char* text, bool pause_voice_listener, const char* cache_name = nullptr,
                                            const char* voice = nullptr, int sample_rate = 0, int volume = 0,
-                                           int speech_rate = 0, int pitch_rate = 0, const char* cmd_id = "");
+                                           int speech_rate = 0, int pitch_rate = 0, const char* cmd_id = "",
+                                           bool manage_voice_state = true);
 static bool enqueue_speak_command(const char* cmd_id, const char* text, const char* cache_name, bool pause_voice_listener,
                                   const char* voice = nullptr, int sample_rate = 0, int volume = 0, int speech_rate = 0,
                                   int pitch_rate = 0, uint32_t attempt = 0, uint32_t generation = 0,
@@ -117,6 +119,8 @@ static bool enqueue_speak_command(const char* cmd_id, const char* text, const ch
                                   int speaker_volume = -1);
 static void request_speak_preempt(const char* reason);
 static void advance_speech_generation(uint32_t generation = 0);
+static bool reply_voice_audio_started(const char* turn_id, uint32_t generation);
+static bool reply_voice_is_active();
 static bool run_find_owner_command(int rounds, const char* reply, float gain_x, float gain_y, float stop_pixels,
                                    bool preserve_speech_playback, bool wait_for_speech);
 
@@ -169,6 +173,33 @@ static const char* reset_reason_name(esp_reset_reason_t reason)
 #include "main_head_touch.inc"
 
 #include "main_command_services.inc"
+
+static void set_demo_lock_enabled(bool enabled)
+{
+    const bool previous = demo_lock_enabled.exchange(enabled);
+    if (previous == enabled) {
+        return;
+    }
+
+    if (enabled) {
+        ESP_LOGW(TAG, "Demo lock enabled by power button");
+        demo_lock_abort_pending = true;
+        pause_voice_listener_for_shared_peripherals("demo lock");
+        request_speak_preempt("demo lock");
+        advance_speech_generation();
+        xiaopai_cancel_current("demo lock");
+        xiaopai_state_set(LocalVoiceState::Idle, "demo lock");
+        set_light_strip_demo_lock();
+        return;
+    }
+
+    ESP_LOGW(TAG, "Demo lock disabled by power button");
+    resume_voice_listener_after_shared_peripherals();
+    mark_user_interaction("demo unlock");
+    xiaopai_state_set(LocalVoiceState::Listening, "demo unlock");
+    expression_state_set(kDefaultExpression);
+    xiaopai_state_apply_outputs(LocalVoiceState::Listening);
+}
 
 #if CONFIG_STACKCHAN_DJI_MIC_ENUM_ONLY || CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD
 static const char* yes_no(bool value)
@@ -429,11 +460,16 @@ extern "C" void app_main(void)
 #endif
 
     while (true) {
+        bool power_button_clicked = false;
         {
             M5Lock lock;
             if (!camera_owns_internal_i2c) {
                 M5.update();
+                power_button_clicked = M5.BtnPWR.wasClicked();
             }
+        }
+        if (power_button_clicked) {
+            set_demo_lock_enabled(!demo_lock_enabled.load());
         }
         if (auto_sleep_dark_due()) {
             show_sleep_dark_listening("idle timeout");

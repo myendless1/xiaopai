@@ -687,6 +687,10 @@ static bool ensure_light_strip_ready_locked()
 
 static void set_light_strip_color(uint8_t r, uint8_t g, uint8_t b, int state)
 {
+    if (demo_lock_enabled.load()) {
+        set_light_strip_demo_lock();
+        return;
+    }
     if (light_strip_state == state && light_strip_ready) {
         return;
     }
@@ -740,13 +744,37 @@ static void set_light_strip_speaking_bar(uint8_t level)
     if (!ensure_light_strip_ready_locked()) {
         return;
     }
-    if (py32_write_light_strip_bar_locked(level, 0, 0, 48, 28, 38, 90)) {
-        light_strip_state = 20 + std::min<uint8_t>(level, kLightStripSideLedCount);
+    const uint8_t displayed_level = demo_lock_enabled.load() ? kDemoLockLightLevel : level;
+    if (py32_write_light_strip_bar_locked(displayed_level, 0, 0, 48, 28, 38, 90)) {
+        light_strip_state = demo_lock_enabled.load()
+            ? 42
+            : 20 + std::min<uint8_t>(displayed_level, kLightStripSideLedCount);
+    }
+}
+
+static void set_light_strip_demo_lock()
+{
+    if (camera_owns_internal_i2c) {
+        return;
+    }
+
+    M5Lock lock;
+    if (!ensure_light_strip_ready_locked()) {
+        return;
+    }
+    if (py32_write_light_strip_bar_locked(kDemoLockLightLevel, 0, 0, 48, 28, 38, 90)) {
+        light_strip_listening_after_speech = false;
+        listening_light_last_update_ms = 0;
+        light_strip_state = 42;
     }
 }
 
 static void set_light_strip_listening_bar(uint8_t level)
 {
+    if (demo_lock_enabled.load()) {
+        set_light_strip_demo_lock();
+        return;
+    }
     if (camera_owns_internal_i2c) {
         return;
     }

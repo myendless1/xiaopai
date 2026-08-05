@@ -29,7 +29,8 @@ static constexpr int kRecordMaxMs = CONFIG_STACKCHAN_RECORD_MAX_MS;
 static constexpr int kSilenceStopMs = CONFIG_STACKCHAN_SILENCE_STOP_MS;
 static constexpr int kRealtimeSttDrainTimeoutMs = 1800;
 static constexpr int kRealtimeAudioWriteTimeoutMs = 500;
-static constexpr uint32_t kWaitingReplyTimeoutMs = 30 * 1000;
+static constexpr uint32_t kReplyContinuationTimeoutMs = 30 * 1000;
+static constexpr uint32_t kWaitingReplyTimeoutMs = kReplyContinuationTimeoutMs;
 static constexpr int kTtsStreamSampleRate = 24000;
 static constexpr size_t kTtsStreamBufferSamples = 1024;
 static constexpr int kSpeakerDmaTailDrainMs = 384;
@@ -108,6 +109,7 @@ static constexpr uint8_t kLightStripSpeakingB = 48;
 static constexpr uint8_t kLightStripWaitingR = 0;
 static constexpr uint8_t kLightStripWaitingG = 0;
 static constexpr uint8_t kLightStripWaitingB = 48;
+static constexpr uint8_t kDemoLockLightLevel = 2;
 static constexpr uint32_t kListeningLightFrameMs = 60;
 static constexpr int kListeningLightSilenceLevel = 120;
 static constexpr int kListeningLightFullScaleLevel = 3600;
@@ -120,6 +122,7 @@ static constexpr uint32_t kScreenTouchPollMs = 50;
 static constexpr uint32_t kScreenTouchTaskStackBytes = 6 * 1024;
 static constexpr uint32_t kScreenTouchAudioTaskStackBytes = 16 * 1024;
 static constexpr uint32_t kSpeakCommandTaskStackBytes = 12 * 1024;
+static constexpr UBaseType_t kSpeakCommandQueueCapacity = 4;
 static constexpr uint32_t kMemoryMonitorTaskStackBytes = 4 * 1024;
 static constexpr size_t kSpeakCommandMaxTextBytes = 768;
 static constexpr size_t kSpeakCommandCacheNameBytes = 64;
@@ -158,6 +161,7 @@ TaskHandle_t speaking_light_task_handle = nullptr;
 TaskHandle_t head_touch_task_handle = nullptr;
 TaskHandle_t head_touch_audio_task_handle = nullptr;
 TaskHandle_t speak_command_task_handle = nullptr;
+TaskHandle_t reply_voice_watchdog_task_handle = nullptr;
 TaskHandle_t memory_monitor_task_handle = nullptr;
 TaskHandle_t heartbeat_task_handle = nullptr;
 EventGroupHandle_t wifi_event_group = nullptr;
@@ -166,6 +170,7 @@ SemaphoreHandle_t audio_mutex = nullptr;
 SemaphoreHandle_t provisioning_mutex = nullptr;
 QueueHandle_t head_touch_event_queue = nullptr;
 QueueHandle_t speak_command_queue = nullptr;
+SemaphoreHandle_t reply_voice_mutex = nullptr;
 int wifi_retry_count = 0;
 bool wifi_started = false;
 bool wifi_connect_requested = false;
@@ -176,6 +181,8 @@ std::atomic<bool> tracking_stop_requested{false};
 volatile bool voice_listener_paused = false;
 std::atomic<bool> voice_recording_active{false};
 volatile int voice_listener_pause_count = 0;
+std::atomic<bool> demo_lock_enabled{false};
+std::atomic<bool> demo_lock_abort_pending{false};
 volatile bool voice_status_screen_suppressed = false;
 std::atomic<bool> speech_playback_active{false};
 volatile bool realtime_tts_playback_active = false;
@@ -271,6 +278,23 @@ struct SpeakCommandItem {
     bool reply_end;
     bool reply_cancelled;
 };
+
+enum class ReplyVoicePhase : uint8_t {
+    None,
+    PendingAudio,
+    Playing,
+    BetweenSegments,
+};
+
+struct ReplyVoiceSession {
+    char turn_id[40] = {};
+    uint32_t generation = 0;
+    ReplyVoicePhase phase = ReplyVoicePhase::None;
+    uint32_t last_progress_ms = 0;
+    bool speaking_hold_active = false;
+};
+
+ReplyVoiceSession reply_voice_session = {};
 
 char active_speak_turn_id[40] = {};
 uint32_t active_speak_generation = 0;
@@ -449,7 +473,8 @@ static void show_dialog_sleeping(const char* reason)
 
 static bool auto_sleep_dark_due()
 {
-    if (expression_state_get().sleep_dark || current_app == AppId::WifiConnect || !wifi_is_connected() ||
+    if (demo_lock_enabled.load() || expression_state_get().sleep_dark ||
+        current_app == AppId::WifiConnect || !wifi_is_connected() ||
         !active_server_selected || speech_output_is_busy()) {
         return false;
     }

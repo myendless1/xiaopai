@@ -517,6 +517,7 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
     if (type == "stop") {
         supervisor_set_app2_stop_requested(true, "stop command", SupervisorSafetyClass::LocalStop);
         codec_audio_output_stop();
+        reply_voice_cancel("stop command");
         expression_state_reply_cancel("stop command");
         expression_state_set(kDefaultExpression);
         xiaopai_state_set(LocalVoiceState::Idle, "stop command");
@@ -525,6 +526,8 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
     if (type == "sleep") {
         supervisor_set_app2_stop_requested(true, "sleep command", SupervisorSafetyClass::LocalStop);
         codec_audio_output_stop();
+        reply_voice_cancel("sleep command");
+        expression_state_reply_cancel("sleep command");
         show_dialog_sleeping("sleep command");
         return true;
     }
@@ -586,6 +589,13 @@ static bool handle_command_response(const std::string& response)
     wake_for_server_command(cmd_type.c_str());
 
     if (cmd_type == "speak") {
+        if (demo_lock_enabled.load()) {
+            send_command_ack(cmd_id.c_str(), "cancelled", "demo lock active", attempt);
+            if (persist_dedupe) command_dedupe_mark_persistent(cmd_id.c_str());
+            ESP_LOGI(TAG, "COMMAND cancelled by demo lock id=%s type=speak", cmd_id.c_str());
+            cJSON_Delete(root);
+            return true;
+        }
         const cJSON* payload = cJSON_GetObjectItemCaseSensitive(command, "payload");
         if (!cJSON_IsObject(payload)) {
             payload = command;
@@ -617,7 +627,11 @@ static bool handle_command_response(const std::string& response)
                                             attempt, generation, segment_index, ttl_ms, turn_id.c_str(),
                                             expression.c_str(), reply_end, reply_cancelled, speaker_volume);
         if (!queued) {
-            send_command_ack(cmd_id.c_str(), "failed", "speak queue unavailable or invalid control item", attempt);
+            const bool queue_full = speak_command_queue != nullptr && uxQueueSpacesAvailable(speak_command_queue) == 0;
+            send_command_ack(cmd_id.c_str(), queue_full ? "deferred" : "failed",
+                             queue_full ? "speak queue full; retry" :
+                                          "speak queue unavailable or invalid control item",
+                             attempt);
         } else {
             send_command_ack(cmd_id.c_str(), "received", "", attempt);
             if (persist_dedupe) command_dedupe_mark_persistent(cmd_id.c_str());
@@ -663,6 +677,8 @@ static bool send_v3_control_hello()
     cJSON_AddStringToObject(root, "firmware_version", app != nullptr ? app->version : "unknown");
     cJSON_AddNumberToObject(root, "protocol_version", 3);
     cJSON_AddNumberToObject(root, "last_ack_seq", command_ack_seq);
+    cJSON_AddNumberToObject(root, "speech_generation", speech_command_generation);
+    cJSON_AddBoolToObject(root, "demo_lock", demo_lock_enabled.load());
     cJSON* capabilities = cJSON_AddArrayToObject(root, "capabilities");
     cJSON_AddItemToArray(capabilities, cJSON_CreateString("internal_mic"));
 #if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT || CONFIG_STACKCHAN_DJI_MIC_AUTO_START
@@ -697,6 +713,8 @@ static bool send_v3_control_heartbeat()
     cJSON_AddNumberToObject(root, "boot_id", xiaopai_boot_id);
     cJSON_AddStringToObject(root, "firmware_version", app != nullptr ? app->version : "unknown");
     cJSON_AddNumberToObject(root, "last_ack_seq", command_ack_seq);
+    cJSON_AddNumberToObject(root, "speech_generation", speech_command_generation);
+    cJSON_AddBoolToObject(root, "demo_lock", demo_lock_enabled.load());
     cJSON_AddStringToObject(root, "mode", xiaopai_state_get().name);
     cJSON_AddStringToObject(root, "expression", expression_state_get().name);
     cJSON_AddNumberToObject(root, "free_internal_heap", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
@@ -782,8 +800,14 @@ static void run_command_http_loop()
         url += url_encode(mac_address().c_str());
         url += "&boot_id=";
         url += std::to_string(xiaopai_boot_id);
+        const UBaseType_t speech_queue_depth =
+            speak_command_queue != nullptr ? uxQueueMessagesWaiting(speak_command_queue) : 0;
+        url += "&speech_queue_depth=";
+        url += std::to_string(static_cast<unsigned>(speech_queue_depth));
+        url += "&speech_queue_capacity=";
+        url += std::to_string(static_cast<unsigned>(kSpeakCommandQueueCapacity));
         url += "&timeout=";
-        url += std::to_string(kCommandLongPollSeconds);
+        url += std::to_string(speech_queue_depth >= kSpeakCommandQueueCapacity ? 1 : kCommandLongPollSeconds);
         std::string response;
         const bool poll_ok = http_get_string(url, &response, kCommandLongPollHttpTimeoutMs, false);
         if (poll_ok && !response.empty()) {

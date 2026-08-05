@@ -1221,13 +1221,18 @@ class DeviceCommandQueue:
             self._cv.notify()
             return stats
 
-    def get(self, timeout: float | None = None) -> dict:
+    def get(self, timeout: float | None = None, *, allow_speak: bool = True) -> dict:
         deadline = None if timeout is None else time.monotonic() + timeout
         with self._cv:
             while True:
                 self._drop_expired_locked(time.time())
-                if self._items:
-                    index = max(range(len(self._items)), key=lambda i: (self._items[i]["priority"], -self._items[i]["seq"]))
+                eligible = [
+                    index
+                    for index, item in enumerate(self._items)
+                    if allow_speak or str(item["command"].get("type") or "") != "speak"
+                ]
+                if eligible:
+                    index = max(eligible, key=lambda i: (self._items[i]["priority"], -self._items[i]["seq"]))
                     return self._items.pop(index)["command"]
                 if timeout == 0:
                     raise Empty
@@ -1239,8 +1244,19 @@ class DeviceCommandQueue:
                     raise Empty
                 self._cv.wait(remaining)
 
-    def get_nowait(self) -> dict:
-        return self.get(timeout=0)
+    def get_nowait(self, *, allow_speak: bool = True) -> dict:
+        return self.get(timeout=0, allow_speak=allow_speak)
+
+    def discard(self, cmd_id: str) -> bool:
+        cmd_id = str(cmd_id or "")
+        if not cmd_id:
+            return False
+        with self._cv:
+            for index, item in enumerate(self._items):
+                if str(item["command"].get("cmd_id") or "") == cmd_id:
+                    self._items.pop(index)
+                    return True
+        return False
 
     def _drop_expired_locked(self, now: float) -> int:
         before = len(self._items)
@@ -1641,12 +1657,29 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_v3_hello(self, payload: dict) -> None:
         body = self.server.device_registry.hello(payload)
         device_id = safe_device_id(payload.get("device_id") or "default")
+        self._sync_device_speech_generation(device_id, payload)
         self._mark_device_seen(device_id)
         self._send_json(body)
+
+    def _sync_device_speech_generation(self, device_id: str, payload: dict) -> None:
+        if "speech_generation" not in payload:
+            return
+        try:
+            generation = max(0, int(payload.get("speech_generation") or 0))
+        except (TypeError, ValueError):
+            return
+        coordinator = getattr(self.server, "morrow_coordinator", None)
+        if coordinator is not None:
+            coordinator.sync_device_generation(device_id, generation)
+            return
+        command_store = getattr(self.server, "command_store", None)
+        if command_store is not None:
+            command_store.set_speech_generation(device_id, generation)
 
     def _handle_v3_heartbeat(self, payload: dict) -> None:
         device_id = safe_device_id(payload.get("device_id") or self.headers.get("X-Device-Id", "") or "default")
         body = self.server.device_registry.heartbeat(device_id, last_ack_seq=int(payload.get("last_ack_seq") or 0))
+        self._sync_device_speech_generation(device_id, payload)
         self._mark_device_seen(device_id)
         self._log_info(
             f"设备心跳状态: device={device_id} boot={payload.get('boot_id')} "
@@ -2370,12 +2403,35 @@ class Handler(BaseHTTPRequestHandler):
         timeout = float(first_value(query, "timeout") or "25")
         timeout = max(0.0, min(timeout, 55.0))
         boot_id = int(first_value(query, "boot_id") or self.headers.get("X-Boot-Id", "0") or "0")
+        queue_depth_text = first_value(query, "speech_queue_depth")
+        queue_capacity_text = first_value(query, "speech_queue_capacity")
+        allow_speak = True
+        if queue_depth_text != "" and queue_capacity_text != "":
+            try:
+                queue_depth = max(0, int(queue_depth_text))
+                queue_capacity = max(1, min(64, int(queue_capacity_text)))
+                allow_speak = queue_depth < queue_capacity
+            except (TypeError, ValueError):
+                pass
+        if not allow_speak:
+            timeout = min(timeout, 1.0)
         self._mark_device_seen(device_id)
         self._expire_dialog_if_needed(device_id)
         queue = self._queue_for(device_id)
+        command_store = getattr(self.server, "command_store", None)
+        if command_store is not None:
+            leased = command_store.lease_next_command(
+                device_id,
+                boot_id=boot_id,
+                lease_ms=DEFAULT_LEASE_MS,
+                allow_speak=allow_speak,
+            )
+            if leased is not None:
+                queue.discard(str(leased.get("cmd_id") or ""))
+                self._send_json({"type": "command", "device_id": device_id, "command": leased})
+                return
         try:
-            command = queue.get(timeout=timeout)
-            command_store = getattr(self.server, "command_store", None)
+            command = queue.get(timeout=timeout, allow_speak=allow_speak)
             if command_store is not None:
                 leased = command_store.lease_command(
                     str(command.get("cmd_id") or ""),
@@ -2386,19 +2442,19 @@ class Handler(BaseHTTPRequestHandler):
                     command = leased
             self._send_json({"type": "command", "device_id": device_id, "command": command})
         except Empty:
-            command_store = getattr(self.server, "command_store", None)
             if command_store is not None:
                 leased = command_store.lease_next_command(
                     device_id,
                     boot_id=boot_id,
                     lease_ms=DEFAULT_LEASE_MS,
+                    allow_speak=allow_speak,
                 )
                 if leased is not None:
                     self._send_json({"type": "command", "device_id": device_id, "command": leased})
                     return
             if self._expire_dialog_if_needed(device_id):
                 try:
-                    command = queue.get_nowait()
+                    command = queue.get_nowait(allow_speak=allow_speak)
                     if command_store is not None:
                         leased = command_store.lease_command(
                             str(command.get("cmd_id") or ""),
@@ -2599,19 +2655,9 @@ class Handler(BaseHTTPRequestHandler):
         return []
 
     def _enter_morrow_waiting(self, device_id: str, event_type: str) -> list[str]:
-        queued_commands = self._send_device_state_command(device_id, "waiting", reason=f"morrow:{event_type}")
-        command = make_command(
-            "face",
-            {"expression": "thinking", "reason": f"morrow:{event_type}"},
-            priority=89,
-            interrupt=True,
-            ttl_seconds=8,
-            discardable=True,
-            coalesce_key="face",
-        )
-        if self._enqueue_command(device_id, command):
-            queued_commands.append(command["cmd_id"])
-        return queued_commands
+        # Waiting for Morrow/TTS keeps the normal calm + blink face.  The
+        # reply expression starts only when the first PCM block is queued.
+        return self._send_device_state_command(device_id, "waiting", reason=f"morrow:{event_type}")
 
     def _send_morrow_event(self, device_id: str, event_type: str, details: dict) -> dict:
         if not self._morrow_enabled():
@@ -4791,13 +4837,11 @@ def main():
         httpd.morrow_client,
         command_store_segment_sink(
             httpd.command_store,
-            ttl_ms=60_000,
             enqueue=enqueue_morrow_command,
             speaker_volume=lambda: httpd.speaker_volume,
         ),
         reply_end_sink=command_store_reply_end_sink(
             httpd.command_store,
-            ttl_ms=60_000,
             enqueue=enqueue_morrow_command,
         ),
         cancel_sink=cancel_morrow_generation,

@@ -11,6 +11,27 @@ sys.path.insert(0, str(ROOT / "src"))
 import server  # noqa: E402
 
 
+class DeviceCommandQueueFlowControlTest(unittest.TestCase):
+    def test_full_speech_queue_keeps_speech_but_allows_control_command(self):
+        queue = server.DeviceCommandQueue(4)
+        speak = {"cmd_id": "speak-1", "type": "speak", "priority": 50, "discardable": False}
+        stop = {"cmd_id": "stop-1", "type": "stop", "priority": 100, "discardable": False}
+        queue.put(speak)
+        queue.put(stop)
+
+        self.assertEqual(queue.get_nowait(allow_speak=False)["cmd_id"], "stop-1")
+        self.assertEqual(queue.qsize(), 1)
+        self.assertEqual(queue.get_nowait()["cmd_id"], "speak-1")
+
+    def test_discard_removes_database_leased_duplicate(self):
+        queue = server.DeviceCommandQueue(4)
+        queue.put({"cmd_id": "speak-1", "type": "speak"})
+
+        self.assertTrue(queue.discard("speak-1"))
+        self.assertEqual(queue.qsize(), 0)
+        self.assertFalse(queue.discard("speak-1"))
+
+
 class MorrowEventContentTest(unittest.TestCase):
     def test_speech_recognition_uses_recognized_text_as_content(self):
         content = server.build_morrow_event_content(
@@ -187,6 +208,19 @@ class CommandPayloadTest(unittest.TestCase):
 
 
 class MorrowWaitingStateTest(unittest.TestCase):
+    def test_waiting_keeps_default_calm_face_until_reply_pcm_starts(self):
+        handler = object.__new__(server.Handler)
+        calls = []
+        handler._send_device_state_command = (
+            lambda device_id, state, reason="": calls.append((device_id, state, reason)) or ["state-command"]
+        )
+        handler._enqueue_command = lambda *_args, **_kwargs: self.fail("waiting must not enqueue a face command")
+
+        queued = handler._enter_morrow_waiting("dev1", "speech_recognition")
+
+        self.assertEqual(queued, ["state-command"])
+        self.assertEqual(calls, [("dev1", "waiting", "morrow:speech_recognition")])
+
     def test_production_path_submits_global_morrow_coordinator(self):
         class FakeCoordinator:
             def __init__(self):

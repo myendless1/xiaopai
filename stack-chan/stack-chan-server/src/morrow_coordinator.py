@@ -14,6 +14,9 @@ from morrow_protocol import MorrowEvent
 
 HARD_PUNCTUATION = frozenset("。！？!?；;\n")
 SUPPORTED_EXPRESSIONS = frozenset({"happy", "thinking", "surprised"})
+# Once a segment reaches the device this is its local playback deadline.  Server
+# persistence itself is intentionally unbounded and is cancelled by turn generation.
+DIALOGUE_COMMAND_TTL_MS = 3_600_000
 
 
 class StreamingTextSegmenter:
@@ -128,12 +131,12 @@ CancelSink = Callable[[str, int], None]
 def command_store_segment_sink(
     command_store,
     *,
-    ttl_ms: int = 30_000,
+    ttl_ms: int = DIALOGUE_COMMAND_TTL_MS,
     enqueue=None,
     speaker_volume=10,
 ) -> SegmentSink:
     """Build a sink that persists every dialogue segment before device delivery."""
-    from schemas import AdmissionPolicy, CommandEnvelope, future_time_ms, new_id
+    from schemas import AdmissionPolicy, CommandEnvelope, new_id
 
     def persist(request: MorrowRequest, text: str, segment_index: int) -> None:
         resolved_speaker_volume = speaker_volume() if callable(speaker_volume) else speaker_volume
@@ -152,9 +155,10 @@ def command_store_segment_sink(
                 },
                 priority=50,
                 ttl_ms=ttl_ms,
+                coalesce_key=f"morrow:{request.request_id}:{segment_index}",
                 turn_id=request.request_id,
                 admission=AdmissionPolicy(),
-                expires_at=future_time_ms(ttl_ms),
+                expires_at="",
                 source_type="dialogue",
                 source_id=request.request_id,
                 segment_index=segment_index,
@@ -162,14 +166,21 @@ def command_store_segment_sink(
             )
         command_store.create_command(command)
         if enqueue is not None:
-            enqueue(request.device_id, command.to_device_command())
+            device_command = command.to_device_command()
+            device_command["discardable"] = False
+            enqueue(request.device_id, device_command)
 
     return persist
 
 
-def command_store_reply_end_sink(command_store, *, ttl_ms: int = 30_000, enqueue=None) -> ReplyEndSink:
+def command_store_reply_end_sink(
+    command_store,
+    *,
+    ttl_ms: int = DIALOGUE_COMMAND_TTL_MS,
+    enqueue=None,
+) -> ReplyEndSink:
     """Build a FIFO sentinel marking the end (or cancellation) of a reply."""
-    from schemas import AdmissionPolicy, CommandEnvelope, future_time_ms, new_id
+    from schemas import AdmissionPolicy, CommandEnvelope, new_id
 
     def persist(request: MorrowRequest, segment_index: int, outcome: str) -> None:
         command = CommandEnvelope(
@@ -187,9 +198,10 @@ def command_store_reply_end_sink(command_store, *, ttl_ms: int = 30_000, enqueue
             },
             priority=50,
             ttl_ms=ttl_ms,
+            coalesce_key=f"morrow:{request.request_id}:{segment_index}",
             turn_id=request.request_id,
             admission=AdmissionPolicy(),
-            expires_at=future_time_ms(ttl_ms),
+            expires_at="",
             source_type="dialogue",
             source_id=request.request_id,
             segment_index=segment_index,
@@ -197,7 +209,9 @@ def command_store_reply_end_sink(command_store, *, ttl_ms: int = 30_000, enqueue
         )
         command_store.create_command(command)
         if enqueue is not None:
-            enqueue(request.device_id, command.to_device_command())
+            device_command = command.to_device_command()
+            device_command["discardable"] = False
+            enqueue(request.device_id, device_command)
 
     return persist
 
@@ -260,6 +274,26 @@ class MorrowTurnCoordinator:
         device_id = str(device_id or "default")
         with self._lock:
             return self._generations.get(device_id, 0)
+
+    def sync_device_generation(self, device_id: str, generation: int) -> int:
+        """Monotonically adopt a device generation reported by hello/heartbeat."""
+        device_id = str(device_id or "default")
+        generation = max(0, int(generation))
+        active = None
+        changed = False
+        with self._lock:
+            current = self._generations.get(device_id, 0)
+            if generation > current:
+                self._generations[device_id] = generation
+                active = self._active
+                changed = True
+            else:
+                generation = current
+        if changed and self.cancel_sink is not None:
+            self.cancel_sink(device_id, generation)
+        if changed and active is not None and active.device_id == device_id and active.generation < generation:
+            self.client.cancel_turn()
+        return generation
 
     def start(self) -> None:
         self.client.start()
@@ -341,7 +375,13 @@ class MorrowTurnCoordinator:
             try:
                 if request is None:
                     return
-                self._process(request)
+                try:
+                    self._process(request)
+                except Exception as exc:
+                    outcome = self._outcomes[request.request_id]
+                    self._finish(outcome, "disconnected", str(exc))
+                finally:
+                    self._emit_reply_end(request)
             finally:
                 self._queue.task_done()
 
@@ -423,19 +463,25 @@ class MorrowTurnCoordinator:
                     data = event.data if isinstance(event.data, dict) else {}
                     self._finish(outcome, "disconnected", str(data.get("message") or ""))
                     return
+            self._finish(outcome, "cancelled", "coordinator stopped")
         except Exception as exc:
             self._finish(outcome, "disconnected", str(exc))
         finally:
-            if outcome.finished.is_set() and outcome.segment_count and self.reply_end_sink is not None:
-                try:
-                    self.reply_end_sink(request, outcome.segment_count, outcome.state)
-                except Exception as exc:
-                    self.metrics["morrow_reply_end_error_total"] += 1
-                    if not outcome.message:
-                        outcome.message = f"reply-end enqueue failed: {exc}"
             with self._lock:
                 if self._active is request:
                     self._active = None
+
+    def _emit_reply_end(self, request: MorrowRequest) -> None:
+        """Emit exactly one FIFO sentinel for every terminal accepted request."""
+        outcome = self._outcomes[request.request_id]
+        if not outcome.finished.is_set() or self.reply_end_sink is None:
+            return
+        try:
+            self.reply_end_sink(request, outcome.segment_count, outcome.state)
+        except Exception as exc:
+            self.metrics["morrow_reply_end_error_total"] += 1
+            if not outcome.message:
+                outcome.message = f"reply-end enqueue failed: {exc}"
 
     def _deliver(self, request: MorrowRequest, outcome: TurnOutcome, segments: list[str]) -> None:
         if self._is_stale(request):

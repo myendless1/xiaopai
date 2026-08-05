@@ -11,7 +11,7 @@ namespace {
 
 static constexpr const char* TAG = "ExpressionState";
 static constexpr uint32_t kReplyReleaseMs = 200;
-static constexpr uint32_t kReplyWatchdogMs = 10000;
+static constexpr uint32_t kReplyWatchdogMs = 20000;
 
 SemaphoreHandle_t reply_mutex = nullptr;
 TaskHandle_t reply_watchdog_task = nullptr;

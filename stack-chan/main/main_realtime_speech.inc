@@ -956,6 +956,21 @@ public:
     VoiceListenerPauseGuard& operator=(const VoiceListenerPauseGuard&) = delete;
 };
 
+static void send_demo_lock_abort_if_pending(esp_transport_handle_t ws)
+{
+    if (!demo_lock_abort_pending.load()) {
+        return;
+    }
+    std::string abort_message = std::string("{\"session_id\":\"") + realtime_config.session_id +
+                                "\",\"type\":\"abort\",\"reason\":\"demo_lock\"}";
+    if (send_ws_text(ws, abort_message, "demo lock abort")) {
+        demo_lock_abort_pending = false;
+        ESP_LOGI(TAG, "Server turn aborted for demo lock");
+    } else {
+        ESP_LOGW(TAG, "Failed to notify server about demo lock; will retry");
+    }
+}
+
 static void run_realtime_speech_loop()
 {
     if (realtime_config.websocket_url.empty()) {
@@ -1057,6 +1072,7 @@ static void run_realtime_speech_loop()
     bool got_hello = true;
     std::string stt_text;
     while (!app1_stop_requested) {
+        send_demo_lock_abort_if_pending(ws);
         if (!receive_ws_once(ws, 0, got_hello, stt_text) &&
             !reconnect_ws("websocket read failed before mic poll")) {
             break;
@@ -1072,6 +1088,7 @@ static void run_realtime_speech_loop()
                 set_app1_status("Paused", "Shared peripheral", "Listening resumes soon", "", true, false);
             }
             while ((voice_listener_paused || !xiaopai_state_get().can_sample_mic) && !app1_stop_requested) {
+                send_demo_lock_abort_if_pending(ws);
                 if (!receive_ws_once(ws, 50, got_hello, stt_text) &&
                     !reconnect_ws("websocket read failed while paused")) {
                     break;
@@ -1079,6 +1096,13 @@ static void run_realtime_speech_loop()
                 XiaopaiStateSnapshot current = xiaopai_state_get();
                 if (current.state == LocalVoiceState::Waiting ||
                     current.interaction_state == InteractionState::WaitingReply) {
+                    if (reply_voice_is_active()) {
+                        // A speak/control command has arrived. Its own watchdog now owns
+                        // PendingAudio and BetweenSegments timeout handling.
+                        waiting_started_ms = 0;
+                        vTaskDelay(pdMS_TO_TICKS(20));
+                        continue;
+                    }
                     uint32_t now_ms = M5.millis();
                     if (waiting_started_ms == 0) {
                         waiting_started_ms = now_ms;
@@ -1091,7 +1115,9 @@ static void run_realtime_speech_loop()
                         if (!send_ws_text(ws, abort_message, "waiting timeout abort")) {
                             ESP_LOGW(TAG, "Failed to notify server about waiting timeout");
                         }
-                        xiaopai_state_set(current.state, "Morrow waiting timeout");
+                        request_speak_preempt("Morrow waiting timeout");
+                        advance_speech_generation();
+                        xiaopai_state_set(LocalVoiceState::Listening, "Morrow waiting timeout");
                         waiting_started_ms = 0;
                         break;
                     }

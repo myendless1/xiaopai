@@ -46,6 +46,13 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         ):
             self.assertIn(field, self.state)
         self.assertIn("kSpeakCommandMaxTextBytes = 768", self.state)
+        self.assertIn("kSpeakCommandQueueCapacity = 4", self.state)
+
+    def test_speech_queue_credit_is_reported_and_full_queue_defers(self):
+        self.assertIn('url += "&speech_queue_depth="', self.commands)
+        self.assertIn('url += "&speech_queue_capacity="', self.commands)
+        self.assertIn('queue_full ? "deferred" : "failed"', self.commands)
+        self.assertIn('"speak queue full; retry"', self.commands)
 
     def test_server_speaker_volume_is_applied_at_playback_and_to_find_owner(self):
         self.assertIn('json_int_value(payload, "speaker_volume", -1)', self.commands)
@@ -133,9 +140,34 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         for phase in ("PendingAudio", "Playing", "BetweenSegments", "Releasing"):
             self.assertIn(phase, self.expression_header)
         self.assertIn("kReplyReleaseMs = 200", self.expression_state)
-        self.assertIn("kReplyWatchdogMs = 10000", self.expression_state)
+        self.assertIn("kReplyWatchdogMs = 20000", self.expression_state)
         self.assertIn("reply_session.generation == generation", self.expression_state)
         self.assertIn('show_expression(kDefaultExpression)', self.expression_state)
+
+    def test_reply_voice_stays_speaking_between_segments_and_uses_fifo_end(self):
+        self.assertIn("enum class ReplyVoicePhase", self.state)
+        self.assertIn("PendingAudio", self.state)
+        self.assertIn("BetweenSegments", self.state)
+        self.assertIn("reply_voice_audio_started(active_speak_turn_id", self.tts)
+        self.assertIn("reply_voice_segment_finished(item.turn_id", self.tts)
+        self.assertIn('item.reply_cancelled ? "reply cancelled control" : "reply end control"', self.tts)
+        self.assertIn("xiaopai_state_set(LocalVoiceState::Listening, reason)", self.tts)
+        queued_call = self.tts.index("ok = execute_speak_command_internal(item.text")
+        self.assertIn("item.cmd_id, false", self.tts[queued_call:queued_call + 600])
+
+    def test_reply_waiting_and_between_segment_timeouts_are_thirty_seconds(self):
+        self.assertIn("kReplyContinuationTimeoutMs = 30 * 1000", self.state)
+        self.assertIn("kWaitingReplyTimeoutMs = kReplyContinuationTimeoutMs", self.state)
+        self.assertIn("run_reply_voice_watchdog", self.tts)
+        self.assertIn("reply_continuation_timeout", self.tts)
+        self.assertGreaterEqual(self.commands.count('"speech_generation"'), 2)
+        self.assertIn("if (reply_voice_is_active())", self.speech)
+        self.assertIn('xiaopai_state_set(LocalVoiceState::Listening, "Morrow waiting timeout")', self.speech)
+        self.assertNotIn('xiaopai_state_set(current.state, "Morrow waiting timeout")', self.speech)
+
+    def test_followup_speak_does_not_wake_device_during_reply_preparation(self):
+        self.assertIn('strcmp(type, "speak") == 0', self.realtime)
+        self.assertIn("current == LocalVoiceState::Waiting || reply_voice_is_active()", self.realtime)
 
     def test_expression_renderer_uses_only_the_four_eye_brow_faces(self):
         draw_start = self.expression_controller.index("static void draw_face_locked")

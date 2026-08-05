@@ -119,7 +119,14 @@ class CommandStore:
             leased = conn.execute("SELECT * FROM commands WHERE cmd_id = ?", (cmd_id,)).fetchone()
         return self._row_to_command(leased)
 
-    def lease_next_command(self, device_id: str, *, boot_id: int = 0, lease_ms: int = DEFAULT_LEASE_MS) -> dict[str, Any] | None:
+    def lease_next_command(
+        self,
+        device_id: str,
+        *,
+        boot_id: int = 0,
+        lease_ms: int = DEFAULT_LEASE_MS,
+        allow_speak: bool = True,
+    ) -> dict[str, Any] | None:
         now = utc_now()
         with self.database.connect() as conn:
             self._expire_due_locked(conn, now)
@@ -129,13 +136,14 @@ class CommandStore:
                 SELECT * FROM commands
                  WHERE device_id=?
                    AND state IN ('queued', 'leased')
+                   AND (? OR type!='speak')
                    AND (expires_at='' OR expires_at > ?)
                    AND (state='queued' OR lease_expires_at='' OR lease_expires_at < ?)
                    AND attempt < max_attempts
                  ORDER BY safety_class DESC, priority DESC, created_at ASC, segment_index ASC
                  LIMIT 1
                 """,
-                (device_id, now, now),
+                (device_id, int(bool(allow_speak)), now, now),
             ).fetchone()
         if row is None:
             return None
@@ -171,7 +179,19 @@ class CommandStore:
                 command = conn.execute("SELECT delivery_id, state FROM commands WHERE cmd_id=?", (cmd_id,)).fetchone()
                 if command is not None:
                     current_state = str(command["state"] or "queued")
-                    if self._ack_can_advance(current_state, state):
+                    if state == "deferred" and current_state not in TERMINAL_COMMAND_STATES:
+                        state = "queued"
+                        conn.execute(
+                            """
+                            UPDATE commands
+                               SET state='queued',
+                                   attempt=CASE WHEN attempt > 0 THEN attempt - 1 ELSE 0 END,
+                                   updated_at=?, last_message=?, lease_expires_at=''
+                             WHERE cmd_id=?
+                            """,
+                            (now, str(ack.get("message") or "device deferred command"), cmd_id),
+                        )
+                    elif self._ack_can_advance(current_state, state):
                         lease_expires_at = future_time_ms(DEFAULT_LEASE_MS) if state == "running" else ""
                         conn.execute(
                             """

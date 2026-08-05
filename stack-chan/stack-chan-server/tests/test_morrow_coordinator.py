@@ -87,6 +87,7 @@ class CoordinatorTest(unittest.TestCase):
         self.client = FakeClient()
         self.spoken = []
         self.ended = []
+        self.cancelled_generations = []
         self.coordinator = MorrowTurnCoordinator(
             self.client,
             lambda request, text, index: self.spoken.append(
@@ -95,6 +96,7 @@ class CoordinatorTest(unittest.TestCase):
             reply_end_sink=lambda request, index, state: self.ended.append(
                 (request.request_id, index, state, request.expression)
             ),
+            cancel_sink=lambda device_id, generation: self.cancelled_generations.append((device_id, generation)),
             initial_generations={"restored-device": 12},
             turn_timeout=1,
         )
@@ -119,6 +121,17 @@ class CoordinatorTest(unittest.TestCase):
 
     def test_restores_initial_device_generation(self):
         self.assertEqual(self.coordinator.generation_for_device("restored-device"), 12)
+
+    def test_device_heartbeat_generation_resync_is_monotonic(self):
+        self.assertEqual(self.coordinator.sync_device_generation("dev1", 30), 30)
+        self.assertEqual(self.coordinator.sync_device_generation("dev1", 29), 30)
+        self.assertEqual(self.coordinator.generation_for_device("dev1"), 30)
+        self.assertEqual(self.cancelled_generations, [("dev1", 30)])
+        outcome = self.submit("req-after-resync")
+        self.assertTrue(self._wait(lambda: len(self.client.started) == 1))
+        self.client.events.put(event({"type": "turn_saved", "data": {}}))
+        self.assertTrue(outcome.finished.wait(0.3))
+        self.assertTrue(self._wait(lambda: self.ended == [("req-after-resync", 0, "saved", "calm")]))
 
     def test_delta_streams_and_final_is_not_duplicated(self):
         outcome = self.submit("req-1")
@@ -150,6 +163,22 @@ class CoordinatorTest(unittest.TestCase):
         self.client.events.put(event({"type": "turn_saved", "data": {}}))
         self.assertTrue(outcome.finished.wait(0.3))
         self.assertEqual([item[1] for item in self.spoken], ["最终回复"])
+
+    def test_saved_empty_reply_still_emits_one_end_control(self):
+        outcome = self.submit("req-empty")
+        self.assertTrue(self._wait(lambda: len(self.client.started) == 1))
+        self.client.events.put(event({"type": "turn_saved", "data": {}}))
+        self.assertTrue(outcome.finished.wait(0.3))
+        self.assertTrue(self._wait(lambda: self.ended == [("req-empty", 0, "saved", "calm")]))
+        self.assertEqual(self.spoken, [])
+
+    def test_error_before_first_delta_emits_cancel_end_control(self):
+        outcome = self.submit("req-error")
+        self.assertTrue(self._wait(lambda: len(self.client.started) == 1))
+        self.client.events.put(event({"type": "error", "data": {"message": "lost"}}))
+        self.assertTrue(outcome.finished.wait(0.3))
+        self.assertTrue(self._wait(lambda: self.ended == [("req-error", 0, "error", "calm")]))
+        self.assertEqual(self.spoken, [])
 
     def test_stop_generation_discards_late_delta(self):
         outcome = self.submit("req-1")

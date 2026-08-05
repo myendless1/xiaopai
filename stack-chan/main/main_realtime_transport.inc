@@ -1,5 +1,9 @@
 static bool start_realtime_tts_playback()
 {
+    if (demo_lock_enabled.load()) {
+        ESP_LOGI(TAG, "Realtime TTS suppressed while demo lock is active");
+        return false;
+    }
     if (realtime_tts_playback_active) {
         return true;
     }
@@ -41,6 +45,9 @@ static void finish_realtime_tts_playback()
 static bool play_realtime_opus_frame(const uint8_t* data, size_t len)
 {
     if (data == nullptr || len == 0) {
+        return true;
+    }
+    if (demo_lock_enabled.load()) {
         return true;
     }
     if (!start_realtime_tts_playback()) {
@@ -123,6 +130,13 @@ static void wake_for_server_command(const char* command_type)
         return;
     }
     LocalVoiceState current = xiaopai_state_get().state;
+    // A Morrow reply is deliberately kept in Waiting until its first PCM block
+    // is queued. Later speak segments may arrive during that preparation window;
+    // they must not make the UI/microphone look ready for another user turn.
+    if (strcmp(type, "speak") == 0 &&
+        (current == LocalVoiceState::Waiting || reply_voice_is_active())) {
+        return;
+    }
     if (current != LocalVoiceState::Idle && current != LocalVoiceState::Waiting) {
         return;
     }
@@ -150,18 +164,26 @@ static bool handle_ws_text_message(esp_transport_handle_t ws, const char* data, 
         got_hello = transport == "websocket" || !realtime_config.session_id.empty();
         ESP_LOGI(TAG, "WS hello transport=%s session_id=%s", transport.c_str(), realtime_config.session_id.c_str());
     } else if (type == "stt") {
-        stt_text = json_string_value(root, "text");
         const bool is_final = json_bool_value(root, "is_final", false);
         if (stt_is_final != nullptr) {
             *stt_is_final = is_final;
         }
+        if (demo_lock_enabled.load()) {
+            stt_text.clear();
+            ESP_LOGI(TAG, "STT result ignored while demo lock is active");
+            cJSON_Delete(root);
+            return true;
+        }
+        stt_text = json_string_value(root, "text");
         ESP_LOGI(TAG, "STT result: final=%d text=%s", static_cast<int>(is_final), stt_text.c_str());
         show_recognition_text("Speech Text", stt_text.c_str());
     } else if (type == "tts") {
         std::string state = json_string_value(root, "state");
         std::string text = json_string_value(root, "text");
         ESP_LOGI(TAG, "TTS state=%s text=%s", state.c_str(), text.c_str());
-        if (state == "start" || state == "sentence_start") {
+        if (demo_lock_enabled.load()) {
+            ESP_LOGI(TAG, "TTS state ignored while demo lock is active: %s", state.c_str());
+        } else if (state == "start" || state == "sentence_start") {
             start_realtime_tts_playback();
         } else if (state == "stop") {
             finish_realtime_tts_playback();
@@ -175,7 +197,9 @@ static bool handle_ws_text_message(esp_transport_handle_t ws, const char* data, 
     } else if (type == "device_state" || type == "state") {
         std::string state = json_string_value(root, "state");
         ESP_LOGI(TAG, "Device state=%s", state.c_str());
-        if (state == "sleep" || state == "sleeping" || state == "idle") {
+        if (demo_lock_enabled.load()) {
+            ESP_LOGI(TAG, "Device state ignored while demo lock is active");
+        } else if (state == "sleep" || state == "sleeping" || state == "idle") {
             show_dialog_sleeping("ws device_state");
         } else if (state == "wake" || state == "awake" || state == "listen" || state == "listening") {
             mark_user_interaction("ws device_state wake");
