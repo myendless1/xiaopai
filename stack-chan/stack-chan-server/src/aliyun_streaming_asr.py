@@ -33,7 +33,7 @@ def build_start_transcription(appkey: str, *, sample_rate: int = 16000, task_id:
             "enable_intermediate_result": True,
             "enable_punctuation_prediction": True,
             "enable_inverse_text_normalization": True,
-            "max_sentence_silence": 400,
+            "max_sentence_silence": 1500,
         },
     }
 
