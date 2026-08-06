@@ -64,6 +64,7 @@ class RealtimeMappingTest(unittest.TestCase):
             AVAILABLE_EXPRESSIONS,
             (
                 "calm",
+                "shy",
                 "happy",
                 "thinking",
                 "surprised",

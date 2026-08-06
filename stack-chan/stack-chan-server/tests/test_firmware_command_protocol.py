@@ -169,13 +169,17 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         self.assertIn('strcmp(type, "speak") == 0', self.realtime)
         self.assertIn("current == LocalVoiceState::Waiting || reply_voice_is_active()", self.realtime)
 
-    def test_expression_renderer_uses_only_the_four_eye_brow_faces(self):
+    def test_expression_renderer_draws_static_mouths_on_old_anchors(self):
         draw_start = self.expression_controller.index("static void draw_face_locked")
         draw_end = self.expression_controller.index("static bool ensure_face_canvas_locked", draw_start)
         draw_face = self.expression_controller[draw_start:draw_end]
-        self.assertIn("draw_eye_only_face_locked", draw_face)
-        self.assertNotIn("draw_mouth_locked", draw_face)
-        for expression in ("Happy", "Thinking", "Surprised", "Calm"):
+        self.assertIn("draw_mouth_locked", draw_face)
+        self.assertIn("draw_cheek_pair_locked", draw_face)
+        self.assertIn("draw_styled_eyes_locked", draw_face)
+        self.assertNotIn("draw_eye_only_face_locked", draw_face)
+        self.assertIn("kMouthCenter = {160, 152}", self.expression_controller)
+        self.assertIn("kLeftEyeCenter = {88, 101}", self.expression_controller)
+        for expression in ("Happy", "Thinking", "Surprised", "Calm", "Shy"):
             self.assertIn(f"FaceKind::{expression}", self.expression_controller)
 
 

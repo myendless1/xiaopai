@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate mouth-free eye-and-eyebrow expression previews for Xiaopai."""
+"""Generate expression previews with restored mouths for Xiaopai."""
 
 from __future__ import annotations
 
@@ -16,14 +16,16 @@ SCALE = 4
 
 BACKGROUND = (0, 0, 0)
 FEATURE = (245, 248, 255)
+BLUSH = (255, 155, 185)
 GUIDE = (46, 56, 70)
 SHEET_BACKGROUND = (18, 20, 24)
 SHEET_LABEL = (215, 220, 230)
 
-LEFT_EYE = (92, 122)
-RIGHT_EYE = (228, 122)
-LEFT_BROW = (92, 84)
-RIGHT_BROW = (228, 84)
+LEFT_EYE = (88, 101)
+RIGHT_EYE = (232, 101)
+MOUTH = (160, 152)
+LEFT_CHEEK = (47, 141)
+RIGHT_CHEEK = (273, 141)
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "eye_expression_preview"
 COMPARISON_PATH = OUTPUT_DIR / "eye_expression_comparison.png"
@@ -43,18 +45,50 @@ def fill_circle(
     draw: ImageDraw.ImageDraw,
     center: Point,
     radius: int,
-    color: DrawColor = 255,
+    color: DrawColor = FEATURE,
 ) -> None:
     cx, cy = scaled_point(center)
     r = radius * SCALE
     draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=color)
 
 
+def fill_ellipse(
+    draw: ImageDraw.ImageDraw,
+    center: Point,
+    rx: int,
+    ry: int,
+    color: DrawColor = FEATURE,
+) -> None:
+    cx, cy = scaled_point(center)
+    draw.ellipse(
+        (cx - rx * SCALE, cy - ry * SCALE, cx + rx * SCALE, cy + ry * SCALE),
+        fill=color,
+    )
+
+
+def fill_round_rect(
+    draw: ImageDraw.ImageDraw,
+    center: Point,
+    width: int,
+    height: int,
+    radius: int,
+    color: DrawColor = FEATURE,
+) -> None:
+    cx, cy = center
+    box = (
+        (cx - width // 2) * SCALE,
+        (cy - height // 2) * SCALE,
+        (cx + width // 2) * SCALE,
+        (cy + height // 2) * SCALE,
+    )
+    draw.rounded_rectangle(box, radius=radius * SCALE, fill=color)
+
+
 def round_line(
     draw: ImageDraw.ImageDraw,
     points: Iterable[Point],
     width: int = 7,
-    color: DrawColor = 255,
+    color: DrawColor = FEATURE,
 ) -> None:
     scaled = [scaled_point(point) for point in points]
     if len(scaled) < 2:
@@ -75,6 +109,7 @@ def quadratic_curve(
     *,
     width: int = 7,
     steps: int = 24,
+    color: DrawColor = FEATURE,
 ) -> None:
     points: list[Point] = []
     for index in range(steps + 1):
@@ -82,42 +117,97 @@ def quadratic_curve(
         one_minus_t = 1.0 - t
         x = one_minus_t * one_minus_t * start[0] + 2.0 * one_minus_t * t * control[0] + t * t * end[0]
         y = one_minus_t * one_minus_t * start[1] + 2.0 * one_minus_t * t * control[1] + t * t * end[1]
-        points.append((round(x * SCALE), round(y * SCALE)))
+        points.append((round(x), round(y)))
+    round_line(draw, points, width=width, color=color)
 
-    scaled_width = width * SCALE
-    draw.line(points, fill=255, width=scaled_width, joint="curve")
-    radius = scaled_width // 2
-    for x, y in (points[0], points[-1]):
-        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=255)
+
+def oval_point(center: Point, rx: int, ry: int, angle_deg: float) -> Point:
+    rad = math.radians(angle_deg)
+    return (
+        round(center[0] + rx * math.cos(rad)),
+        round(center[1] + ry * math.sin(rad)),
+    )
+
+
+def oval_arc(
+    draw: ImageDraw.ImageDraw,
+    center: Point,
+    rx: int,
+    ry: int,
+    start_deg: float,
+    end_deg: float,
+    *,
+    width: int = 5,
+    color: DrawColor = FEATURE,
+) -> None:
+    sweep = end_deg - start_deg
+    if sweep <= 0:
+        sweep += 360
+    steps = max(12, math.ceil(sweep / 4))
+    points = [
+        oval_point(center, rx, ry, start_deg + sweep * index / steps)
+        for index in range(steps + 1)
+    ]
+    round_line(draw, points, width=width, color=color)
+
+
+def draw_cheeks(draw: ImageDraw.ImageDraw) -> None:
+    for xoff in (-13, 0, 13):
+        round_line(
+            draw,
+            ((LEFT_CHEEK[0] + xoff - 3, LEFT_CHEEK[1] + 7), (LEFT_CHEEK[0] + xoff + 3, LEFT_CHEEK[1] - 7)),
+            width=4,
+            color=BLUSH,
+        )
+        round_line(
+            draw,
+            ((RIGHT_CHEEK[0] + xoff + 4, RIGHT_CHEEK[1] + 7), (RIGHT_CHEEK[0] + xoff - 4, RIGHT_CHEEK[1] - 7)),
+            width=4,
+            color=BLUSH,
+        )
 
 
 def draw_calm(draw: ImageDraw.ImageDraw) -> None:
-    fill_circle(draw, LEFT_EYE, 16)
-    fill_circle(draw, RIGHT_EYE, 16)
+    fill_circle(draw, LEFT_EYE, 15)
+    fill_circle(draw, RIGHT_EYE, 15)
+    fill_round_rect(draw, MOUTH, 38, 7, 4)
+
+
+def draw_shy(draw: ImageDraw.ImageDraw) -> None:
+    fill_circle(draw, LEFT_EYE, 15)
+    fill_circle(draw, RIGHT_EYE, 15)
+    draw_cheeks(draw)
+    oval_arc(draw, (MOUTH[0], MOUTH[1] - 6), 20, 17, 35, 145, width=5)
 
 
 def draw_happy(draw: ImageDraw.ImageDraw) -> None:
-    quadratic_curve(draw, (68, 128), (92, 101), (116, 128), width=7)
-    quadratic_curve(draw, (204, 128), (228, 101), (252, 128), width=7)
+    quadratic_curve(draw, (64, 107), (88, 80), (112, 107), width=7)
+    quadratic_curve(draw, (208, 107), (232, 80), (256, 107), width=7)
+    draw_cheeks(draw)
+    oval_arc(draw, (MOUTH[0], MOUTH[1] - 8), 34, 23, 35, 145, width=6)
 
 
 def draw_thinking(draw: ImageDraw.ImageDraw) -> None:
-    fill_circle(draw, (92, 124), 12)
-    fill_circle(draw, (228, 119), 18)
-    round_line(draw, ((76, 91), (108, 91)), width=7)
-    round_line(draw, ((212, 78), (244, 78)), width=7)
+    fill_circle(draw, (88, 103), 12)
+    fill_circle(draw, (232, 98), 18)
+    round_line(draw, ((72, 70), (104, 70)), width=7)
+    round_line(draw, ((216, 57), (248, 57)), width=7)
+    oval_arc(draw, (MOUTH[0], MOUTH[1] + 8), 18, 14, 200, 340, width=5)
 
 
 def draw_surprised(draw: ImageDraw.ImageDraw) -> None:
-    for center in ((92, 123), (228, 123)):
+    for center in ((88, 102), (232, 102)):
         fill_circle(draw, center, 21)
-        fill_circle(draw, center, 13, color=0)
-    quadratic_curve(draw, (71, 91), (92, 76), (113, 91), width=7)
-    quadratic_curve(draw, (207, 91), (228, 76), (249, 91), width=7)
+        fill_circle(draw, center, 13, color=BACKGROUND)
+    quadratic_curve(draw, (67, 70), (88, 55), (109, 70), width=7)
+    quadratic_curve(draw, (211, 70), (232, 55), (253, 70), width=7)
+    fill_ellipse(draw, (MOUTH[0], MOUTH[1] + 6), 14, 18)
+    fill_ellipse(draw, (MOUTH[0], MOUTH[1] + 6), 8, 11, color=BACKGROUND)
 
 
 EXPRESSIONS: tuple[tuple[str, ExpressionDrawer], ...] = (
     ("calm", draw_calm),
+    ("shy", draw_shy),
     ("happy", draw_happy),
     ("thinking", draw_thinking),
     ("surprised", draw_surprised),
@@ -126,33 +216,31 @@ EXPRESSIONS: tuple[tuple[str, ExpressionDrawer], ...] = (
 
 def draw_guides(draw: ImageDraw.ImageDraw) -> None:
     def guide_line(points: Iterable[Point], width: int = 1) -> None:
-        round_line(draw, points, width=width)
+        round_line(draw, points, width=width, color=255)
 
     guide_line(((0, LEFT_EYE[1]), (WIDTH - 1, LEFT_EYE[1])))
-    guide_line(((LEFT_EYE[0], 48), (LEFT_EYE[0], 154)))
-    guide_line(((RIGHT_EYE[0], 48), (RIGHT_EYE[0], 154)))
-    guide_line(((0, LEFT_BROW[1]), (WIDTH - 1, LEFT_BROW[1])))
-    guide_line(((WIDTH // 2, 48), (WIDTH // 2, 154)))
+    guide_line(((LEFT_EYE[0], 48), (LEFT_EYE[0], 180)))
+    guide_line(((RIGHT_EYE[0], 48), (RIGHT_EYE[0], 180)))
+    guide_line(((0, MOUTH[1]), (WIDTH - 1, MOUTH[1])))
+    guide_line(((WIDTH // 2, 48), (WIDTH // 2, 180)))
 
-    for anchor in (LEFT_EYE, RIGHT_EYE, LEFT_BROW, RIGHT_BROW):
-        fill_circle(draw, anchor, 2)
+    for anchor in (LEFT_EYE, RIGHT_EYE, MOUTH, LEFT_CHEEK, RIGHT_CHEEK):
+        fill_circle(draw, anchor, 2, color=255)
 
 
-def render(draw_expression: ExpressionDrawer, *, guides: bool = False) -> Image.Image:
-    mask_size = (WIDTH * SCALE, HEIGHT * SCALE)
-    expression_mask = Image.new("L", mask_size, 0)
-    draw = ImageDraw.Draw(expression_mask)
-    draw_expression(draw)
-    expression_mask = expression_mask.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
+def render_rgb(draw_expression: ExpressionDrawer, *, guides: bool = False) -> Image.Image:
+    """Render expression at high scale then downsample."""
+    size = (WIDTH * SCALE, HEIGHT * SCALE)
+    image = Image.new("RGB", size, BACKGROUND)
+    draw_expression(ImageDraw.Draw(image))
+    image = image.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
 
-    image = Image.new("RGB", (WIDTH, HEIGHT), BACKGROUND)
     if guides:
-        guide_mask = Image.new("L", mask_size, 0)
+        guide_mask = Image.new("L", size, 0)
         draw_guides(ImageDraw.Draw(guide_mask))
         guide_mask = guide_mask.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
         image = Image.composite(Image.new("RGB", image.size, GUIDE), image, guide_mask)
-
-    return Image.composite(Image.new("RGB", image.size, FEATURE), image, expression_mask)
+    return image
 
 
 def load_font(size: int) -> ImageFont.ImageFont:
@@ -169,7 +257,7 @@ def compose_sheet(
     images: list[tuple[str, Image.Image]],
     output_path: Path,
     *,
-    columns: int = 2,
+    columns: int = 3,
 ) -> None:
     padding = 14
     label_height = 28
@@ -204,10 +292,10 @@ def main() -> None:
     clean_images: list[tuple[str, Image.Image]] = []
     guide_images: list[tuple[str, Image.Image]] = []
     for name, drawer in EXPRESSIONS:
-        clean = render(drawer)
+        clean = render_rgb(drawer)
         clean.save(OUTPUT_DIR / f"{name}.png")
         clean_images.append((name, clean))
-        guide_images.append((name, render(drawer, guides=True)))
+        guide_images.append((name, render_rgb(drawer, guides=True)))
 
     compose_sheet(clean_images, COMPARISON_PATH)
     compose_sheet(guide_images, GUIDES_PATH)

@@ -129,6 +129,7 @@ SUPPRESSED_FALLBACK_SPEECH_NORMALIZED = {
 
 AVAILABLE_EXPRESSIONS = (
     "calm",
+    "shy",
     "happy",
     "thinking",
     "surprised",
