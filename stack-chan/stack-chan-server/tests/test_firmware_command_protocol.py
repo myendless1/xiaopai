@@ -18,6 +18,7 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         cls.expression_header = (ROOT / "main" / "expression_state.h").read_text()
         cls.expression_controller = (ROOT / "main" / "expression_controller.cpp").read_text()
         cls.main = (ROOT / "main" / "main.cpp").read_text()
+        cls.camera_motion = (ROOT / "main" / "main_camera_motion.inc").read_text()
 
     def test_tts_uses_post_v3_endpoint_without_legacy_ack_fallback(self):
         self.assertIn('make_server_url("/v3/tts")', self.tts)
@@ -63,6 +64,28 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         apply_volume = self.commands.index("apply_command_speaker_volume(payload)", find_owner)
         run_find_owner = self.commands.index("return run_find_owner_command", find_owner)
         self.assertLess(apply_volume, run_find_owner)
+
+    def test_boot_pose_and_find_owner_scan_order(self):
+        self.assertIn("kTrackingHomePitchDeg = 45.0f", self.state)
+        self.assertIn("kFindOwnerLookUpDeltaDeg = 30.0f", self.state)
+        self.assertIn("move_head_to_tracking_angles(0.0f, kTrackingHomePitchDeg, 800)", self.main)
+
+        scan_start = self.camera_motion.index("const ScanPose scan_poses[]")
+        scan_end = self.camera_motion.index("};", scan_start)
+        scan = self.camera_motion[scan_start:scan_end]
+        up = scan.index('{"Up"')
+        center = scan.index('{"Center"')
+        left = scan.index('{"Left"')
+        right = scan.index('{"Right"')
+        self.assertLess(up, center)
+        self.assertLess(center, left)
+        self.assertLess(left, right)
+
+        find_owner = self.camera_motion.index("static FindOwnerResult run_find_owner_detection")
+        ordered_scan = self.camera_motion.index("scan_for_face_near_home(&target)", find_owner)
+        initial_capture = self.camera_motion.find('capture_face_at_current_pose("Find Owner", "Initial photo"', find_owner)
+        self.assertGreater(ordered_scan, find_owner)
+        self.assertEqual(initial_capture, -1)
 
     def test_firmware_fallback_speaker_volume_is_ten_percent(self):
         kconfig = (ROOT / "main" / "Kconfig.projbuild").read_text()

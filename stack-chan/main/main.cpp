@@ -365,7 +365,6 @@ extern "C" void app_main(void)
 {
     ESP_ERROR_CHECK(init_nvs_once());
     create_realtime_task_early();
-    create_command_task_early();
 
     // 不安装自定义 vprintf Hook。
     // 所有 ESP_LOG 输出直接进入 ESP-IDF 默认 USB Serial/JTAG 控制台。
@@ -449,8 +448,15 @@ extern "C" void app_main(void)
 
     audio_service_init();
     audio_service_start();
+    start_speak_command_service();
+    create_command_task_early();
 
     run_light_strip_boot_probe();
+    ESP_LOGI(TAG, "Moving head to boot pose yaw=0.0 pitch=%.1f", kTrackingHomePitchDeg);
+    if (!move_head_to_tracking_angles(0.0f, kTrackingHomePitchDeg, 800)) {
+        ESP_LOGW(TAG, "Failed to move head to boot pose");
+    }
+    vTaskDelay(pdMS_TO_TICKS(900));
 
     start_background_services();
     start_serial_debug_command_service();

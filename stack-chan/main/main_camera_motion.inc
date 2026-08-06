@@ -1244,10 +1244,10 @@ static bool scan_for_face_near_home(FaceTarget* target)
     }
 
     const ScanPose scan_poses[] = {
+        {"Up", 0.0f, kTrackingHomePitchDeg + kFindOwnerLookUpDeltaDeg},
+        {"Center", 0.0f, kTrackingHomePitchDeg},
         {"Left", -kTrackingScanYawDeg, kTrackingHomePitchDeg},
         {"Right", kTrackingScanYawDeg, kTrackingHomePitchDeg},
-        {"Low", 0.0f, kTrackingScanLowPitchDeg},
-        {"High", 0.0f, kTrackingScanHighPitchDeg},
     };
     constexpr int scan_count = sizeof(scan_poses) / sizeof(scan_poses[0]);
 
@@ -1330,13 +1330,9 @@ static FindOwnerResult run_find_owner_detection(float gain_x = kFindOwnerYawGain
     const float initial_yaw = tracking_yaw_deg;
     const float initial_pitch = tracking_pitch_deg;
     FaceTarget target;
-    ESP_LOGI(TAG, "Find owner initial capture at current pose yaw=%.1f pitch=%.1f",
-             initial_yaw, initial_pitch);
-    bool detected = capture_face_at_current_pose("Find Owner", "Initial photo", "Detecting face", &target);
-    if (!detected) {
-        ESP_LOGI(TAG, "Find owner initial photo found no face; starting wide scan");
-        detected = scan_for_face_near_home(&target);
-    }
+    ESP_LOGI(TAG, "Find owner starting ordered scan: up %.1f deg, center, left, right",
+             kFindOwnerLookUpDeltaDeg);
+    bool detected = scan_for_face_near_home(&target);
     if (!detected) {
         if (!tracking_stop_requested) {
             ESP_LOGI(TAG, "Find owner no face; restoring initial pose yaw=%.1f pitch=%.1f",

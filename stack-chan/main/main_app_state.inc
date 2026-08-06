@@ -69,10 +69,9 @@ static constexpr float kTrackingYawMinDeg = -180.0f;
 static constexpr float kTrackingYawMaxDeg = 180.0f;
 static constexpr float kTrackingPitchMinDeg = 0.0f;
 static constexpr float kTrackingPitchMaxDeg = 90.0f;
-static constexpr float kTrackingHomePitchDeg = 25.0f;
+static constexpr float kTrackingHomePitchDeg = 45.0f;
+static constexpr float kFindOwnerLookUpDeltaDeg = 30.0f;
 static constexpr float kTrackingScanYawDeg = 25.0f;
-static constexpr float kTrackingScanLowPitchDeg = 10.0f;
-static constexpr float kTrackingScanHighPitchDeg = 32.0f;
 static constexpr int kFindOwnerMaxRounds = 3;
 // Debug cadence: run the sedentary owner check once per minute.
 static constexpr uint32_t kSedentaryFindOwnerIntervalMs = 60 * 1000;
