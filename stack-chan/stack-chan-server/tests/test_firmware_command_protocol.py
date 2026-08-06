@@ -68,6 +68,8 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
     def test_boot_pose_and_find_owner_scan_order(self):
         self.assertIn("kTrackingHomePitchDeg = 45.0f", self.state)
         self.assertIn("kFindOwnerLookUpDeltaDeg = 30.0f", self.state)
+        self.assertIn("kTrackingScanLowPitchDeg = 10.0f", self.state)
+        self.assertIn("kTrackingScanHighPitchDeg = 32.0f", self.state)
         self.assertIn("move_head_to_tracking_angles(0.0f, kTrackingHomePitchDeg, 800)", self.main)
 
         scan_start = self.camera_motion.index("const ScanPose scan_poses[]")
