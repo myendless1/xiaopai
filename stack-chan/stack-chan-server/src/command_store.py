@@ -145,6 +145,7 @@ class CommandStore:
         boot_id: int = 0,
         lease_ms: int = DEFAULT_LEASE_MS,
         allow_speak: bool = True,
+        allow_find_owner: bool = True,
     ) -> dict[str, Any] | None:
         now = utc_now()
         with self.database.connect() as conn:
@@ -156,13 +157,14 @@ class CommandStore:
                  WHERE device_id=?
                    AND state IN ('queued', 'leased')
                    AND (? OR type!='speak')
+                   AND (? OR type NOT IN ('find_owner', 'locate_owner'))
                    AND (expires_at='' OR expires_at > ?)
                    AND (state='queued' OR lease_expires_at='' OR lease_expires_at < ?)
                    AND attempt < max_attempts
                  ORDER BY safety_class DESC, priority DESC, queue_seq ASC
                  LIMIT 1
                 """,
-                (device_id, int(bool(allow_speak)), now, now),
+                (device_id, int(bool(allow_speak)), int(bool(allow_find_owner)), now, now),
             ).fetchone()
         if row is None:
             return None

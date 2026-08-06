@@ -180,6 +180,12 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         queued_call = self.tts.index("ok = execute_speak_command_internal(item.text")
         self.assertIn("item.cmd_id, false", self.tts[queued_call:queued_call + 600])
 
+    def test_reply_segment_failure_keeps_multi_segment_turn_alive(self):
+        self.assertIn("active_speak_segment_audio_started = false", self.tts)
+        self.assertIn("if (!ok && segment_audio_started && reply_audio_started && !app2_stop_requested)", self.tts)
+        self.assertIn("else if (!app2_stop_requested && !item.reply_end)", self.tts)
+        self.assertIn("keeping later reply segments", self.tts)
+
     def test_reply_waiting_and_between_segment_timeouts_are_thirty_seconds(self):
         self.assertIn("kReplyContinuationTimeoutMs = 30 * 1000", self.state)
         self.assertIn("kWaitingReplyTimeoutMs = kReplyContinuationTimeoutMs", self.state)

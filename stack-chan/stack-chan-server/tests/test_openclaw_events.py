@@ -31,6 +31,39 @@ class DeviceCommandQueueFlowControlTest(unittest.TestCase):
         self.assertEqual(queue.qsize(), 0)
         self.assertFalse(queue.discard("speak-1"))
 
+    def test_pending_dialogue_defers_find_owner_but_allows_other_control(self):
+        queue = server.DeviceCommandQueue(4)
+        queue.put({"cmd_id": "find-1", "type": "find_owner", "priority": 85})
+        queue.put({"cmd_id": "face-1", "type": "face", "priority": 65})
+
+        self.assertEqual(queue.get_nowait(allow_find_owner=False)["cmd_id"], "face-1")
+        self.assertEqual(queue.qsize(), 1)
+        self.assertEqual(queue.get_nowait()["cmd_id"], "find-1")
+
+    def test_long_poll_rechecks_dialogue_before_returning_find_owner(self):
+        queue = server.DeviceCommandQueue(4)
+        state = {"dialogue_pending": False}
+        predicate_checked = threading.Event()
+        result = []
+
+        def allow_find_owner():
+            predicate_checked.set()
+            return not state["dialogue_pending"]
+
+        worker = threading.Thread(
+            target=lambda: result.append(queue.get(timeout=1, allow_find_owner=allow_find_owner))
+        )
+        worker.start()
+        self.assertTrue(predicate_checked.wait(1))
+        state["dialogue_pending"] = True
+        queue.put({"cmd_id": "find-1", "type": "find_owner", "priority": 85})
+        queue.put({"cmd_id": "face-1", "type": "face", "priority": 65})
+        worker.join(1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result[0]["cmd_id"], "face-1")
+        self.assertEqual(queue.get_nowait()["cmd_id"], "find-1")
+
 
 class MorrowEventContentTest(unittest.TestCase):
     def test_speech_recognition_uses_recognized_text_as_content(self):

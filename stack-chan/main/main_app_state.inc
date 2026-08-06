@@ -299,6 +299,7 @@ ReplyVoiceSession reply_voice_session = {};
 
 char active_speak_turn_id[40] = {};
 uint32_t active_speak_generation = 0;
+bool active_speak_segment_audio_started = false;
 
 struct WifiCandidate {
     const char* ssid;

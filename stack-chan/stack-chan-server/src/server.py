@@ -17,6 +17,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import zlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from http import HTTPStatus
@@ -1223,15 +1224,26 @@ class DeviceCommandQueue:
             self._cv.notify()
             return stats
 
-    def get(self, timeout: float | None = None, *, allow_speak: bool = True) -> dict:
+    def get(
+        self,
+        timeout: float | None = None,
+        *,
+        allow_speak: bool = True,
+        allow_find_owner: bool | Callable[[], bool] = True,
+    ) -> dict:
         deadline = None if timeout is None else time.monotonic() + timeout
         with self._cv:
             while True:
                 self._drop_expired_locked(time.time())
+                find_owner_allowed = allow_find_owner() if callable(allow_find_owner) else allow_find_owner
                 eligible = [
                     index
                     for index, item in enumerate(self._items)
-                    if allow_speak or str(item["command"].get("type") or "") != "speak"
+                    if (allow_speak or str(item["command"].get("type") or "") != "speak")
+                    and (
+                        find_owner_allowed
+                        or str(item["command"].get("type") or "") not in ("find_owner", "locate_owner")
+                    )
                 ]
                 if eligible:
                     index = max(eligible, key=lambda i: (self._items[i]["priority"], -self._items[i]["seq"]))
@@ -1246,8 +1258,13 @@ class DeviceCommandQueue:
                     raise Empty
                 self._cv.wait(remaining)
 
-    def get_nowait(self, *, allow_speak: bool = True) -> dict:
-        return self.get(timeout=0, allow_speak=allow_speak)
+    def get_nowait(
+        self,
+        *,
+        allow_speak: bool = True,
+        allow_find_owner: bool | Callable[[], bool] = True,
+    ) -> dict:
+        return self.get(timeout=0, allow_speak=allow_speak, allow_find_owner=allow_find_owner)
 
     def discard(self, cmd_id: str) -> bool:
         cmd_id = str(cmd_id or "")
@@ -2337,6 +2354,15 @@ class Handler(BaseHTTPRequestHandler):
                 elif isinstance(step, dict) and step.get("type") == "speak":
                     step.setdefault("pause_listener", True)
         normalize_command_speech_payload(command_wire_type, payload)
+        if (
+            command_wire_type in ("find_owner", "locate_owner")
+            and interrupt
+            and device_has_pending_dialogue(self.server, device_id)
+        ):
+            interrupt = False
+            self._log_info(
+                f"找人命令取消抢占并等待对话结束: device={device_id} type={command_wire_type}"
+            )
         if command_wire_type == "stop" and self._morrow_enabled():
             try:
                 coordinator = getattr(self.server, "morrow_coordinator", None)
@@ -2417,6 +2443,11 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         if not allow_speak:
             timeout = min(timeout, 1.0)
+        def allow_find_owner_now() -> bool:
+            return not device_has_pending_dialogue(self.server, device_id)
+
+        if not allow_find_owner_now():
+            timeout = min(timeout, 1.0)
         self._mark_device_seen(device_id)
         self._expire_dialog_if_needed(device_id)
         queue = self._queue_for(device_id)
@@ -2427,13 +2458,18 @@ class Handler(BaseHTTPRequestHandler):
                 boot_id=boot_id,
                 lease_ms=DEFAULT_LEASE_MS,
                 allow_speak=allow_speak,
+                allow_find_owner=allow_find_owner_now(),
             )
             if leased is not None:
                 queue.discard(str(leased.get("cmd_id") or ""))
                 self._send_json({"type": "command", "device_id": device_id, "command": leased})
                 return
         try:
-            command = queue.get(timeout=timeout, allow_speak=allow_speak)
+            command = queue.get(
+                timeout=timeout,
+                allow_speak=allow_speak,
+                allow_find_owner=allow_find_owner_now,
+            )
             if command_store is not None:
                 leased = command_store.lease_command(
                     str(command.get("cmd_id") or ""),
@@ -2450,13 +2486,17 @@ class Handler(BaseHTTPRequestHandler):
                     boot_id=boot_id,
                     lease_ms=DEFAULT_LEASE_MS,
                     allow_speak=allow_speak,
+                    allow_find_owner=allow_find_owner_now(),
                 )
                 if leased is not None:
                     self._send_json({"type": "command", "device_id": device_id, "command": leased})
                     return
             if self._expire_dialog_if_needed(device_id):
                 try:
-                    command = queue.get_nowait(allow_speak=allow_speak)
+                    command = queue.get_nowait(
+                        allow_speak=allow_speak,
+                        allow_find_owner=allow_find_owner_now,
+                    )
                     if command_store is not None:
                         leased = command_store.lease_command(
                             str(command.get("cmd_id") or ""),

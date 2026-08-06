@@ -124,13 +124,16 @@ static bool stream_pcm_url(const std::string& url, const char* label, bool updat
         bool ok = audio_service_play_pcm_24k(buffers[buffer_index], sample_pos,
                                              AudioPlayOptions{.wait = true, .drop_oldest = false});
         if (ok) {
-            if (playback.queued_chunks == 0 && active_speak_turn_id[0] != '\0') {
-                if (!reply_voice_audio_started(active_speak_turn_id, active_speak_generation)) {
-                    ESP_LOGW(TAG, "Discarding PCM for inactive reply: turn=%s generation=%u",
-                             active_speak_turn_id, static_cast<unsigned>(active_speak_generation));
-                    return false;
+            if (playback.queued_chunks == 0) {
+                active_speak_segment_audio_started = true;
+                if (active_speak_turn_id[0] != '\0') {
+                    if (!reply_voice_audio_started(active_speak_turn_id, active_speak_generation)) {
+                        ESP_LOGW(TAG, "Discarding PCM for inactive reply: turn=%s generation=%u",
+                                 active_speak_turn_id, static_cast<unsigned>(active_speak_generation));
+                        return false;
+                    }
+                    expression_state_reply_audio_started(active_speak_turn_id, active_speak_generation);
                 }
-                expression_state_reply_audio_started(active_speak_turn_id, active_speak_generation);
             }
             ++playback.queued_chunks;
             playback.played_samples += sample_pos;
@@ -1141,16 +1144,27 @@ static void run_speak_command_loop()
         } else {
             snprintf(active_speak_turn_id, sizeof(active_speak_turn_id), "%s", item.turn_id);
             active_speak_generation = item.generation;
+            active_speak_segment_audio_started = false;
             ok = execute_speak_command_internal(item.text, item.pause_voice_listener, item.cache_name, item.voice,
                                                 item.sample_rate, item.volume, item.speech_rate, item.pitch_rate,
                                                 item.cmd_id, false);
-            if (ok && !reply_voice_audio_has_started(item.turn_id, item.generation)) {
+            const bool segment_audio_started = active_speak_segment_audio_started;
+            const bool reply_audio_started = reply_voice_audio_has_started(item.turn_id, item.generation);
+            if (ok && (!segment_audio_started || !reply_audio_started)) {
                 ESP_LOGE(TAG, "Speak command produced no PCM: turn=%s segment=%u", item.turn_id,
                          static_cast<unsigned>(item.segment_index));
                 ok = false;
             }
+            if (!ok && segment_audio_started && reply_audio_started && !app2_stop_requested) {
+                ESP_LOGW(TAG,
+                         "Speak segment ended after PCM started; preserving reply turn=%s segment=%u generation=%u",
+                         item.turn_id, static_cast<unsigned>(item.segment_index),
+                         static_cast<unsigned>(item.generation));
+                ok = true;
+            }
             active_speak_turn_id[0] = '\0';
             active_speak_generation = 0;
+            active_speak_segment_audio_started = false;
             if (ok) {
                 reply_voice_segment_finished(item.turn_id, item.generation);
                 expression_state_reply_segment_finished(item.turn_id, item.generation);
@@ -1158,6 +1172,12 @@ static void run_speak_command_loop()
                     reply_voice_end(item.turn_id, item.generation, "reply ended on final segment");
                     expression_state_reply_end(item.turn_id, item.generation, false);
                 }
+            } else if (!app2_stop_requested && !item.reply_end) {
+                ESP_LOGW(TAG,
+                         "Speak segment failed before PCM; keeping later reply segments turn=%s segment=%u generation=%u",
+                         item.turn_id, static_cast<unsigned>(item.segment_index),
+                         static_cast<unsigned>(item.generation));
+                expression_state_reply_failed(item.turn_id, item.generation);
             } else {
                 const bool unexpected_failure = !app2_stop_requested;
                 reply_voice_cancel("reply segment failed");

@@ -140,6 +140,24 @@ class MorrowCommandStoreTest(unittest.TestCase):
         leased = store.lease_next_command("robot-1", allow_speak=True)
         self.assertEqual(leased["payload"]["text"], "等设备有空位再播放。")
 
+    def test_find_owner_stays_queued_while_dialogue_is_pending(self):
+        store = self.make_store()
+        store.create_command(
+            CommandEnvelope(
+                cmd_id="find-owner",
+                device_id="robot-1",
+                type="find_owner",
+                payload={"reply": "提醒"},
+                priority=85,
+            )
+        )
+
+        self.assertIsNone(store.lease_next_command("robot-1", allow_find_owner=False))
+        with store.database.connect() as conn:
+            state = conn.execute("SELECT state FROM commands WHERE cmd_id='find-owner'").fetchone()[0]
+        self.assertEqual(state, "queued")
+        self.assertEqual(store.lease_next_command("robot-1", allow_find_owner=True)["cmd_id"], "find-owner")
+
     def test_device_deferred_ack_requeues_without_losing_order(self):
         store = self.make_store()
         sink = command_store_segment_sink(store)
