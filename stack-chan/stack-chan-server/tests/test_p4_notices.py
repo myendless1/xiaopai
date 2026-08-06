@@ -64,8 +64,8 @@ class MorrowP4NoticesTest(unittest.TestCase):
         success_dup = srv_module.save_morrow_notice(self.server, notice)
         self.assertFalse(success_dup)
 
-    def test_kind_ttl_priority_mapping(self):
-        # meeting_reminder: TTL 600, priority 80
+    def test_kind_ttl_and_notice_priority(self):
+        # Meeting reminders keep their TTL but use normal dialogue priority.
         meeting_notice = {
             "id": "meeting:1",
             "kind": "meeting_reminder",
@@ -77,6 +77,12 @@ class MorrowP4NoticesTest(unittest.TestCase):
             expires_meeting = _dt.datetime.fromisoformat(row_meeting["expires_at"])
             received_meeting = _dt.datetime.fromisoformat(row_meeting["received_at"])
             self.assertAlmostEqual((expires_meeting - received_meeting).total_seconds(), 600, delta=5)
+
+        self.server.last_seen["device-1"] = srv_module.time.time()
+        self.server.device_order.append("device-1")
+        self.assertTrue(srv_module.submit_morrow_notice_text(self.server, meeting_notice["id"]))
+        meeting_command = self.server.command_store.lease_next_command("device-1")
+        self.assertEqual(meeting_command["priority"], srv_module.DIALOGUE_COMMAND_PRIORITY)
 
         # fieldwork_reminder: TTL 1800
         fieldwork_notice = {
@@ -90,6 +96,41 @@ class MorrowP4NoticesTest(unittest.TestCase):
             expires_fieldwork = _dt.datetime.fromisoformat(row_fieldwork["expires_at"])
             received_fieldwork = _dt.datetime.fromisoformat(row_fieldwork["received_at"])
             self.assertAlmostEqual((expires_fieldwork - received_fieldwork).total_seconds(), 1800, delta=5)
+
+    def test_notice_waits_until_dialogue_playback_finishes(self):
+        dialogue = CommandEnvelope(
+            cmd_id="dialogue-1",
+            device_id="device-1",
+            type="speak",
+            payload={"text": "会议创建汇报。", "reply_end": True},
+            priority=50,
+            turn_id="turn-1",
+            source_type="dialogue",
+            source_id="turn-1",
+        )
+        self.server.command_store.create_command(dialogue)
+        notice = {
+            "id": "meeting:deferred",
+            "kind": "meeting_reminder",
+            "text": "五分钟后开会。",
+        }
+        srv_module.save_morrow_notice(self.server, notice)
+        self.server.last_seen["device-1"] = srv_module.time.time()
+        self.server.device_order.append("device-1")
+
+        self.assertFalse(srv_module.submit_morrow_notice_text(self.server, notice["id"]))
+        with self.server.v3_database.connect() as conn:
+            state = conn.execute(
+                "SELECT state FROM morrow_notices WHERE notice_id=?",
+                (notice["id"],),
+            ).fetchone()["state"]
+        self.assertEqual(state, "received")
+
+        self.server.command_store.record_ack({"cmd_id": dialogue.cmd_id, "state": "rendered"})
+        self.assertTrue(srv_module.submit_morrow_notice_text(self.server, notice["id"]))
+        queued_notice = self.server.command_store.lease_next_command("device-1")
+        self.assertEqual(queued_notice["payload"]["text"], "五分钟后开会。")
+        self.assertEqual(queued_notice["priority"], 50)
 
     def test_ack_linkage_lifecycle(self):
         notice = {

@@ -35,8 +35,11 @@ class CommandStore:
                   cmd_id, delivery_id, device_id, type, priority, ttl_ms, attempt, max_attempts,
                   state, coalesce_key, safety_class, turn_id, admission_json, payload_json,
                   created_at, updated_at, expires_at, source_type, source_id, segment_index,
-                  turn_generation, payload_retention_until
-                ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  turn_generation, queue_seq, payload_retention_until
+                ) VALUES (
+                  ?, ?, ?, ?, ?, ?, 0, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                  (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM commands), ?
+                )
                 """,
                 (
                     command.cmd_id,
@@ -62,6 +65,22 @@ class CommandStore:
                 ),
             )
         return row
+
+    def has_unfinished_dialogue(self, device_id: str) -> bool:
+        placeholders = ",".join("?" for _ in TERMINAL_COMMAND_STATES)
+        with self.database.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT 1
+                  FROM commands
+                 WHERE device_id=?
+                   AND source_type='dialogue'
+                   AND state NOT IN ({placeholders})
+                 LIMIT 1
+                """,
+                (str(device_id or "default"), *sorted(TERMINAL_COMMAND_STATES)),
+            ).fetchone()
+        return row is not None
 
     def speech_generations(self) -> dict[str, int]:
         with self.database.connect() as conn:
@@ -140,7 +159,7 @@ class CommandStore:
                    AND (expires_at='' OR expires_at > ?)
                    AND (state='queued' OR lease_expires_at='' OR lease_expires_at < ?)
                    AND attempt < max_attempts
-                 ORDER BY safety_class DESC, priority DESC, created_at ASC, segment_index ASC
+                 ORDER BY safety_class DESC, priority DESC, queue_seq ASC
                  LIMIT 1
                 """,
                 (device_id, int(bool(allow_speak)), now, now),

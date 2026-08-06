@@ -96,6 +96,7 @@ class Database:
                       source_id TEXT NOT NULL DEFAULT '',
                       segment_index INTEGER NOT NULL DEFAULT 0,
                       turn_generation INTEGER NOT NULL DEFAULT 0,
+                      queue_seq INTEGER NOT NULL DEFAULT 0,
                       payload_retention_until TEXT NOT NULL DEFAULT ''
                     );
 
@@ -212,11 +213,21 @@ class Database:
             "source_id": "TEXT NOT NULL DEFAULT ''",
             "segment_index": "INTEGER NOT NULL DEFAULT 0",
             "turn_generation": "INTEGER NOT NULL DEFAULT 0",
+            "queue_seq": "INTEGER NOT NULL DEFAULT 0",
             "payload_retention_until": "TEXT NOT NULL DEFAULT ''",
         }
         for name, definition in additions.items():
             if name not in columns:
                 conn.execute(f"ALTER TABLE commands ADD COLUMN {name} {definition}")
+        # Wall time can move backwards under WSL/NTP. Preserve the actual SQLite
+        # insertion order so speech controls can never overtake earlier segments.
+        conn.execute("UPDATE commands SET queue_seq=rowid WHERE queue_seq=0")
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_commands_device_queue
+              ON commands(device_id, state, priority, queue_seq)
+            """
+        )
         conn.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_commands_source_segment

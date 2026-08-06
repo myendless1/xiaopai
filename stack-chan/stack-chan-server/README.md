@@ -152,6 +152,8 @@ curl -G 'http://127.0.0.1:8091/action/nod'
 curl -G 'http://127.0.0.1:8091/command/speak' \
   --data-urlencode 'text=早上好，我已经收到你的问题啦。'
 
+curl 'http://127.0.0.1:8091/command/volume?device_id=44%3A1b%3Af6%3Adf%3A5d%3Ab8&mode=set&value=50'
+
 curl -G 'http://127.0.0.1:8091/command/motion' \
   --data-urlencode 'pan=15' \
   --data-urlencode 'tilt=45' \
@@ -188,6 +190,9 @@ ASR phrases containing `声音` plus `大` or `小` adjust the Server-owned Xiao
 scale. If the phrase also contains `最`, `声音最大` sets 100 and `声音最小` sets 10. The Server converts relative
 changes to an absolute value and attaches it as `speaker_volume` to subsequent speech commands. The device then
 replies `已经将声音调到XXX`.
+
+The `/command/volume` example above sets the Server-owned physical speaker volume to 50%. This is separate from
+the Aliyun TTS `volume` parameter, which only controls synthesis amplitude.
 
 `POST /upload`
 

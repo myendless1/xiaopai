@@ -14,6 +14,7 @@ from morrow_protocol import MorrowEvent
 
 HARD_PUNCTUATION = frozenset("。！？!?；;\n")
 SUPPORTED_EXPRESSIONS = frozenset({"happy", "thinking", "surprised"})
+DIALOGUE_COMMAND_PRIORITY = 50
 # Once a segment reaches the device this is its local playback deadline.  Server
 # persistence itself is intentionally unbounded and is cancelled by turn generation.
 DIALOGUE_COMMAND_TTL_MS = 3_600_000
@@ -153,7 +154,7 @@ def command_store_segment_sink(
                     "reply_end": False,
                     "speaker_volume": int(resolved_speaker_volume),
                 },
-                priority=50,
+                priority=DIALOGUE_COMMAND_PRIORITY,
                 ttl_ms=ttl_ms,
                 coalesce_key=f"morrow:{request.request_id}:{segment_index}",
                 turn_id=request.request_id,
@@ -196,7 +197,7 @@ def command_store_reply_end_sink(
                 "reply_end": True,
                 "reply_cancelled": outcome != "saved",
             },
-            priority=50,
+            priority=DIALOGUE_COMMAND_PRIORITY,
             ttl_ms=ttl_ms,
             coalesce_key=f"morrow:{request.request_id}:{segment_index}",
             turn_id=request.request_id,
@@ -251,6 +252,7 @@ class MorrowTurnCoordinator:
             for device_id, generation in (initial_generations or {}).items()
         }
         self._outcomes: dict[str, TurnOutcome] = {}
+        self._pending_requests: dict[str, MorrowRequest] = {}
         self.metrics = {
             "morrow_turn_submitted_total": 0,
             "morrow_turn_rejected_total": 0,
@@ -274,6 +276,12 @@ class MorrowTurnCoordinator:
         device_id = str(device_id or "default")
         with self._lock:
             return self._generations.get(device_id, 0)
+
+    def has_pending_turn(self, device_id: str) -> bool:
+        """Return whether a queued or active turn can still produce speech."""
+        device_id = str(device_id or "default")
+        with self._lock:
+            return any(request.device_id == device_id for request in self._pending_requests.values())
 
     def sync_device_generation(self, device_id: str, generation: int) -> int:
         """Monotonically adopt a device generation reported by hello/heartbeat."""
@@ -342,11 +350,13 @@ class MorrowTurnCoordinator:
         outcome = TurnOutcome(request.request_id, "queued")
         with self._lock:
             self._outcomes[request.request_id] = outcome
+            self._pending_requests[request.request_id] = request
         try:
             self._queue.put_nowait(request)
         except queue.Full:
             with self._lock:
                 self._outcomes.pop(request.request_id, None)
+                self._pending_requests.pop(request.request_id, None)
             raise
         return outcome
 
@@ -383,6 +393,9 @@ class MorrowTurnCoordinator:
                 finally:
                     self._emit_reply_end(request)
             finally:
+                if request is not None:
+                    with self._lock:
+                        self._pending_requests.pop(request.request_id, None)
                 self._queue.task_done()
 
     def _process(self, request: MorrowRequest) -> None:

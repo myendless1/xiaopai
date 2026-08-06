@@ -25,6 +25,7 @@ from queue import Empty
 
 from morrow_client import MorrowClient
 from morrow_coordinator import (
+    DIALOGUE_COMMAND_PRIORITY,
     MorrowTurnCoordinator,
     command_store_reply_end_sink,
     command_store_segment_sink,
@@ -4037,6 +4038,16 @@ def mark_morrow_notice_state(server, notice_id: str, state: str, message: str = 
         )
 
 
+def device_has_pending_dialogue(server, device_id: str) -> bool:
+    """Keep notices behind the complete dialogue, including device playback."""
+    coordinator = getattr(server, "morrow_coordinator", None)
+    has_pending_turn = getattr(coordinator, "has_pending_turn", None)
+    if callable(has_pending_turn) and has_pending_turn(device_id):
+        return True
+    command_store = getattr(server, "command_store", None)
+    return bool(command_store and command_store.has_unfinished_dialogue(device_id))
+
+
 def submit_morrow_notice_text(server, notice_id: str) -> bool:
     with server.v3_database.connect() as conn:
         row = conn.execute("SELECT * FROM morrow_notices WHERE notice_id=?", (notice_id,)).fetchone()
@@ -4058,19 +4069,13 @@ def submit_morrow_notice_text(server, notice_id: str) -> bool:
         return False
         
     device_id = device_ids[0]
+    if device_has_pending_dialogue(server, device_id):
+        return False
 
     coordinator = getattr(server, "morrow_coordinator", None)
     generation_getter = getattr(coordinator, "generation_for_device", None)
     generation = int(generation_getter(device_id)) if callable(generation_getter) else 0
-    
-    if kind == "meeting_reminder":
-        prio = 80
-    elif kind == "fieldwork_reminder":
-        prio = 70
-    elif kind == "travel_reminder":
-        prio = 60
-    else:
-        prio = 50
+    prio = DIALOGUE_COMMAND_PRIORITY
         
     remaining_ttl = int(max(10, (expires_dt - now_dt).total_seconds()))
     stream_id = notice_id

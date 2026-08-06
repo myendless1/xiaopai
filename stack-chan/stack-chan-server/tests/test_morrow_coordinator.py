@@ -111,6 +111,7 @@ class CoordinatorTest(unittest.TestCase):
     def test_fifo_allows_only_one_turn_before_saved(self):
         first = self.submit("req-1")
         second = self.submit("req-2")
+        self.assertTrue(self.coordinator.has_pending_turn("dev1"))
         self.assertTrue(self._wait(lambda: self.client.started == [("req-1", "问题")]))
         self.client.events.put(event({"type": "turn_saved", "data": {"session": "default"}}))
         self.assertTrue(first.finished.wait(0.3))
@@ -118,6 +119,7 @@ class CoordinatorTest(unittest.TestCase):
         self.assertEqual(self.client.started[1], ("req-2", "问题"))
         self.client.events.put(event({"type": "turn_saved", "data": {}}))
         self.assertTrue(second.finished.wait(0.3))
+        self.assertTrue(self._wait(lambda: not self.coordinator.has_pending_turn("dev1")))
 
     def test_restores_initial_device_generation(self):
         self.assertEqual(self.coordinator.generation_for_device("restored-device"), 12)

@@ -16,6 +16,7 @@ from morrow_coordinator import (  # noqa: E402
     command_store_reply_end_sink,
     command_store_segment_sink,
 )
+from schemas import AdmissionPolicy, CommandEnvelope  # noqa: E402
 
 
 class MorrowCommandStoreTest(unittest.TestCase):
@@ -89,6 +90,41 @@ class MorrowCommandStoreTest(unittest.TestCase):
         self.assertTrue(ending["payload"]["reply_end"])
         self.assertFalse(ending["payload"]["reply_cancelled"])
         self.assertEqual(ending["payload"]["segment_index"], 1)
+
+    def test_queue_order_does_not_depend_on_wall_clock(self):
+        store = self.make_store()
+
+        def command(cmd_id, text, created_at):
+            return CommandEnvelope(
+                cmd_id=cmd_id,
+                device_id="robot-1",
+                type="speak",
+                payload={"text": text},
+                priority=50,
+                admission=AdmissionPolicy(),
+                created_at=created_at,
+            )
+
+        store.create_command(command("first", "第一句。", "2026-08-06T00:00:02+00:00"))
+        store.create_command(command("second", "第二句。", "2026-08-06T00:00:01+00:00"))
+
+        first = store.lease_next_command("robot-1")
+        store.record_ack({"cmd_id": first["cmd_id"], "state": "rendered"})
+        second = store.lease_next_command("robot-1")
+
+        self.assertEqual(first["cmd_id"], "first")
+        self.assertEqual(second["cmd_id"], "second")
+
+    def test_unfinished_dialogue_tracks_device_playback(self):
+        store = self.make_store()
+        sink = command_store_segment_sink(store)
+        request = MorrowRequest("req-pending", "问题", "robot-1", "voice", 1, 60, 3)
+        sink(request, "还在播放。", 0)
+
+        self.assertTrue(store.has_unfinished_dialogue("robot-1"))
+        command = store.lease_next_command("robot-1")
+        store.record_ack({"cmd_id": command["cmd_id"], "state": "rendered"})
+        self.assertFalse(store.has_unfinished_dialogue("robot-1"))
 
     def test_full_device_queue_leaves_speech_queued_on_server(self):
         store = self.make_store()
