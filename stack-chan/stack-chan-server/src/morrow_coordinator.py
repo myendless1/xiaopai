@@ -124,6 +124,13 @@ class TurnOutcome:
     finished: threading.Event = field(default_factory=threading.Event, repr=False)
 
 
+@dataclass(frozen=True)
+class SessionResetResult:
+    success: bool
+    generation: int
+    message: str = ""
+
+
 SegmentSink = Callable[[MorrowRequest, str, int], None]
 ReplyEndSink = Callable[[MorrowRequest, int, str], None]
 CancelSink = Callable[[str, int], None]
@@ -253,6 +260,7 @@ class MorrowTurnCoordinator:
         }
         self._outcomes: dict[str, TurnOutcome] = {}
         self._pending_requests: dict[str, MorrowRequest] = {}
+        self._resetting_devices: set[str] = set()
         self.metrics = {
             "morrow_turn_submitted_total": 0,
             "morrow_turn_rejected_total": 0,
@@ -337,6 +345,8 @@ class MorrowTurnCoordinator:
         now = self.clock()
         device_id = str(device_id or "default")
         with self._lock:
+            if device_id in self._resetting_devices:
+                raise RuntimeError("Morrow session reset is in progress")
             generation = self._generations.get(device_id, 0)
         request = MorrowRequest(
             request_id=request_id or str(uuid.uuid4()),
@@ -371,6 +381,67 @@ class MorrowTurnCoordinator:
         if active is not None and active.device_id == device_id:
             self.client.cancel_turn()
         return generation
+
+    def reset_session(self, device_id: str, *, timeout: float = 8.0) -> SessionResetResult:
+        """Cancel device dialogue, then reset the shared Morrow session."""
+        device_id = str(device_id or "default")
+        timeout = max(0.1, float(timeout))
+        with self._lock:
+            if device_id in self._resetting_devices:
+                return SessionResetResult(False, self._generations.get(device_id, 0), "reset already in progress")
+            self._resetting_devices.add(device_id)
+
+        generation = self.cancel_device(device_id)
+        deadline = self.clock() + timeout
+        request_id = f"reset-{uuid.uuid4()}"
+        try:
+            while True:
+                with self._lock:
+                    active = self._active
+                if active is None or active.device_id != device_id:
+                    break
+                if self.clock() >= deadline:
+                    return SessionResetResult(False, generation, "active turn did not stop before reset timeout")
+                time.sleep(0.02)
+
+            remaining = deadline - self.clock()
+            if remaining <= 0 or not self.client.wait_ready(remaining):
+                return SessionResetResult(False, generation, "Morrow was not ready before reset timeout")
+
+            self._discard_stale_connection_events()
+            while self.clock() < deadline:
+                self.client.reset_session(request_id)
+                retry = False
+                while self.clock() < deadline:
+                    try:
+                        event = self.client.events.get(timeout=max(0.01, min(0.2, deadline - self.clock())))
+                    except queue.Empty:
+                        continue
+                    if event.type == "snapshot":
+                        return SessionResetResult(True, generation)
+                    if event.type == "turn_rejected":
+                        data = event.data if isinstance(event.data, dict) else {}
+                        event_request_id = str(data.get("request_id") or "")
+                        if event_request_id and event_request_id != request_id:
+                            continue
+                        reason = str(data.get("reason") or "reset rejected")
+                        if "running turn" in reason.lower():
+                            self.client.cancel_turn()
+                            retry = True
+                            time.sleep(0.05)
+                            break
+                        return SessionResetResult(False, generation, reason)
+                    if event.type in {"error", "disconnected"}:
+                        data = event.data if isinstance(event.data, dict) else {}
+                        return SessionResetResult(False, generation, str(data.get("message") or event.type))
+                if not retry:
+                    break
+            return SessionResetResult(False, generation, "session reset timed out")
+        except Exception as exc:
+            return SessionResetResult(False, generation, str(exc))
+        finally:
+            with self._lock:
+                self._resetting_devices.discard(device_id)
 
     def outcome(self, request_id: str) -> TurnOutcome | None:
         with self._lock:
@@ -428,6 +499,9 @@ class MorrowTurnCoordinator:
             self.metrics["morrow_turn_submitted_total"] += 1
             submitted_at = self.clock()
             while not self._stop.is_set():
+                if self._is_stale(request):
+                    self._finish(outcome, "cancelled")
+                    return
                 timeout = deadline - self.clock()
                 if timeout <= 0:
                     self.metrics["morrow_turn_timeout_total"] += 1
@@ -511,16 +585,14 @@ class MorrowTurnCoordinator:
         return request.generation != generation or self.clock() >= request.expires_at
 
     def _discard_stale_connection_events(self) -> None:
-        retained: list[MorrowEvent] = []
+        # Anything already queued before start_turn() belongs to the previous
+        # turn or connection. Replaying an unscoped late error/turn_saved into
+        # the next request can cancel or complete the wrong turn.
         while True:
             try:
-                event = self.client.events.get_nowait()
+                self.client.events.get_nowait()
             except queue.Empty:
                 break
-            if event.type not in {"snapshot", "robot_notice", "disconnected"}:
-                retained.append(event)
-        for event in retained:
-            self.client.events.put_nowait(event)
 
     @staticmethod
     def _finish(outcome: TurnOutcome, state: str, message: str = "") -> None:

@@ -5,11 +5,16 @@
 #include "audio/dji_mic_uac_recorder.h"
 #include "audio/xiaopai_audio_service.h"
 #include "codec_audio_output.h"
+#include "power_manager.h"
 
 #include "expression_state.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/idf_additions.h"
+#include "freertos/queue.h"
+#include "freertos/ringbuf.h"
 #include "freertos/task.h"
+#include "xiaopai_psram_task.h"
 #include "xiaopai_state.h"
 
 #include "cJSON.h"
@@ -40,12 +45,14 @@
 #include "esp_audio_types.h"
 #include "driver/i2c_master.h"
 #include "driver/uart.h"
+#include "driver/usb_serial_jtag.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "sdkconfig.h"
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cctype>
 #include <cstdlib>
 #include <cmath>
@@ -74,6 +81,27 @@
 
 #ifndef CONFIG_STACKCHAN_DJI_MIC_START_DELAY_MS
 #define CONFIG_STACKCHAN_DJI_MIC_START_DELAY_MS 5000
+#endif
+#ifndef CONFIG_STACKCHAN_DJI_MIC_MAX_START_RETRIES
+#define CONFIG_STACKCHAN_DJI_MIC_MAX_START_RETRIES 3
+#endif
+#ifndef CONFIG_STACKCHAN_DJI_MIC_RETRY_BACKOFF_MS
+#define CONFIG_STACKCHAN_DJI_MIC_RETRY_BACKOFF_MS 2000
+#endif
+#ifndef CONFIG_STACKCHAN_DJI_VOICE_START_THRESHOLD
+#define CONFIG_STACKCHAN_DJI_VOICE_START_THRESHOLD 900
+#endif
+#ifndef CONFIG_STACKCHAN_DJI_VOICE_STOP_THRESHOLD
+#define CONFIG_STACKCHAN_DJI_VOICE_STOP_THRESHOLD 400
+#endif
+#ifndef CONFIG_STACKCHAN_NETWORK_DEBUG
+#define CONFIG_STACKCHAN_NETWORK_DEBUG 1
+#endif
+#ifndef CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH
+#define CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH 64
+#endif
+#ifndef CONFIG_STACKCHAN_NETWORK_DEBUG_BATCH_LINES
+#define CONFIG_STACKCHAN_NETWORK_DEBUG_BATCH_LINES 8
 #endif
 
 #if CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD && CONFIG_STACKCHAN_DJI_MIC_AUTO_START
@@ -323,7 +351,7 @@ static void draw_dji_mic_uac_record_screen()
 }
 #endif
 
-#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT && !CONFIG_STACKCHAN_DJI_MIC_AUTO_START
+#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT && CONFIG_STACKCHAN_DJI_MIC_AUTO_START
 static void start_dji_mic_after_boot_task(void*)
 {
     const int delay_ms = CONFIG_STACKCHAN_DJI_MIC_START_DELAY_MS;
@@ -333,21 +361,53 @@ static void start_dji_mic_after_boot_task(void*)
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
 
-    ESP_LOGI(TAG, "Starting DJI Mic USB input after boot stabilization");
-    bool ok = dji_mic_receiver_input_start();
-    if (!ok) {
-        ESP_LOGE(TAG, "Delayed DJI Mic start failed: %s",
-                 dji_mic_receiver_input_status().detail);
-    } else {
-        ESP_LOGI(TAG, "Delayed DJI Mic start OK");
+    bool logged_ota_wait = false;
+    while (s_firmware_ota_in_progress.load()) {
+        if (!logged_ota_wait) {
+            ESP_LOGI(TAG, "DJI Mic delayed start waiting for firmware OTA to finish");
+            logged_ota_wait = true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(250));
     }
 
-    vTaskDelete(nullptr);
+    if (usb_serial_jtag_is_connected()) {
+        ESP_LOGW(TAG,
+                 "DJI Mic start skipped: PC USB Serial/JTAG host detected; "
+                 "keeping USB peripheral mode and VBUS output disabled");
+        stackchan_power_manager_set_usb_output(false, "PC USB host detected");
+        vTaskDeleteWithCaps(nullptr);
+        return;
+    }
+
+    bool ok = false;
+    for (int attempt = 1; attempt <= CONFIG_STACKCHAN_DJI_MIC_MAX_START_RETRIES; ++attempt) {
+        if (!stackchan_power_manager_dji_allowed()) {
+            ESP_LOGW(TAG, "DJI Mic start cancelled by battery power policy");
+            break;
+        }
+        ESP_LOGI(TAG, "Starting DJI Mic USB input: attempt=%d/%d",
+                 attempt, CONFIG_STACKCHAN_DJI_MIC_MAX_START_RETRIES);
+        ok = dji_mic_receiver_input_start();
+        if (ok) {
+            ESP_LOGI(TAG, "Delayed DJI Mic start OK");
+            break;
+        }
+        ESP_LOGE(TAG, "Delayed DJI Mic start failed: attempt=%d detail=%s",
+                 attempt, dji_mic_receiver_input_status().detail);
+        if (attempt < CONFIG_STACKCHAN_DJI_MIC_MAX_START_RETRIES) {
+            vTaskDelay(pdMS_TO_TICKS(CONFIG_STACKCHAN_DJI_MIC_RETRY_BACKOFF_MS * attempt));
+        }
+    }
+    if (!ok) {
+        ESP_LOGW(TAG, "DJI Mic unavailable after limited retries; internal mic remains active");
+    }
+
+    vTaskDeleteWithCaps(nullptr);
 }
 
 static void schedule_dji_mic_after_boot()
 {
-    BaseType_t created = xTaskCreatePinnedToCore(
+    BaseType_t created = xiaopai_task_create_psram(
         start_dji_mic_after_boot_task,
         "dji_mic_delay",
         4096,
@@ -366,8 +426,8 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(init_nvs_once());
     create_realtime_task_early();
 
-    // 不安装自定义 vprintf Hook。
-    // 所有 ESP_LOG 输出直接进入 ESP-IDF 默认 USB Serial/JTAG 控制台。
+    // Keep USB Serial/JTAG console until DJI Host actually starts. Switching the
+    // console to UART0 was not required for DJI and made boot harder to diagnose.
     esp_reset_reason_t reset_reason = esp_reset_reason();
     const esp_app_desc_t* app = esp_app_get_description();
     ESP_LOGW(TAG, "BOOT reset_reason=%s(%d) project=%s version=%s idf=%s",
@@ -401,7 +461,14 @@ extern "C" void app_main(void)
     auto cfg = M5.config();
     cfg.internal_mic = false;
     cfg.internal_spk = false;
+    // Keep CoreS3 BUS 5V/BOOST like v0.4.6. output_power=false also drops SY7088
+    // and Stack-chan servo power, which brownouts a few seconds into boot.
     M5.begin(cfg);
+    stackchan_power_manager_init(m5_mutex, reset_reason);
+    if (!stackchan_power_manager_start()) {
+        ESP_LOGE(TAG, "Failed to start battery power manager");
+    }
+    stackchan_power_manager_set_usb_output(false, "boot keep USB-C as input");
 
     M5.Display.setBrightness(180);
     M5.Display.setRotation(1);
@@ -459,9 +526,10 @@ extern "C" void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(900));
 
     start_background_services();
+    start_network_debug_service();
     start_serial_debug_command_service();
 
-#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT && !CONFIG_STACKCHAN_DJI_MIC_AUTO_START
+#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT && CONFIG_STACKCHAN_DJI_MIC_AUTO_START
     schedule_dji_mic_after_boot();
 #endif
 

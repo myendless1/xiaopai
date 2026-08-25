@@ -403,6 +403,39 @@ class DeviceEventForwardingTest(unittest.TestCase):
         self.assertEqual(body["morrow_skipped"], "local_head_touch_expression")
         self.assertEqual(len(body["queued_commands"]), 1)
 
+    def test_screen_long_press_resets_session_and_queues_exact_confirmation(self):
+        handler, sent_bodies, enqueued_commands, forwarded_events = self.make_handler(morrow_enabled=False)
+
+        class ResetCoordinator:
+            def __init__(self):
+                self.devices = []
+
+            def reset_session(self, device_id):
+                self.devices.append(device_id)
+                return type("ResetResult", (), {"success": True, "generation": 7, "message": ""})()
+
+        coordinator = ResetCoordinator()
+        handler.server.morrow_coordinator = coordinator
+        handler._wake_dialog = lambda *args, **kwargs: self.fail("session reset must not change dialog wake state")
+        handler._handle_device_event(
+            {"device_id": ["robot-001"], "type": ["reset_session"]},
+            None,
+        )
+
+        self.assertEqual(coordinator.devices, ["robot-001"])
+        self.assertEqual(forwarded_events, [])
+        self.assertEqual(len(enqueued_commands), 1)
+        command = enqueued_commands[0][1]
+        self.assertEqual(command["type"], "speak")
+        self.assertEqual(command["payload"]["text"], "你好，我是小派，今天有什么需要帮忙的？")
+        self.assertEqual(command["payload"], {"text": "你好，我是小派，今天有什么需要帮忙的？", "generation": 7})
+        self.assertFalse(command["interrupt"])
+        self.assertFalse(command["discardable"])
+        body, status = sent_bodies[-1]
+        self.assertEqual(status, server.HTTPStatus.OK)
+        self.assertTrue(body["session_reset"])
+        self.assertEqual(body["generation"], 7)
+
 
 if __name__ == "__main__":
     unittest.main()

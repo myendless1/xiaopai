@@ -22,6 +22,7 @@ class FakeClient:
         self.events = queue.Queue()
         self.started = []
         self.cancelled = 0
+        self.resets = []
         self.ready = threading.Event()
         self.ready.set()
 
@@ -37,6 +38,9 @@ class FakeClient:
     def cancel_turn(self):
         self.cancelled += 1
         return True
+
+    def reset_session(self, request_id):
+        self.resets.append(request_id)
 
 
 def event(message):
@@ -182,6 +186,24 @@ class CoordinatorTest(unittest.TestCase):
         self.assertTrue(self._wait(lambda: self.ended == [("req-error", 0, "error", "calm")]))
         self.assertEqual(self.spoken, [])
 
+    def test_stale_events_are_discarded_before_starting_next_turn(self):
+        self.client.events.put(event({"type": "error", "data": {"message": "previous turn failed"}}))
+        self.client.events.put(event({"type": "turn_saved", "data": {"session": "default"}}))
+        self.client.events.put(
+            event({"type": "agent_event", "data": {"event": {"type": "text_delta", "data": "旧回复。"}}})
+        )
+
+        outcome = self.submit("req-after-stale-events")
+        self.assertTrue(self._wait(lambda: self.client.started == [("req-after-stale-events", "问题")]))
+        self.client.events.put(
+            event({"type": "agent_event", "data": {"event": {"type": "text_delta", "data": "新回复。"}}})
+        )
+        self.client.events.put(event({"type": "turn_saved", "data": {}}))
+
+        self.assertTrue(outcome.finished.wait(0.3))
+        self.assertEqual(outcome.state, "saved")
+        self.assertEqual([item[1] for item in self.spoken], ["新回复。"])
+
     def test_stop_generation_discards_late_delta(self):
         outcome = self.submit("req-1")
         self.assertTrue(self._wait(lambda: len(self.client.started) == 1))
@@ -193,6 +215,40 @@ class CoordinatorTest(unittest.TestCase):
         self.assertTrue(outcome.finished.wait(0.3))
         self.assertEqual(self.spoken, [])
         self.assertEqual(self.client.cancelled, 1)
+
+    def test_reset_session_cancels_dialogue_and_waits_for_fresh_snapshot(self):
+        result_holder = []
+
+        thread = threading.Thread(
+            target=lambda: result_holder.append(self.coordinator.reset_session("dev1", timeout=0.5))
+        )
+        thread.start()
+        self.assertTrue(self._wait(lambda: len(self.client.resets) == 1))
+        self.client.events.put(event({"type": "snapshot", "data": {"session": {"active_thread": {"messages": []}}}}))
+        thread.join(timeout=0.5)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(result_holder), 1)
+        self.assertTrue(result_holder[0].success)
+        self.assertEqual(result_holder[0].generation, 1)
+        self.assertEqual(self.coordinator.generation_for_device("dev1"), 1)
+
+    def test_reset_session_cancels_active_turn_before_reset(self):
+        outcome = self.submit("req-active")
+        self.assertTrue(self._wait(lambda: len(self.client.started) == 1))
+        result_holder = []
+        thread = threading.Thread(
+            target=lambda: result_holder.append(self.coordinator.reset_session("dev1", timeout=0.5))
+        )
+        thread.start()
+
+        self.assertTrue(outcome.finished.wait(0.3))
+        self.assertEqual(outcome.state, "cancelled")
+        self.assertEqual(self.client.cancelled, 1)
+        self.assertTrue(self._wait(lambda: len(self.client.resets) == 1))
+        self.client.events.put(event({"type": "snapshot", "data": {"session": {"active_thread": {"messages": []}}}}))
+        thread.join(timeout=0.5)
+        self.assertTrue(result_holder[0].success)
 
     def test_disconnect_ends_turn_without_flushing_incomplete_tail(self):
         outcome = self.submit("req-1")

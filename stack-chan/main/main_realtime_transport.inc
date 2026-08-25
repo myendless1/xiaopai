@@ -229,14 +229,32 @@ static bool receive_ws_once(esp_transport_handle_t ws, int timeout_ms, bool& got
         return true;
     }
     if (polled < 0) {
-        ESP_LOGE(TAG, "WS poll failed");
+        const int poll_errno = errno;
+        if (poll_errno == EINTR || poll_errno == EAGAIN || poll_errno == EWOULDBLOCK ||
+            poll_errno == ETIMEDOUT) {
+            ESP_LOGW(TAG, "WS poll transient failure ignored: errno=%d", poll_errno);
+            return true;
+        }
+        ESP_LOGE(TAG, "WS poll failed: errno=%d", poll_errno);
         return false;
     }
 
     char buffer[4096];
-    int read_len = esp_transport_read(ws, buffer, sizeof(buffer) - 1, timeout_ms);
-    if (read_len <= 0) {
-        ESP_LOGE(TAG, "WS read failed: %d", read_len);
+    // poll_read() only guarantees that at least one TCP byte is available. The
+    // WebSocket transport may still need the rest of the frame header/payload.
+    // Passing the caller's 0 ms probe timeout here makes that normal split-frame
+    // case look like a fatal read error and causes a reconnect loop while the
+    // microphone is active.
+    const int frame_read_timeout_ms = std::max(timeout_ms, kRealtimeWsFrameReadTimeoutMs);
+    int read_len = esp_transport_read(ws, buffer, sizeof(buffer) - 1, frame_read_timeout_ms);
+    if (read_len == 0) {
+        // esp_transport_ws also returns 0 after handling ping/pong internally.
+        ESP_LOGD(TAG, "WS read completed without application payload");
+        return true;
+    }
+    if (read_len < 0) {
+        ESP_LOGE(TAG, "WS read failed: len=%d errno=%d frame_timeout_ms=%d",
+                 read_len, errno, frame_read_timeout_ms);
         return false;
     }
 

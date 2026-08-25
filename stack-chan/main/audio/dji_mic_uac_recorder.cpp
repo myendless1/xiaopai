@@ -2,6 +2,7 @@
 
 #include <M5Unified.h>
 
+#include "dji_mic_usb_power.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
@@ -588,10 +589,6 @@ static void mic_frame_cb(mic_frame_t* frame, void*)
 
 static esp_err_t start_usb_stream()
 {
-    ESP_LOGI(TAG, "Opening CoreS3 USB VBUS output");
-    M5.Power.setUsbOutput(true);
-    vTaskDelay(pdMS_TO_TICKS(200));
-
     uac_config_t uac_config = {};
     uac_config.mic_ch_num = CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_CHANNELS;
     uac_config.mic_bit_resolution = CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD_BITS;
@@ -612,12 +609,25 @@ static esp_err_t start_usb_stream()
         return err;
     }
 
-    err = usb_streaming_start();
+    err = dji_mic_usb_power_prepare_host();
     if (err != ESP_OK) {
-        set_detail("usb_stream start failed: %s", esp_err_to_name(err));
+        set_detail("DJI USB power policy denied host start: %s", esp_err_to_name(err));
         return err;
     }
 
+    err = usb_streaming_start();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        set_detail("usb_stream start failed: %s", esp_err_to_name(err));
+        dji_mic_usb_power_abort("UAC recorder host start failed");
+        return err;
+    }
+
+    err = dji_mic_usb_power_enable_after_host();
+    if (err != ESP_OK) {
+        set_detail("DJI USB VBUS enable failed: %s", esp_err_to_name(err));
+        usb_streaming_stop();
+        return err;
+    }
     return ESP_OK;
 }
 

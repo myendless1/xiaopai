@@ -324,9 +324,9 @@ bool apply_cancel_current_unlocked(const char* reason)
 
 bool apply_audio_source_commit_unlocked(MicSource source, const char* reason)
 {
-    if (interaction_state != InteractionState::Monitoring) {
-        ESP_LOGW(TAG, "Mic source switch rejected outside Monitoring: interaction=%s reason=%s",
-                 xiaopai_interaction_state_name(interaction_state), reason != nullptr ? reason : "");
+    if (interaction_state == InteractionState::Recording) {
+        ESP_LOGW(TAG, "Mic source switch rejected while recording: reason=%s",
+                 reason != nullptr ? reason : "");
         return false;
     }
     if (active_source == source) {

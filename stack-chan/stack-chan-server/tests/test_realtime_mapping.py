@@ -555,6 +555,33 @@ class RealtimeMappingTest(unittest.TestCase):
         self.assertEqual([item[1]["payload"]["text"] for item in queued], ["第一句", "第二句"])
         self.assertEqual(aborted, ["sess1"])
 
+    def test_realtime_speak_uses_current_device_generation(self):
+        class FakeWebSocket:
+            async def send(self, _payload):
+                pass
+
+        async def run_case():
+            queued = []
+
+            def command_callback(device_id, command):
+                queued.append((device_id, command))
+                return True
+
+            manager = RealtimeManager(
+                RealtimeConfig(
+                    command_callback=command_callback,
+                    speech_generation_callback=lambda device_id: 84 if device_id == "dev1" else 0,
+                ),
+                logger=lambda _msg: None,
+            )
+            session = RealtimeDeviceSession(device_id="dev1", websocket=FakeWebSocket(), session_id="sess1")
+            await manager._speak(session, "小派在呢")
+            return queued
+
+        queued = asyncio.run(run_case())
+        self.assertEqual(len(queued), 1)
+        self.assertEqual(queued[0][1]["payload"]["generation"], 84)
+
     def test_realtime_device_connected_callback_runs_on_register_and_id_update(self):
         connected = []
         manager = RealtimeManager(

@@ -12,10 +12,12 @@
 #include <sys/time.h>
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
 #include "freertos/event_groups.h"
 #include "freertos/ringbuf.h"
+#include "freertos/task.h"
 #include "esp_bit_defs.h"
 #include "esp_heap_caps.h"
 #include "esp_err.h"
@@ -35,6 +37,23 @@
 #include "usb_stream_sysview.h"
 
 static const char *TAG = "USB_STREAM";
+
+static BaseType_t usb_stream_task_create(TaskFunction_t fn, const char *name, uint32_t stack,
+                                         void *arg, UBaseType_t prio, TaskHandle_t *out, BaseType_t core)
+{
+    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(fn, name, stack, arg, prio, out, core,
+                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (ok != pdPASS) {
+        ESP_LOGW(TAG, "Create %s in SPIRAM failed, fallback to internal DRAM", name);
+        ok = xTaskCreatePinnedToCoreWithCaps(fn, name, stack, arg, prio, out, core,
+                                             MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    return ok;
+}
+
+void __attribute__((weak)) usb_streaming_overcurrent_callback(void)
+{
+}
 
 #define USB_CONFIG_NUM                       1                                           //Default configuration number
 #define USB_DEVICE_ADDR                      1                                           //Default UVC device address
@@ -808,12 +827,26 @@ static esp_err_t _apply_stream_config(usb_stream_t stream)
         usb_dev->ifc[STREAM_UAC_MIC]->bytes_per_packet = usb_dev->ifc[STREAM_UAC_MIC]->ep_mps;
         usb_dev->uac->mic_ms_bytes = usb_dev->uac->ch_num[UAC_MIC] * usb_dev->uac->samples_frequence[UAC_MIC] / 1000 * usb_dev->uac->bit_resolution[UAC_MIC] / 8;
         uint32_t mic_min_bytes = usb_dev->uac->mic_ms_bytes * UAC_MIC_CB_MIN_MS_DEFAULT;
-        ESP_LOGD(TAG, "min_bytes in mic callback = %"PRIu32, mic_min_bytes);
+        ESP_LOGI(TAG, "min_bytes in mic callback = %"PRIu32" internal_free=%u internal_largest=%u",
+                 mic_min_bytes,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         if (usb_dev->uac_cfg.mic_buf_size && (usb_dev->uac_cfg.mic_buf_size < mic_min_bytes)) {
             ESP_LOGE(TAG, "mic_buf_size=%"PRIu32" must >= mic_min_bytes %"PRIu32, usb_dev->uac_cfg.mic_buf_size, mic_min_bytes);
             assert(0);
         }
-        usb_dev->uac->mic_frame_buf = heap_caps_realloc(usb_dev->uac->mic_frame_buf, mic_min_bytes, MALLOC_CAP_INTERNAL);
+        void *old_mic_frame_buf = usb_dev->uac->mic_frame_buf;
+        // CPU-side assembly buffer, not a DMA URB. Prefer PSRAM so remaining
+        // internal DRAM stays available for isochronous USB transfers.
+        usb_dev->uac->mic_frame_buf = heap_caps_malloc(mic_min_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (usb_dev->uac->mic_frame_buf == NULL) {
+            ESP_LOGW(TAG, "mic frame buf SPIRAM alloc failed (%"PRIu32" bytes); falling back to internal",
+                     mic_min_bytes);
+            usb_dev->uac->mic_frame_buf = heap_caps_malloc(mic_min_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        }
+        if (old_mic_frame_buf != NULL && old_mic_frame_buf != usb_dev->uac->mic_frame_buf) {
+            heap_caps_free(old_mic_frame_buf);
+        }
         UVC_CHECK(usb_dev->uac->mic_frame_buf, "alloc mic frame buf failed", ESP_ERR_NO_MEM);
         usb_dev->uac->mic_frame_buf_size = mic_min_bytes;
         ESP_LOGD(TAG, "MIC ch_num=%"PRIu8", bit_resolution=%"PRIu16", samples_frequence=%"PRIu32", bytes_per_packet=%"PRIu32,
@@ -2951,7 +2984,7 @@ _apply_config_failed:
     ESP_LOGI(TAG, "USB stream task deleted");
     ESP_LOGD(TAG, "USB stream task watermark = %d B", uxTaskGetStackHighWaterMark(NULL));
     xEventGroupClearBits(usb_dev->event_group_hdl, USB_STREAM_TASK_KILL_BIT);
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 static uint32_t _usb_port_actions_update(hcd_port_event_t port_evt, uint32_t action_bits)
 {
@@ -2968,6 +3001,9 @@ static uint32_t _usb_port_actions_update(hcd_port_event_t port_evt, uint32_t act
         break;
     case HCD_PORT_EVENT_ERROR:
     case HCD_PORT_EVENT_OVERCURRENT:
+        if (port_evt == HCD_PORT_EVENT_OVERCURRENT) {
+            usb_streaming_overcurrent_callback();
+        }
         action_bits = ACTION_PORT_RECOVER;
         action_bits |= ACTION_PIPE_DFLT_DISABLE;
         break;
@@ -3463,7 +3499,7 @@ free_task_:
     ESP_LOGI(TAG, "_usb_processing_task deleted");
     ESP_LOGD(TAG, "_usb_processing_task watermark = %d B", uxTaskGetStackHighWaterMark(NULL));
     xEventGroupClearBits(usb_dev->event_group_hdl, (USB_HOST_INIT_DONE | USB_HOST_TASK_KILL_BIT));
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 
 /*populate frame then call user callback*/
@@ -3760,7 +3796,14 @@ esp_err_t usb_streaming_start()
         s_usb_dev.ifc[STREAM_UAC_SPK]->name = "SPK";
         s_usb_dev.ifc[STREAM_UAC_SPK]->evt_bit = UAC_SPK_STREAM_RUNNING;
         if (s_usb_dev.uac_cfg.spk_buf_size) {
-            s_usb_dev.uac->ringbuf_hdl[UAC_SPK] = xRingbufferCreate(s_usb_dev.uac_cfg.spk_buf_size, RINGBUF_TYPE_BYTEBUF);
+            s_usb_dev.uac->ringbuf_hdl[UAC_SPK] = xRingbufferCreateWithCaps(s_usb_dev.uac_cfg.spk_buf_size,
+                                                                           RINGBUF_TYPE_BYTEBUF,
+                                                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (s_usb_dev.uac->ringbuf_hdl[UAC_SPK] == NULL) {
+                s_usb_dev.uac->ringbuf_hdl[UAC_SPK] = xRingbufferCreateWithCaps(s_usb_dev.uac_cfg.spk_buf_size,
+                                                                               RINGBUF_TYPE_BYTEBUF,
+                                                                               MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+            }
             ESP_LOGD(TAG, "Speaker ringbuf create succeed, size = %"PRIu32, s_usb_dev.uac_cfg.spk_buf_size);
             UVC_CHECK_GOTO(s_usb_dev.uac->ringbuf_hdl[UAC_SPK] != NULL, "Create speak buffer failed", free_resource_);
         }
@@ -3780,7 +3823,14 @@ esp_err_t usb_streaming_start()
         s_usb_dev.ifc[STREAM_UAC_MIC]->name = "MIC";
         s_usb_dev.ifc[STREAM_UAC_MIC]->evt_bit = UAC_MIC_STREAM_RUNNING;
         if (s_usb_dev.uac_cfg.mic_buf_size) {
-            s_usb_dev.uac->ringbuf_hdl[UAC_MIC] = xRingbufferCreate(s_usb_dev.uac_cfg.mic_buf_size, RINGBUF_TYPE_BYTEBUF);
+            s_usb_dev.uac->ringbuf_hdl[UAC_MIC] = xRingbufferCreateWithCaps(s_usb_dev.uac_cfg.mic_buf_size,
+                                                                           RINGBUF_TYPE_BYTEBUF,
+                                                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (s_usb_dev.uac->ringbuf_hdl[UAC_MIC] == NULL) {
+                s_usb_dev.uac->ringbuf_hdl[UAC_MIC] = xRingbufferCreateWithCaps(s_usb_dev.uac_cfg.mic_buf_size,
+                                                                               RINGBUF_TYPE_BYTEBUF,
+                                                                               MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+            }
             ESP_LOGD(TAG, "MIC ringbuf create succeed, size = %"PRIu32, s_usb_dev.uac_cfg.mic_buf_size);
             UVC_CHECK_GOTO(s_usb_dev.uac->ringbuf_hdl[UAC_MIC] != NULL, "Create speak buffer failed", free_resource_);
         }
@@ -3808,15 +3858,24 @@ esp_err_t usb_streaming_start()
     UVC_CHECK_GOTO(s_usb_dev.enabled[STREAM_UAC_MIC] == true || s_usb_dev.enabled[STREAM_UAC_SPK] == true || s_usb_dev.enabled[STREAM_UVC] == true, "uac/uvc streaming not configured", free_resource_);
 
     TaskHandle_t usbh_taskh = NULL;
-    xTaskCreatePinnedToCore(_usb_processing_task, USB_PROC_TASK_NAME, USB_PROC_TASK_STACK_SIZE, NULL,
-                            USB_PROC_TASK_PRIORITY, &usbh_taskh, USB_PROC_TASK_CORE);
-    UVC_CHECK_GOTO(usbh_taskh != NULL, "Create usb processing task failed", free_resource_);
-    xTaskCreatePinnedToCore(_usb_stream_handle_task, USB_STREAM_NAME, USB_STREAM_STACK_SIZE, NULL,
-                            USB_STREAM_PRIORITY, &s_usb_dev.stream_task_hdl, USB_STREAM_CORE);
-    assert(s_usb_dev.stream_task_hdl != NULL); //can not handle this error, just assert
+    if (usb_stream_task_create(_usb_processing_task, USB_PROC_TASK_NAME, USB_PROC_TASK_STACK_SIZE, NULL,
+                               USB_PROC_TASK_PRIORITY, &usbh_taskh, USB_PROC_TASK_CORE) != pdPASS) {
+        ESP_LOGE(TAG, "Create usb processing task failed");
+        goto free_resource_;
+    }
+    if (usb_stream_task_create(_usb_stream_handle_task, USB_STREAM_NAME, USB_STREAM_STACK_SIZE, NULL,
+                               USB_STREAM_PRIORITY, &s_usb_dev.stream_task_hdl, USB_STREAM_CORE) != pdPASS) {
+        ESP_LOGE(TAG, "Create usb stream task failed");
+        vTaskDeleteWithCaps(usbh_taskh);
+        usbh_taskh = NULL;
+        goto free_resource_;
+    }
     xTaskNotifyGive(usbh_taskh);
     xEventGroupWaitBits(s_usb_dev.event_group_hdl, USB_HOST_INIT_DONE, pdFALSE, pdFALSE, portMAX_DELAY);
-    ESP_LOGI(TAG, "USB Streaming Start Succeed");
+    ESP_LOGI(TAG, "USB Streaming Start Succeed internal_free=%u internal_largest=%u spiram_free=%u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     return ESP_OK;
 
 free_resource_:
@@ -3844,19 +3903,21 @@ free_resource_:
         _usb_urb_free(s_usb_dev.ctrl_urb);
         s_usb_dev.ctrl_urb = NULL;
     }
+    s_usb_dev.stream_task_hdl = NULL;
     if (s_usb_dev.uvc) {
         if (s_usb_dev.uvc->vs_ifc) {
             free(s_usb_dev.uvc->vs_ifc);
         }
         s_usb_dev.ifc[STREAM_UVC] = NULL;
         free(s_usb_dev.uvc);
+        s_usb_dev.uvc = NULL;
     }
     if (s_usb_dev.uac) {
         if (s_usb_dev.uac->ringbuf_hdl[UAC_SPK]) {
-            vRingbufferDelete(s_usb_dev.uac->ringbuf_hdl[UAC_SPK]);
+            vRingbufferDeleteWithCaps(s_usb_dev.uac->ringbuf_hdl[UAC_SPK]);
         }
         if (s_usb_dev.uac->ringbuf_hdl[UAC_MIC]) {
-            vRingbufferDelete(s_usb_dev.uac->ringbuf_hdl[UAC_MIC]);
+            vRingbufferDeleteWithCaps(s_usb_dev.uac->ringbuf_hdl[UAC_MIC]);
         }
         if (s_usb_dev.uac->as_ifc[UAC_SPK]) {
             free(s_usb_dev.uac->as_ifc[UAC_SPK]);
@@ -3867,7 +3928,9 @@ free_resource_:
         s_usb_dev.ifc[STREAM_UAC_SPK] = NULL;
         s_usb_dev.ifc[STREAM_UAC_MIC] = NULL;
         free(s_usb_dev.uac);
+        s_usb_dev.uac = NULL;
     }
+    memset(s_usb_dev.enabled, 0, sizeof(s_usb_dev.enabled));
     return ESP_FAIL;
 }
 
@@ -3969,7 +4032,7 @@ esp_err_t usb_streaming_stop(void)
     if (s_usb_dev.uac) {
         for (size_t i = 0; i < UAC_MAX; i++) {
             if (s_usb_dev.uac->ringbuf_hdl[i]) {
-                vRingbufferDelete(s_usb_dev.uac->ringbuf_hdl[i]);
+                vRingbufferDeleteWithCaps(s_usb_dev.uac->ringbuf_hdl[i]);
             }
             if (s_usb_dev.uac->as_ifc[i]) {
                 free(s_usb_dev.uac->as_ifc[i]);

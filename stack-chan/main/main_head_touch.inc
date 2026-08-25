@@ -44,22 +44,17 @@ static void run_head_touch_audio_loop()
         HeadTouchEvent event = HeadTouchEvent::Press;
         if (xQueueReceive(head_touch_event_queue, &event, portMAX_DELAY) == pdTRUE) {
             if (event == HeadTouchEvent::LongPress) {
-                ESP_LOGW(TAG, "Local long-press stop triggered");
-                request_speak_preempt("local long press");
-                advance_speech_generation();
-                xiaopai_state_set(LocalVoiceState::Idle, "local long press stop");
-                expression_state_set("stopped");
+                ESP_LOGW(TAG, "Screen 3-second press session reset triggered");
                 cJSON* root = cJSON_CreateObject();
                 cJSON_AddStringToObject(root, "device_id", mac_address().c_str());
-                cJSON_AddStringToObject(root, "type", "local_stop");
-                cJSON_AddNumberToObject(root, "generation", speech_command_generation);
+                cJSON_AddStringToObject(root, "type", "reset_session");
                 char* encoded = cJSON_PrintUnformatted(root);
                 std::string body = encoded != nullptr ? encoded : "{}";
                 if (encoded != nullptr) cJSON_free(encoded);
                 cJSON_Delete(root);
                 std::string response;
                 if (!http_post_json_string(make_server_url("/device/event"), body, &response, 5000)) {
-                    ESP_LOGW(TAG, "Failed to report local_stop event");
+                    ESP_LOGW(TAG, "Failed to request Morrow session reset");
                 }
                 continue;
             }
@@ -100,8 +95,8 @@ static void run_head_touch_loop()
     bool was_touched = false;
     bool long_press_sent = false;
     uint32_t pressed_at_ms = 0;
-    static constexpr uint32_t kLocalStopLongPressMs = 1200;
-    ESP_LOGI(TAG, "Screen touch local shy trigger started");
+    static constexpr uint32_t kSessionResetLongPressMs = 3000;
+    ESP_LOGI(TAG, "Screen touch handler started; hold 3 seconds to reset the Morrow session");
 
     while (true) {
         m5::Touch_Class::touch_detail_t touch;
@@ -129,7 +124,7 @@ static void run_head_touch_loop()
             long_press_sent = false;
             pressed_at_ms = M5.millis();
         } else if (touch.isPressed() && was_touched && !long_press_sent &&
-                   static_cast<uint32_t>(M5.millis() - pressed_at_ms) >= kLocalStopLongPressMs) {
+                   static_cast<uint32_t>(M5.millis() - pressed_at_ms) >= kSessionResetLongPressMs) {
             long_press_sent = true;
             enqueue_head_touch_event(HeadTouchEvent::LongPress);
         } else if (!touch.isPressed() && was_touched) {

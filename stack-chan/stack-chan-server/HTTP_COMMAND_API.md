@@ -50,6 +50,48 @@ Example response:
 }
 ```
 
+## Network Debugging
+
+Network debugging is a permanent firmware capability and does not use the
+ESP32-S3 USB PHY. Commands use the normal reliable queue and acknowledgements;
+ESP-IDF logs are uploaded in bounded batches to `/device/logs`.
+
+Request a diagnostic snapshot:
+
+```bash
+curl 'http://127.0.0.1:8091/command/debug_status'
+```
+
+Change one tag's runtime log level:
+
+```bash
+curl -G 'http://127.0.0.1:8091/command/debug_log_level' \
+  --data-urlencode 'tag=USB_STREAM' \
+  --data-urlencode 'level=debug'
+```
+
+Read the resulting log stream:
+
+```bash
+curl -G 'http://127.0.0.1:8091/device/logs' \
+  --data-urlencode 'device_id=44:1b:f6:e4:83:8c' \
+  --data-urlencode 'limit=100'
+```
+
+Valid levels are `none`, `error`, `warn`, `info`, `debug`, and `verbose`.
+`tag=*` changes the global runtime level. The change lasts until reboot; the
+network debug transport itself remains enabled by firmware configuration.
+
+DJI USB Host is intentionally manual so a PC debug connection is never
+automatically replaced by Host mode:
+
+```bash
+curl 'http://127.0.0.1:8091/command/dji_mic_start'
+curl 'http://127.0.0.1:8091/command/dji_mic_stop'
+```
+
+Disconnect the PC USB cable and attach DJI Mic before sending `dji_mic_start`.
+
 ## Health
 
 ```http
@@ -373,6 +415,13 @@ Content-Type: application/json
 ```
 
 `head_touch` and `touch` are handled locally as a shortcut: the server queues a `face` command with expression `shy`, reports `openclaw_sent: false`, and returns without forwarding to OpenClaw. This preserves immediate touch feedback even when OpenClaw is configured.
+
+Holding the Xiaopai screen for three seconds sends `type=reset_session`. The
+firmware does not stop playback, change voice state, change the expression, or
+touch the local speech queue. After the Morrow context is reset, the server adds
+the speech `你好，我是小派，今天有什么需要帮忙的？` to the device command queue
+without changing the dialog wake state or preempting other queued commands. The
+action fires once per press and does not require a second confirmation.
 
 Other device events can be forwarded to OpenClaw as short plain-text chat messages such as `小派设备事件：设备 robot-001，事件类型 button_press，事件名称 side_button。`. The server does not parse the returned text. When the response needs Xiaopai presentation, OpenClaw should queue behavior through `xiaopaiControl.execute` or the HTTP command endpoints such as `POST /command`, `GET /command/<type>`, `GET /expression/<name>`, or `GET /action/<name>`.
 

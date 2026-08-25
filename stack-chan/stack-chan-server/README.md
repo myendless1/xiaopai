@@ -119,6 +119,20 @@ Returns the in-memory debug log cache as JSON. The server also appends readable 
 tail -f captures/device-logs/44_1b_f6_df_5d_b8.log
 ```
 
+The firmware enables this Wi-Fi debug path by default. It mirrors ESP-IDF log
+lines here and accepts diagnostic commands through the same command queue:
+
+```bash
+curl 'http://127.0.0.1:8091/command/debug_status'
+curl -G 'http://127.0.0.1:8091/command/debug_log_level' \
+  --data-urlencode 'tag=USB_STREAM' \
+  --data-urlencode 'level=debug'
+```
+
+`debug_status` emits power, DJI Mic, audio-source, heap, reset, and network-log
+counters. Supported log levels are `none`, `error`, `warn`, `info`, `debug`,
+and `verbose`. Use `tag=*` to set the global runtime level.
+
 `GET /device/next-command?device_id=...&timeout=25`
 
 Device long-poll endpoint. Xiaopai keeps one blocking HTTP request open and receives a JSON command when the server has one queued. A timeout returns `{"type":"noop"}`.

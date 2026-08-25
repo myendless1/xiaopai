@@ -13,6 +13,7 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         cls.state = (ROOT / "main" / "main_app_state.inc").read_text()
         cls.realtime = (ROOT / "main" / "main_realtime_transport.inc").read_text()
         cls.touch = (ROOT / "main" / "main_head_touch.inc").read_text()
+        cls.ota = (ROOT / "main" / "main_firmware_ota.inc").read_text()
         cls.speech = (ROOT / "main" / "main_realtime_speech.inc").read_text()
         cls.expression_state = (ROOT / "main" / "expression_state.cpp").read_text()
         cls.expression_header = (ROOT / "main" / "expression_state.h").read_text()
@@ -116,8 +117,20 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         self.assertIn('"audio", kRealtimeAudioWriteTimeoutMs, 1', self.speech)
         self.assertIn("kRealtimeAudioWriteTimeoutMs = 500", self.state)
 
-    def test_usb_serial_debug_interface_reuses_device_command_protocol(self):
-        self.assertIn("SERIAL_CMD ready transport=usb_serial_jtag format=jsonl", self.commands)
+    def test_realtime_ws_read_waits_for_complete_frame_without_reconnecting_on_control_frames(self):
+        self.assertIn("kRealtimeWsFrameReadTimeoutMs = 250", self.state)
+        self.assertIn(
+            "std::max(timeout_ms, kRealtimeWsFrameReadTimeoutMs)",
+            self.realtime,
+        )
+        self.assertIn("if (read_len == 0)", self.realtime)
+        self.assertIn("WS read completed without application payload", self.realtime)
+        receive_start = self.realtime.index("static bool receive_ws_once")
+        receive_body = self.realtime[receive_start:]
+        self.assertNotIn("if (read_len <= 0)", receive_body)
+
+    def test_uart_debug_interface_reuses_device_command_protocol(self):
+        self.assertIn("SERIAL_CMD ready transport=uart0 format=jsonl", self.commands)
         self.assertIn("execute_serial_debug_line", self.commands)
         self.assertIn("execute_command_object(command)", self.commands)
         self.assertIn("discard_until_newline", self.commands)
@@ -126,12 +139,52 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         self.assertIn("speak_sequence_not_supported", self.commands)
         self.assertIn("start_serial_debug_command_service();", self.main)
 
-    def test_local_long_press_stops_and_reports_generation(self):
-        self.assertIn("kLocalStopLongPressMs = 1200", self.touch)
-        self.assertIn("request_speak_preempt", self.touch)
-        self.assertIn("advance_speech_generation", self.touch)
-        self.assertIn('"local_stop"', self.touch)
+    def test_network_debug_is_permanent_and_immediate(self):
+        kconfig = (ROOT / "main" / "Kconfig.projbuild").read_text()
+        defaults = (ROOT / "sdkconfig.defaults").read_text()
+        self.assertIn('bool "Enable permanent Wi-Fi command and log debugging"', kconfig)
+        self.assertIn("CONFIG_STACKCHAN_NETWORK_DEBUG=y", defaults)
+        self.assertIn("CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH=64", defaults)
+        self.assertIn("xQueueCreate(CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH", self.commands)
+        self.assertIn("network_debug_uploader_task", self.commands)
+        self.assertIn("uploader=immediate", self.commands)
+        self.assertNotIn("network_debug_flush_once();", self.commands)
+        self.assertNotIn("CONFIG_STACKCHAN_NETWORK_DEBUG_RING_BYTES", defaults)
+        self.assertIn('make_server_url("/device/logs")', self.commands)
+        self.assertIn('type == "debug_status"', self.commands)
+        self.assertIn('type == "debug_log_level"', self.commands)
+        self.assertIn('cJSON_CreateString("network_debug")', self.commands)
+        self.assertIn("start_network_debug_service();", self.main)
+        self.assertIn("usb_serial_jtag_is_connected()", self.main)
+        self.assertIn('"PC USB host detected"', self.main)
+        self.assertIn(
+            "#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT && CONFIG_STACKCHAN_DJI_MIC_AUTO_START",
+            self.main,
+        )
+        self.assertNotIn(
+            "#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT && !CONFIG_STACKCHAN_DJI_MIC_AUTO_START",
+            self.main,
+        )
+        self.assertIn('type == "dji_mic_start"', self.commands)
+        self.assertIn('type == "dji_mic_stop"', self.commands)
+
+    def test_three_second_screen_press_only_requests_session_reset(self):
+        self.assertIn("kSessionResetLongPressMs = 3000", self.touch)
+        self.assertIn('"reset_session"', self.touch)
         self.assertIn('make_server_url("/device/event")', self.touch)
+        long_press_handler = self.touch[
+            self.touch.index("if (event == HeadTouchEvent::LongPress)"):
+            self.touch.index("LocalVoiceState state = xiaopai_state_get().state;")
+        ]
+        self.assertNotIn("request_speak_preempt", long_press_handler)
+        self.assertNotIn("advance_speech_generation", long_press_handler)
+        self.assertNotIn("xiaopai_state_set", long_press_handler)
+        self.assertNotIn("expression_state_set", long_press_handler)
+        self.assertNotIn('"generation"', long_press_handler)
+
+    def test_firmware_ota_stops_dji_and_delays_boot_autostart(self):
+        self.assertIn('dji_mic_receiver_input_stop("firmware ota")', self.ota)
+        self.assertIn("while (s_firmware_ota_in_progress.load())", self.main)
 
     def test_terminal_non_idempotent_dedupe_is_persisted_in_nvs(self):
         self.assertIn('nvs_set_blob(handle, "cmd_dedupe"', self.tts)

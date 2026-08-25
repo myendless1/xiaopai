@@ -1,20 +1,60 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Configuration
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# Runtime configuration
 MORROW_BIN="${MORROW_BIN:-/home/myendless/.local/bin/morrow}"
 HOST="${MORROW_HOST:-0.0.0.0}"
 PORT="${MORROW_PORT:-3000}"
 LOG_FILE="${MORROW_LOG:-/tmp/morrow-server.log}"
+HEALTH_HOST="${MORROW_HEALTH_HOST:-127.0.0.1}"
+
+usage() {
+  cat >&2 <<EOF
+Usage: $0 <lark|nolark|demo>
+
+  lark    Load morrow/config-full.toml and enable Feishu tools with --robot.
+  nolark  Load morrow/config-final-event.toml without registering Feishu tools.
+  demo    Load morrow/config-demo.toml for the scripted final-event demo.
+EOF
+}
+
+if [ "$#" -ne 1 ]; then
+  usage
+  exit 2
+fi
+
+MODE="$1"
+case "$MODE" in
+  lark)
+    CONFIG_FILE="$SCRIPT_DIR/morrow/config-full.toml"
+    ROBOT_ARGS=(--robot)
+    TOOL_MODE="Feishu tools enabled"
+    ;;
+  nolark)
+    CONFIG_FILE="$SCRIPT_DIR/morrow/config-final-event.toml"
+    ROBOT_ARGS=()
+    TOOL_MODE="Q&A only; Feishu tools not registered"
+    ;;
+  demo)
+    CONFIG_FILE="$SCRIPT_DIR/morrow/config-demo.toml"
+    ROBOT_ARGS=()
+    TOOL_MODE="Scripted demo only; external tools not registered"
+    ;;
+  *)
+    echo "Error: unsupported mode '$MODE'." >&2
+    usage
+    exit 2
+    ;;
+esac
 
 # Morrow must reach its model provider directly. Do not inherit stale proxy
-# settings (for example localhost:7890) from the interactive shell, env.sh,
-# cron, or a service manager.
+# settings from the interactive shell, env.sh, cron, or a service manager.
 unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
 export no_proxy="127.0.0.1,localhost${no_proxy:+,$no_proxy}"
 export NO_PROXY="127.0.0.1,localhost${NO_PROXY:+,$NO_PROXY}"
 
-# Ensure morrow binary exists
 if [ ! -x "$MORROW_BIN" ]; then
   if command -v morrow >/dev/null 2>&1; then
     MORROW_BIN="$(command -v morrow)"
@@ -24,7 +64,20 @@ if [ ! -x "$MORROW_BIN" ]; then
   fi
 fi
 
+if [ ! -r "$CONFIG_FILE" ]; then
+  echo "Error: Morrow config is not readable: $CONFIG_FILE" >&2
+  exit 1
+fi
+
+if ! command -v curl >/dev/null 2>&1; then
+  echo "Error: curl is required for the startup health check." >&2
+  exit 1
+fi
+
 echo "Morrow Server Controller"
+echo "  Mode:   $MODE"
+echo "  Config: $CONFIG_FILE"
+echo "  Tools:  $TOOL_MODE"
 echo "  Binary: $MORROW_BIN"
 echo "  Host:   $HOST"
 echo "  Port:   $PORT"
@@ -32,46 +85,69 @@ echo "  Log:    $LOG_FILE"
 echo "  Proxy:  disabled for Morrow"
 echo
 
-# 1. Clean up existing morrow server processes if any
-# We find processes that contain the binary path and 'server' argument
-PIDS=$(pgrep -f "$(basename "$MORROW_BIN") server" || true)
+# Stop transient units previously used to run Morrow in this workspace.
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user stop \
+    morrow-final-qa.service \
+    morrow-final-event.service \
+    morrow-full-tools-test.service \
+    >/dev/null 2>&1 || true
+fi
+
+# Find Morrow server processes even when --config appears before `server`.
+PIDS="$(
+  ps -eo pid=,args= | awk -v bin="$MORROW_BIN" '
+    {
+      pid = $1
+      $1 = ""
+      sub(/^ +/, "")
+      if (index($0, bin " ") == 1 && $0 ~ /(^| )server( |$)/) {
+        print pid
+      }
+    }
+  '
+)"
 
 if [ -n "$PIDS" ]; then
-  echo "Found existing Morrow server running with PID(s): $PIDS"
+  echo "Found existing Morrow server PID(s): $PIDS"
   echo "Gracefully stopping existing processes..."
   for pid in $PIDS; do
     kill "$pid" 2>/dev/null || true
   done
 
-  # Wait up to 5 seconds for them to stop
-  for i in {1..10}; do
-    if ! pgrep -f "$(basename "$MORROW_BIN") server" >/dev/null; then
+  for _ in {1..10}; do
+    running=false
+    for pid in $PIDS; do
+      if kill -0 "$pid" 2>/dev/null; then
+        running=true
+        break
+      fi
+    done
+    if [ "$running" = false ]; then
       break
     fi
     sleep 0.5
   done
 
-  # Force kill if still running
-  PIDS_STILL=$(pgrep -f "$(basename "$MORROW_BIN") server" || true)
-  if [ -n "$PIDS_STILL" ]; then
-    echo "Existing processes did not stop. Forcing termination of: $PIDS_STILL"
-    for pid in $PIDS_STILL; do
+  for pid in $PIDS; do
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "Process $pid did not stop; forcing termination."
       kill -9 "$pid" 2>/dev/null || true
-    done
-    sleep 1
-  fi
+    fi
+  done
   echo "Existing server stopped."
 else
   echo "No existing Morrow server found."
 fi
 
-# 2. Start new morrow server in the background
 mkdir -p "$(dirname "$LOG_FILE")"
-echo "---- morrow-server start $(date '+%Y-%m-%d %H:%M:%S') ----" >> "$LOG_FILE"
+echo "---- morrow-server $MODE start $(date '+%Y-%m-%d %H:%M:%S') ----" >> "$LOG_FILE"
 
 SERVER_CMD=(
-  "$MORROW_BIN" server
-  --robot
+  "$MORROW_BIN"
+  --config "$CONFIG_FILE"
+  server
+  "${ROBOT_ARGS[@]}"
   --host "$HOST"
   --port "$PORT"
 )
@@ -84,19 +160,45 @@ else
 fi
 NEW_PID=$!
 
-# 3. Verify if server started successfully
-sleep 1.5
+STATUS_JSON=""
+HEALTH_URL="http://$HEALTH_HOST:$PORT/api/status"
+for _ in {1..20}; do
+  if ! kill -0 "$NEW_PID" 2>/dev/null; then
+    break
+  fi
+  if STATUS_JSON="$(curl --noproxy '*' -fsS --max-time 1 "$HEALTH_URL" 2>/dev/null)"; then
+    break
+  fi
+  sleep 0.5
+done
 
-if kill -0 "$NEW_PID" 2>/dev/null; then
-  echo "Morrow server started successfully."
-  echo "  PID:  $NEW_PID"
-  echo "  URL:  http://$HOST:$PORT"
-  echo "  Log:  $LOG_FILE"
-  echo
-  echo "Latest logs:"
-  tail -n 5 "$LOG_FILE"
-else
-  echo "Error: Morrow server failed to start. Check logs below:" >&2
+if ! kill -0 "$NEW_PID" 2>/dev/null; then
+  echo "Error: Morrow server failed to start. Latest logs:" >&2
   tail -n 20 "$LOG_FILE" >&2
   exit 1
 fi
+
+if [ -z "$STATUS_JSON" ]; then
+  echo "Error: Morrow started as PID $NEW_PID but its health endpoint did not respond." >&2
+  kill "$NEW_PID" 2>/dev/null || true
+  tail -n 20 "$LOG_FILE" >&2
+  exit 1
+fi
+
+if [[ "$STATUS_JSON" != *"\"config_path\":\"$CONFIG_FILE\""* ]]; then
+  echo "Error: Morrow health check reported an unexpected config path." >&2
+  echo "$STATUS_JSON" >&2
+  kill "$NEW_PID" 2>/dev/null || true
+  exit 1
+fi
+
+echo "Morrow server started successfully."
+echo "  PID:    $NEW_PID"
+echo "  Mode:   $MODE"
+echo "  Config: $CONFIG_FILE"
+echo "  URL:    http://$HOST:$PORT"
+echo "  Health: $HEALTH_URL"
+echo "  Log:    $LOG_FILE"
+echo
+echo "Latest logs:"
+tail -n 5 "$LOG_FILE"

@@ -119,6 +119,162 @@ static bool execute_command_object(const cJSON* command)
     return execute_command_object_internal(command, false, nullptr);
 }
 
+static QueueHandle_t network_debug_log_queue = nullptr;
+static TaskHandle_t network_debug_uploader_task_handle = nullptr;
+static vprintf_like_t network_debug_original_vprintf = nullptr;
+static std::atomic<uint32_t> network_debug_captured_lines{0};
+static std::atomic<uint32_t> network_debug_uploaded_lines{0};
+static std::atomic<uint32_t> network_debug_dropped_lines{0};
+static std::atomic<uint32_t> network_debug_upload_failures{0};
+
+static bool network_debug_line_should_upload(const char* line)
+{
+    if (line == nullptr) {
+        return false;
+    }
+    while (*line == ' ' || *line == '\t' || *line == '\r') {
+        ++line;
+    }
+    if (*line == '\0' || *line == '\n') {
+        return false;
+    }
+    // Skip wifi-driver fragments that are not a complete ESP_LOG line.
+    if (*line != 'E' && *line != 'W' && *line != 'I' && *line != 'D' && *line != 'V') {
+        return false;
+    }
+    if (strstr(line, "语音监听电平") != nullptr ||
+        strstr(line, "APP1 status") != nullptr ||
+        strstr(line, "输入电平均值") != nullptr ||
+        strstr(line, "ES7210:") != nullptr) {
+        return false;
+    }
+    return true;
+}
+
+static int network_debug_vprintf(const char* format, va_list args)
+{
+    va_list output_args;
+    va_copy(output_args, args);
+    const int written = network_debug_original_vprintf != nullptr
+                            ? network_debug_original_vprintf(format, output_args)
+                            : vprintf(format, output_args);
+    va_end(output_args);
+
+#if CONFIG_STACKCHAN_NETWORK_DEBUG
+    if (network_debug_log_queue != nullptr &&
+        !xPortInIsrContext() &&
+        xTaskGetCurrentTaskHandle() != network_debug_uploader_task_handle) {
+        char line[512];
+        va_list capture_args;
+        va_copy(capture_args, args);
+        int length = vsnprintf(line, sizeof(line), format, capture_args);
+        va_end(capture_args);
+        if (length > 0 && network_debug_line_should_upload(line)) {
+            const size_t stored = std::min<size_t>(static_cast<size_t>(length), sizeof(line) - 1);
+            char* copy = static_cast<char*>(malloc(stored + 1));
+            if (copy == nullptr) {
+                network_debug_dropped_lines.fetch_add(1);
+            } else {
+                memcpy(copy, line, stored);
+                copy[stored] = '\0';
+                if (xQueueSend(network_debug_log_queue, &copy, 0) == pdTRUE) {
+                    network_debug_captured_lines.fetch_add(1);
+                } else {
+                    free(copy);
+                    network_debug_dropped_lines.fetch_add(1);
+                }
+            }
+        }
+    }
+#endif
+    return written;
+}
+
+static bool upload_network_debug_batch(const std::vector<std::string>& lines)
+{
+    if (lines.empty()) {
+        return true;
+    }
+    cJSON* root = cJSON_CreateObject();
+    cJSON* events = cJSON_AddArrayToObject(root, "events");
+    cJSON_AddStringToObject(root, "device_id", mac_address().c_str());
+    for (const std::string& line : lines) {
+        cJSON* event = cJSON_CreateObject();
+        cJSON_AddStringToObject(event, "type", "log");
+        cJSON_AddStringToObject(event, "source", "esp-log");
+        cJSON_AddNumberToObject(event, "device_ms", M5.millis());
+        cJSON_AddStringToObject(event, "line", line.c_str());
+        cJSON_AddItemToArray(events, event);
+    }
+    char* encoded = cJSON_PrintUnformatted(root);
+    std::string body = encoded != nullptr ? encoded : "{}";
+    if (encoded != nullptr) {
+        cJSON_free(encoded);
+    }
+    cJSON_Delete(root);
+    std::string response;
+    return http_post_json_string(make_server_url("/device/logs"), body, &response, 3000, false);
+}
+
+static void network_debug_uploader_task(void*)
+{
+    network_debug_uploader_task_handle = xTaskGetCurrentTaskHandle();
+    std::vector<std::string> lines;
+    lines.reserve(CONFIG_STACKCHAN_NETWORK_DEBUG_BATCH_LINES);
+    while (true) {
+        char* first = nullptr;
+        if (xQueueReceive(network_debug_log_queue, &first, portMAX_DELAY) != pdTRUE || first == nullptr) {
+            continue;
+        }
+        lines.clear();
+        lines.emplace_back(first);
+        free(first);
+        while (lines.size() < static_cast<size_t>(CONFIG_STACKCHAN_NETWORK_DEBUG_BATCH_LINES)) {
+            char* extra = nullptr;
+            if (xQueueReceive(network_debug_log_queue, &extra, 0) != pdTRUE || extra == nullptr) {
+                break;
+            }
+            lines.emplace_back(extra);
+            free(extra);
+        }
+        while (!wifi_is_connected() || !active_server_selected) {
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+        if (upload_network_debug_batch(lines)) {
+            network_debug_uploaded_lines.fetch_add(static_cast<uint32_t>(lines.size()));
+        } else {
+            network_debug_upload_failures.fetch_add(1);
+        }
+    }
+}
+
+static void start_network_debug_service()
+{
+#if CONFIG_STACKCHAN_NETWORK_DEBUG
+    if (network_debug_log_queue != nullptr) {
+        return;
+    }
+    network_debug_log_queue =
+        xQueueCreate(CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH, sizeof(char*));
+    if (network_debug_log_queue == nullptr) {
+        ESP_LOGE(TAG, "NET_DEBUG failed to allocate log queue");
+        return;
+    }
+    BaseType_t created = xiaopai_task_create_psram(
+        network_debug_uploader_task, "net_log_up", 6144, nullptr, 3, nullptr, 0);
+    if (created != pdPASS) {
+        ESP_LOGE(TAG, "NET_DEBUG failed to start immediate log uploader");
+        vQueueDelete(network_debug_log_queue);
+        network_debug_log_queue = nullptr;
+        return;
+    }
+    network_debug_original_vprintf = esp_log_set_vprintf(network_debug_vprintf);
+    ESP_LOGI(TAG,
+             "NET_DEBUG ready commands=http-long-poll logs=POST:/device/logs queue=%u uploader=immediate",
+             static_cast<unsigned>(CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH));
+#endif
+}
+
 static void log_serial_debug_status()
 {
     const XiaopaiStateSnapshot state = xiaopai_state_get();
@@ -231,7 +387,7 @@ static bool execute_serial_debug_line(char* line)
 
 static void serial_debug_command_task(void*)
 {
-    ESP_LOGI(TAG, "SERIAL_CMD ready transport=usb_serial_jtag format=jsonl");
+    ESP_LOGI(TAG, "SERIAL_CMD ready transport=uart0 format=jsonl");
     char chunk[256] = {};
     char line[2048] = {};
     size_t line_length = 0;
@@ -285,7 +441,8 @@ static void start_serial_debug_command_service()
 static bool command_marks_user_interaction(const std::string& type)
 {
     return type != "sleep" && type != "state" && type != "device_state" &&
-           type != "check_ota" && type != "ota_check" && type != "firmware_ota";
+           type != "check_ota" && type != "ota_check" && type != "firmware_ota" &&
+           type != "debug_status" && type != "diagnostics" && type != "debug_log_level";
 }
 
 static bool execute_command_object_internal(const cJSON* command, bool in_sequence,
@@ -302,6 +459,94 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
     }
     if (command_marks_user_interaction(type)) {
         mark_user_interaction("command");
+    }
+
+    if (type == "debug_status" || type == "diagnostics") {
+        const XiaopaiStateSnapshot state = xiaopai_state_get();
+        const DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
+        const StackchanPowerStatus power = stackchan_power_manager_status();
+        ESP_LOGI("NetDebug",
+                 "status state=%s interaction=%s source_generation=%u wifi=%d server=%d "
+                 "battery=%dmV/%d%% current=%dmA vbus=%dmV usb_output=%d",
+                 state.name, state.interaction_state_name,
+                 static_cast<unsigned>(state.source_generation),
+                 wifi_is_connected() ? 1 : 0, active_server_selected ? 1 : 0,
+                 power.battery_mv, power.battery_percent, power.battery_current_ma,
+                 power.vbus_mv, power.usb_output ? 1 : 0);
+        ESP_LOGI("NetDebug",
+                 "dji detected=%d identity=%d stable=%d capture=%d generation=%u "
+                 "raw_drops=%u pcm_drops=%u format_errors=%u",
+                 dji.detected ? 1 : 0, dji.identity_confirmed ? 1 : 0,
+                 dji.stream_stable ? 1 : 0, dji.capture_ready ? 1 : 0,
+                 static_cast<unsigned>(dji.connection_generation),
+                 static_cast<unsigned>(dji.raw_drops),
+                 static_cast<unsigned>(dji.pcm_drops),
+                 static_cast<unsigned>(dji.format_errors));
+        ESP_LOGI("NetDebug",
+                 "network captured=%u uploaded=%u dropped=%u upload_failures=%u "
+                 "internal_free=%u internal_min=%u dma_free=%u psram_free=%u reset=%s",
+                 static_cast<unsigned>(network_debug_captured_lines.load()),
+                 static_cast<unsigned>(network_debug_uploaded_lines.load()),
+                 static_cast<unsigned>(network_debug_dropped_lines.load()),
+                 static_cast<unsigned>(network_debug_upload_failures.load()),
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                 static_cast<unsigned>(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA)),
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)),
+                 reset_reason_name(esp_reset_reason()));
+        audio_service_dump_state();
+        return true;
+    }
+    if (type == "debug_log_level") {
+        std::string tag = json_string_value(payload, "tag");
+        std::string requested = json_string_value(payload, "level");
+        if (tag.empty()) {
+            tag = "*";
+        }
+        esp_log_level_t level = ESP_LOG_INFO;
+        if (requested == "none") {
+            level = ESP_LOG_NONE;
+        } else if (requested == "error") {
+            level = ESP_LOG_ERROR;
+        } else if (requested == "warn" || requested == "warning") {
+            level = ESP_LOG_WARN;
+        } else if (requested == "debug") {
+            level = ESP_LOG_DEBUG;
+        } else if (requested == "verbose") {
+            level = ESP_LOG_VERBOSE;
+        }
+        esp_log_level_set(tag.c_str(), level);
+        ESP_LOGI("NetDebug", "log level changed tag=%s level=%s",
+                 tag.c_str(), requested.empty() ? "info" : requested.c_str());
+        return true;
+    }
+    if (type == "dji_mic_start") {
+        if (usb_serial_jtag_is_connected()) {
+            ESP_LOGW(TAG, "DJI Mic start rejected: PC USB Serial/JTAG host is connected");
+            return false;
+        }
+        if (!stackchan_power_manager_dji_allowed()) {
+            ESP_LOGW(TAG, "DJI Mic start rejected by battery power policy");
+            return false;
+        }
+        const DjiMicReceiverStatus before = dji_mic_receiver_input_status();
+        if (dji_mic_receiver_input_is_enabled() && !before.capture_ready) {
+            ESP_LOGW(TAG, "DJI Mic remote start restarting because capture is not ready");
+            dji_mic_receiver_input_stop("remote start retry");
+        }
+        const bool ok = dji_mic_receiver_input_start();
+        ESP_LOG_LEVEL(ok ? ESP_LOG_INFO : ESP_LOG_ERROR, TAG,
+                      "DJI Mic remote start result=%s capture=%d detail=%s",
+                      ok ? "ok" : "failed",
+                      dji_mic_receiver_input_status().capture_ready ? 1 : 0,
+                      dji_mic_receiver_input_status().detail);
+        return ok;
+    }
+    if (type == "dji_mic_stop") {
+        dji_mic_receiver_input_stop();
+        stackchan_power_manager_set_usb_output(false, "DJI Mic remote stop");
+        ESP_LOGI(TAG, "DJI Mic remote stop completed");
+        return true;
     }
 
     if (type == "audio_test" || type == "codec_test" || type == "tone") {
@@ -686,6 +931,12 @@ static bool send_v3_control_hello()
 #endif
     cJSON_AddItemToArray(capabilities, cJSON_CreateString("camera"));
     cJSON_AddItemToArray(capabilities, cJSON_CreateString("servo"));
+#if CONFIG_STACKCHAN_NETWORK_DEBUG
+    cJSON_AddItemToArray(capabilities, cJSON_CreateString("network_debug"));
+    cJSON_AddItemToArray(capabilities, cJSON_CreateString("remote_commands"));
+    cJSON_AddItemToArray(capabilities, cJSON_CreateString("wifi_log_upload"));
+    cJSON_AddItemToArray(capabilities, cJSON_CreateString("dji_mic_control"));
+#endif
     char* encoded = cJSON_PrintUnformatted(root);
     std::string body = encoded != nullptr ? encoded : "{}";
     if (encoded != nullptr) {
@@ -718,8 +969,46 @@ static bool send_v3_control_heartbeat()
     cJSON_AddStringToObject(root, "mode", xiaopai_state_get().name);
     cJSON_AddStringToObject(root, "expression", expression_state_get().name);
     cJSON_AddNumberToObject(root, "free_internal_heap", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(root, "minimum_internal_heap",
+                            heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(root, "largest_internal_block",
+                            heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     cJSON_AddNumberToObject(root, "free_psram", heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(root, "minimum_psram",
+                            heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(root, "free_dma_heap", heap_caps_get_free_size(MALLOC_CAP_DMA));
+    cJSON_AddNumberToObject(root, "minimum_dma_heap", heap_caps_get_minimum_free_size(MALLOC_CAP_DMA));
     cJSON_AddNumberToObject(root, "speech_queue_depth", speak_command_queue != nullptr ? uxQueueMessagesWaiting(speak_command_queue) : 0);
+
+    AudioInputStatus input = audio_service_get_input_status();
+    DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
+    StackchanPowerStatus power = stackchan_power_manager_status();
+    cJSON_AddStringToObject(root, "audio_input", audio_input_source_name(input.active_source));
+    cJSON_AddStringToObject(root, "audio_input_pending", audio_input_source_name(input.pending_source));
+    cJSON_AddNumberToObject(root, "audio_source_generation", input.source_generation);
+    cJSON_AddBoolToObject(root, "audio_source_lost", input.source_lost);
+    cJSON_AddBoolToObject(root, "dji_detected", dji.detected);
+    cJSON_AddBoolToObject(root, "dji_identity_confirmed", dji.identity_confirmed);
+    cJSON_AddBoolToObject(root, "dji_capture_ready", dji.capture_ready);
+    cJSON_AddNumberToObject(root, "dji_connection_generation", dji.connection_generation);
+    cJSON_AddNumberToObject(root, "dji_raw_drops", dji.raw_drops);
+    cJSON_AddNumberToObject(root, "dji_pcm_drops", dji.pcm_drops);
+    cJSON_AddNumberToObject(root, "dji_format_errors", dji.format_errors);
+    cJSON_AddNumberToObject(root, "battery_mv", power.battery_mv);
+    cJSON_AddNumberToObject(root, "battery_percent", power.battery_percent);
+    cJSON_AddNumberToObject(root, "battery_current_ma", power.battery_current_ma);
+    cJSON_AddNumberToObject(root, "vbus_mv", power.vbus_mv);
+    cJSON_AddBoolToObject(root, "usb_output", power.usb_output);
+    cJSON_AddBoolToObject(root, "usb_enumeration_lease", power.enumeration_lease);
+    cJSON_AddBoolToObject(root, "dji_power_allowed", power.dji_allowed);
+    cJSON_AddNumberToObject(root, "power_state", static_cast<int>(power.state));
+    cJSON_AddNumberToObject(root, "brownout_boot_count", power.brownout_boot_count);
+    cJSON_AddStringToObject(root, "reset_reason", reset_reason_name(esp_reset_reason()));
+    cJSON_AddBoolToObject(root, "network_debug", CONFIG_STACKCHAN_NETWORK_DEBUG != 0);
+    cJSON_AddNumberToObject(root, "network_log_captured", network_debug_captured_lines.load());
+    cJSON_AddNumberToObject(root, "network_log_uploaded", network_debug_uploaded_lines.load());
+    cJSON_AddNumberToObject(root, "network_log_dropped", network_debug_dropped_lines.load());
+    cJSON_AddNumberToObject(root, "network_log_upload_failures", network_debug_upload_failures.load());
 
     char* encoded = cJSON_PrintUnformatted(root);
     std::string body = encoded != nullptr ? encoded : "{}";

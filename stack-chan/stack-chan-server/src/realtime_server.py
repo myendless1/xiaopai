@@ -182,6 +182,7 @@ class RealtimeConfig:
     save_audio_uploads: bool = True
     recording_callback: Callable[[dict], None] | None = None
     command_callback: Callable[[str, dict], bool] | None = None
+    speech_generation_callback: Callable[[str], int] | None = None
     device_connected_callback: Callable[[str], None] | None = None
     morrow_submit_callback: Callable[[str, str], object] | None = None
     morrow_cancel_callback: Callable[[str], object] | None = None
@@ -898,6 +899,17 @@ class RealtimeManager:
         self._mark(session, "device_tts_start")
         await session.websocket.send(json_dumps(build_llm(text, session_id=session.session_id)))
         speak_step = {"type": "speak", "text": text, "pause_listener": bool(pause_listener)}
+        if self.config.speech_generation_callback is not None:
+            try:
+                speak_step["generation"] = max(
+                    0,
+                    int(self.config.speech_generation_callback(session.device_id)),
+                )
+            except (TypeError, ValueError) as exc:
+                self.logger(
+                    "实时语音命令读取代次失败: "
+                    f"device_id={session.device_id} error={exc}"
+                )
         if isinstance(tts_options, dict):
             for key in ("voice", "sample_rate", "volume", "speech_rate", "pitch_rate"):
                 if key in tts_options and tts_options[key] not in (None, ""):

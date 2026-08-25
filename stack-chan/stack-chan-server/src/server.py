@@ -1703,6 +1703,12 @@ class Handler(BaseHTTPRequestHandler):
         self._log_info(
             f"设备心跳状态: device={device_id} boot={payload.get('boot_id')} "
             f"mode={payload.get('mode')} face={payload.get('expression')} "
+            f"audio={payload.get('audio_input')} pending={payload.get('audio_input_pending')} "
+            f"dji_detected={payload.get('dji_detected')} dji_id={payload.get('dji_identity_confirmed')} "
+            f"dji_ready={payload.get('dji_capture_ready')} usb_output={payload.get('usb_output')} "
+            f"vbus_mv={payload.get('vbus_mv')} reset={payload.get('reset_reason')} "
+            f"logs={payload.get('network_log_uploaded')}/{payload.get('network_log_captured')} "
+            f"dropped={payload.get('network_log_dropped')} "
             f"heap_internal={payload.get('free_internal_heap')} "
             f"heap_psram={payload.get('free_psram')} "
             f"queue_depth={payload.get('speech_queue_depth')}"
@@ -2203,6 +2209,54 @@ class Handler(BaseHTTPRequestHandler):
                     "generation": generation,
                     "queued_commands": [],
                 }
+            )
+            return
+
+        if str(event_type) in ("reset_session", "new_session"):
+            coordinator = getattr(self.server, "morrow_coordinator", None)
+            if coordinator is None:
+                self._send_json(
+                    {
+                        "type": "event",
+                        "device_id": device_id,
+                        "event_type": event_type,
+                        "session_reset": False,
+                        "error": "Morrow is not configured",
+                        "queued_commands": [],
+                    },
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+
+            result = coordinator.reset_session(device_id)
+            queued_commands = []
+            if result.success:
+                command = make_command(
+                    "speak",
+                    {
+                        "text": "你好，我是小派，今天有什么需要帮忙的？",
+                        "generation": result.generation,
+                    },
+                    interrupt=False,
+                    discardable=False,
+                    coalesce_key="session_reset_reply",
+                )
+                if self._enqueue_command(device_id, command):
+                    queued_commands.append(command["cmd_id"])
+                self._log_info(f"Morrow 会话已由屏幕长按重置: device={device_id}")
+            else:
+                self._log_error(f"Morrow 会话重置失败: device={device_id} error={result.message}")
+            self._send_json(
+                {
+                    "type": "event",
+                    "device_id": device_id,
+                    "event_type": event_type,
+                    "session_reset": result.success,
+                    "generation": result.generation,
+                    "error": result.message,
+                    "queued_commands": queued_commands,
+                },
+                HTTPStatus.OK if result.success else HTTPStatus.CONFLICT,
             )
             return
 
@@ -4948,6 +5002,10 @@ def main():
             save_audio_uploads=httpd.save_audio_uploads,
             recording_callback=record_realtime_capture,
             command_callback=enqueue_realtime_http_command,
+            speech_generation_callback=(
+                (lambda device_id: httpd.morrow_coordinator.generation_for_device(device_id))
+                if httpd.morrow_coordinator else None
+            ),
             device_connected_callback=record_realtime_device_connected,
             debug=args.debug,
         )

@@ -399,6 +399,20 @@ static AudioInputStatus current_audio_input_status()
     return audio_service_get_input_status();
 }
 
+static int current_voice_start_threshold()
+{
+    return current_audio_input_status().active_source == AudioInputSource::kDjiMicReceiver
+               ? CONFIG_STACKCHAN_DJI_VOICE_START_THRESHOLD
+               : kVoiceStartThreshold;
+}
+
+static int current_voice_stop_threshold()
+{
+    return current_audio_input_status().active_source == AudioInputSource::kDjiMicReceiver
+               ? CONFIG_STACKCHAN_DJI_VOICE_STOP_THRESHOLD
+               : kVoiceStopThreshold;
+}
+
 static bool wait_for_voice_input_ready_before_audio_sender(const char* owner)
 {
 #if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT
@@ -444,7 +458,7 @@ static void format_listening_level_line(char* out, size_t out_size, int32_t leve
     }
     AudioInputStatus input = current_audio_input_status();
     snprintf(out, out_size, "level=%ld threshold=%d source=%s source_label=%s",
-             static_cast<long>(level), kVoiceStartThreshold,
+             static_cast<long>(level), current_voice_start_threshold(),
              audio_input_source_name(input.active_source),
              audio_input_source_label(input.active_source));
 }
@@ -453,7 +467,12 @@ class VoiceRecordingGuard {
 public:
     VoiceRecordingGuard()
     {
-        active_ = supervisor_set_voice_recording_active(true, "voice recording begin");
+        lease_ = audio_service_begin_input_lease();
+        active_ = lease_.valid && supervisor_set_voice_recording_active(true, "voice recording begin");
+        if (!active_) {
+            audio_service_end_input_lease(lease_);
+            lease_.valid = false;
+        }
     }
 
     ~VoiceRecordingGuard()
@@ -467,7 +486,14 @@ public:
             return;
         }
         supervisor_set_voice_recording_active(false, "voice recording end");
+        audio_service_end_input_lease(lease_);
+        lease_.valid = false;
         active_ = false;
+    }
+
+    bool valid() const
+    {
+        return active_ && audio_service_input_lease_valid(lease_);
     }
 
     VoiceRecordingGuard(const VoiceRecordingGuard&) = delete;
@@ -475,6 +501,7 @@ public:
 
 private:
     bool active_ = false;
+    AudioInputLease lease_;
 };
 
 static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder, int encoder_frame_samples,
@@ -493,10 +520,11 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
              audio_input_source_name(input.active_source),
              audio_input_source_label(input.active_source));
     VoiceRecordingGuard recording_guard;
-    if (!voice_recording_active) {
+    if (!voice_recording_active || !recording_guard.valid()) {
         set_app1_status("Rejected", "Audio input is gated by supervisor", "", "", false, false);
         return true;
     }
+    const int voice_stop_threshold = current_voice_stop_threshold();
     set_app1_status("Recording", audio_input_source_label(input.active_source), "Sending Opus", "");
     update_listening_light_level(first_samples, first_count);
     std::vector<int16_t> frame(encoder_frame_samples);
@@ -547,7 +575,8 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
     std::vector<int16_t> chunk(kVoiceProbeSamples);
     while (!app1_stop_requested && !voice_listener_paused && !stt_is_final &&
            xiaopai_state_get().generation == state_generation &&
-           !xiaopai_state_get().is_speaking && elapsed_ms < kRecordMaxMs) {
+           !xiaopai_state_get().is_speaking && elapsed_ms < kRecordMaxMs &&
+           recording_guard.valid()) {
         if (!mic_record_blocking(chunk.data(), chunk.size(), kAudioSampleRate)) {
             ESP_LOGW(TAG, "Mic record returned false while recording");
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -557,14 +586,17 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
         int32_t level = average_abs_level(chunk.data(), chunk.size());
         update_listening_light_level(chunk.data(), chunk.size());
         stop_smooth_level = (stop_smooth_level * 3 + level) / 4;
-        silence_ms = stop_smooth_level < kVoiceStopThreshold ? silence_ms + (kVoiceProbeSamples * 1000 / kAudioSampleRate) : 0;
+        silence_ms = stop_smooth_level < voice_stop_threshold
+                         ? silence_ms + (kVoiceProbeSamples * 1000 / kAudioSampleRate)
+                         : 0;
         if (!append_and_send(chunk.data(), chunk.size())) {
             return false;
         }
 
         if (silence_ms >= kSilenceStopMs && elapsed_ms > 600) {
             ESP_LOGI(TAG, "Stop recording due to silence: %d ms level=%ld smooth=%ld stop=%d",
-                     silence_ms, static_cast<long>(level), static_cast<long>(stop_smooth_level), kVoiceStopThreshold);
+                     silence_ms, static_cast<long>(level), static_cast<long>(stop_smooth_level),
+                     voice_stop_threshold);
             break;
         }
     }
@@ -573,7 +605,8 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
         ESP_LOGI(TAG, "Stop recording because final STT was received: %s", stt_text.c_str());
     }
 
-    bool interrupted = voice_listener_paused || xiaopai_state_get().generation != state_generation || xiaopai_state_get().is_speaking;
+    bool interrupted = voice_listener_paused || xiaopai_state_get().generation != state_generation ||
+                       xiaopai_state_get().is_speaking || !recording_guard.valid();
 
     if (!interrupted && !stt_is_final && frame_pos > 0) {
         memset(frame.data() + frame_pos, 0, (encoder_frame_samples - frame_pos) * sizeof(int16_t));
@@ -789,6 +822,11 @@ static void append_capped(std::vector<int16_t>& dst, const int16_t* samples, siz
 static std::vector<int16_t> record_pcm_after_trigger(const std::vector<int16_t>& pre_roll, int32_t trigger_level)
 {
     VoiceRecordingGuard recording_guard;
+    if (!recording_guard.valid()) {
+        ESP_LOGW(TAG, "Local recording rejected: audio source lease unavailable");
+        return {};
+    }
+    const int voice_stop_threshold = current_voice_stop_threshold();
     const size_t max_samples = static_cast<size_t>(kRecordSampleRate) * kRecordMaxMs / 1000;
     std::vector<int16_t> pcm;
     pcm.reserve(max_samples + pre_roll.size() + kVoiceProbeSamples);
@@ -801,7 +839,8 @@ static std::vector<int16_t> record_pcm_after_trigger(const std::vector<int16_t>&
     int32_t smooth_level = trigger_level;
 
     set_app1_status("Recording", "Voice threshold hit", "Pre-roll captured", "");
-    while (!app1_stop_requested && !voice_listener_paused && elapsed_ms < kRecordMaxMs && pcm.size() < max_samples) {
+    while (!app1_stop_requested && !voice_listener_paused && elapsed_ms < kRecordMaxMs &&
+           pcm.size() < max_samples && recording_guard.valid()) {
         if (!mic_record_blocking(chunk.data(), chunk.size(), kRecordSampleRate)) {
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
@@ -810,7 +849,7 @@ static std::vector<int16_t> record_pcm_after_trigger(const std::vector<int16_t>&
         int32_t level = average_abs_level(chunk.data(), chunk.size());
         update_listening_light_level(chunk.data(), chunk.size());
         smooth_level = (smooth_level * 3 + level) / 4;
-        silence_ms = smooth_level < kVoiceStopThreshold ? silence_ms + kRecordChunkMs : 0;
+        silence_ms = smooth_level < voice_stop_threshold ? silence_ms + kRecordChunkMs : 0;
         pcm.insert(pcm.end(), chunk.begin(), chunk.end());
         elapsed_ms += kRecordChunkMs;
 
@@ -860,6 +899,7 @@ static void run_local_record_upload_loop()
     pre_roll.reserve(kPreRollSamples + kVoiceProbeSamples);
     uint32_t last_status_ms = 0;
     int32_t smooth_level = 0;
+    uint32_t pre_roll_source_generation = current_audio_input_status().source_generation;
 
     while (!app1_stop_requested) {
         if (voice_listener_paused) {
@@ -882,19 +922,29 @@ static void run_local_record_upload_loop()
         }
 
         int32_t level = average_abs_level(probe.data(), probe.size());
+        const uint32_t current_source_generation = current_audio_input_status().source_generation;
+        if (current_source_generation != pre_roll_source_generation) {
+            pre_roll.clear();
+            smooth_level = 0;
+            pre_roll_source_generation = current_source_generation;
+            ESP_LOGI(TAG, "Pre-roll reset after input source generation change: generation=%u",
+                     static_cast<unsigned>(current_source_generation));
+        }
         smooth_level = smooth_level == 0 ? level : (smooth_level * 3 + level) / 4;
+        const int voice_start_threshold = current_voice_start_threshold();
+        const int voice_stop_threshold = current_voice_stop_threshold();
         append_capped(pre_roll, probe.data(), probe.size(), kPreRollSamples);
         uint32_t now = M5.millis();
         if (now - last_status_ms > 700) {
             char line[64];
             snprintf(line, sizeof(line), "level=%ld smooth=%ld start=%d", static_cast<long>(level),
-                     static_cast<long>(smooth_level), kVoiceStartThreshold);
+                     static_cast<long>(smooth_level), voice_start_threshold);
             set_app1_status("Listening", line, "Speak to record/upload", "", true, false);
             last_status_ms = now;
         }
 
         if (post_speech_echo_guard_active()) {
-            if (smooth_level >= kVoiceStartThreshold) {
+            if (smooth_level >= voice_start_threshold) {
                 ESP_LOGI(TAG, "Voice threshold ignored during post-speech echo guard: level=%ld smooth=%ld",
                          static_cast<long>(level), static_cast<long>(smooth_level));
             }
@@ -903,10 +953,10 @@ static void run_local_record_upload_loop()
             continue;
         }
 
-        if (!voice_listener_paused && smooth_level >= kVoiceStartThreshold) {
+        if (!voice_listener_paused && smooth_level >= voice_start_threshold) {
             ESP_LOGI(TAG, "Voice threshold triggered: level=%ld smooth=%ld start=%d stop=%d pre_roll=%ums sample_rate=%d",
-                     static_cast<long>(level), static_cast<long>(smooth_level), kVoiceStartThreshold,
-                     kVoiceStopThreshold, kPreRollMs, kRecordSampleRate);
+                     static_cast<long>(level), static_cast<long>(smooth_level), voice_start_threshold,
+                     voice_stop_threshold, kPreRollMs, kRecordSampleRate);
             mark_user_interaction("voice activity");
             request_speak_preempt("voice activity");
             auto pcm = record_pcm_after_trigger(pre_roll, smooth_level);
@@ -1154,6 +1204,7 @@ static void run_realtime_speech_loop()
         }
 
         int32_t level = average_abs_level(probe.data(), probe.size());
+        const int voice_start_threshold = current_voice_start_threshold();
         update_listening_light_level(probe.data(), probe.size());
         uint32_t now = M5.millis();
         if (now - last_status_ms > 700) {
@@ -1161,7 +1212,7 @@ static void run_realtime_speech_loop()
             format_listening_level_line(level_line, sizeof(level_line), level);
             AudioInputStatus input = current_audio_input_status();
             ESP_LOGI(TAG, "语音监听电平: level=%ld threshold=%d source=%s source_label=%s dji_capture=%d",
-                     static_cast<long>(level), kVoiceStartThreshold,
+                     static_cast<long>(level), voice_start_threshold,
                      audio_input_source_name(input.active_source),
                      audio_input_source_label(input.active_source),
                      static_cast<int>(input.dji_receiver_capture_ready));
@@ -1179,19 +1230,19 @@ static void run_realtime_speech_loop()
             break;
         }
         if (post_speech_echo_guard_active()) {
-            if (level >= kVoiceStartThreshold) {
+            if (level >= voice_start_threshold) {
                 AudioInputStatus input = current_audio_input_status();
                 ESP_LOGI(TAG, "语音阈值已忽略: reason=post_speech_echo_guard level=%ld threshold=%d source=%s source_label=%s",
-                         static_cast<long>(level), kVoiceStartThreshold,
+                         static_cast<long>(level), voice_start_threshold,
                          audio_input_source_name(input.active_source),
                          audio_input_source_label(input.active_source));
             }
             continue;
         }
-        if (xiaopai_state_get().can_sample_mic && level >= kVoiceStartThreshold) {
+        if (xiaopai_state_get().can_sample_mic && level >= voice_start_threshold) {
             AudioInputStatus input = current_audio_input_status();
             ESP_LOGI(TAG, "语音阈值触发: level=%ld threshold=%d state=%s source=%s source_label=%s",
-                     static_cast<long>(level), kVoiceStartThreshold, xiaopai_state_name(xiaopai_state_get().state),
+                     static_cast<long>(level), voice_start_threshold, xiaopai_state_name(xiaopai_state_get().state),
                      audio_input_source_name(input.active_source),
                      audio_input_source_label(input.active_source));
             if (xiaopai_state_get().state != LocalVoiceState::DialogSleeping) {

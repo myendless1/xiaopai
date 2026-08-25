@@ -29,6 +29,10 @@ static constexpr int kRecordMaxMs = CONFIG_STACKCHAN_RECORD_MAX_MS;
 static constexpr int kSilenceStopMs = CONFIG_STACKCHAN_SILENCE_STOP_MS;
 static constexpr int kRealtimeSttDrainTimeoutMs = 1800;
 static constexpr int kRealtimeAudioWriteTimeoutMs = 500;
+// esp_transport_ws needs time to finish reading a frame after poll() reports
+// the first TCP bytes. A zero timeout can consume a partial WS header and then
+// report -1, which used to trigger a reconnect in the middle of listening.
+static constexpr int kRealtimeWsFrameReadTimeoutMs = 250;
 static constexpr uint32_t kReplyContinuationTimeoutMs = 30 * 1000;
 static constexpr uint32_t kWaitingReplyTimeoutMs = kReplyContinuationTimeoutMs;
 static constexpr int kTtsStreamSampleRate = 24000;

@@ -18,6 +18,9 @@ enum class AudioInputSource {
 
 struct AudioInputStatus {
     AudioInputSource active_source = AudioInputSource::kInternalMic;
+    AudioInputSource pending_source = AudioInputSource::kInternalMic;
+    uint32_t source_generation = 0;
+    bool source_lost = false;
     bool dji_receiver_detected = false;
     bool dji_receiver_streaming = false;
     bool dji_receiver_capture_ready = false;
@@ -25,6 +28,12 @@ struct AudioInputStatus {
     const char* dji_receiver_manufacturer = "";
     const char* dji_receiver_product = "";
     const char* detail = "";
+};
+
+struct AudioInputLease {
+    AudioInputSource source = AudioInputSource::kInternalMic;
+    uint32_t generation = 0;
+    bool valid = false;
 };
 
 const char* audio_input_source_name(AudioInputSource source);
@@ -45,6 +54,9 @@ bool audio_service_play_opus_frame_24k(const uint8_t* data, size_t len);
 size_t audio_service_read_clean_16k(int16_t* out, size_t samples, TickType_t timeout);
 AudioVadState audio_service_get_vad_state();
 AudioInputStatus audio_service_get_input_status();
+AudioInputLease audio_service_begin_input_lease();
+void audio_service_end_input_lease(const AudioInputLease& lease);
+bool audio_service_input_lease_valid(const AudioInputLease& lease);
 void audio_service_abort_playback();
 void audio_service_dump_state();
 void audio_service_log_diagnostics();

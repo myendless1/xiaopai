@@ -97,6 +97,12 @@ static bool init_camera_once()
     if (camera_initialized) {
         return true;
     }
+    if (!stackchan_power_manager_allow_camera()) {
+        ESP_LOGW(TAG, "Camera start blocked by battery/enumeration power policy");
+        set_tracking_status("Power Gate", "Camera temporarily unavailable", "Battery or USB enumeration", "",
+                            false, false);
+        return false;
+    }
 
     camera_config_t config = {};
     config.pin_pwdn = -1;
@@ -436,7 +442,12 @@ static float clamp_float(float value, float min_value, float max_value)
 
 static void apply_speaker_volume()
 {
-    codec_audio_output_set_volume_percent(speaker_volume_percent);
+    const int limited = stackchan_power_manager_limit_volume(speaker_volume_percent);
+    codec_audio_output_set_volume_percent(limited);
+    if (limited != speaker_volume_percent) {
+        ESP_LOGW(TAG, "Speaker volume limited by power policy: requested=%d applied=%d",
+                 speaker_volume_percent, limited);
+    }
 }
 
 static uint8_t scs_checksum(const uint8_t* data, size_t length_without_checksum)
@@ -687,6 +698,9 @@ static bool ensure_light_strip_ready_locked()
 
 static void set_light_strip_color(uint8_t r, uint8_t g, uint8_t b, int state)
 {
+    r = stackchan_power_manager_limit_rgb(r);
+    g = stackchan_power_manager_limit_rgb(g);
+    b = stackchan_power_manager_limit_rgb(b);
     if (demo_lock_enabled.load()) {
         set_light_strip_demo_lock();
         return;
@@ -830,6 +844,10 @@ static void enable_servo_power()
 
 static bool move_head_to_tracking_angles(float yaw_deg, float pitch_deg, uint16_t time_ms)
 {
+    if (!stackchan_power_manager_allow_servo()) {
+        ESP_LOGW(TAG, "Head move blocked by battery/enumeration power policy");
+        return false;
+    }
     enable_servo_power();
     tracking_yaw_deg = clamp_float(yaw_deg, kTrackingYawMinDeg, kTrackingYawMaxDeg);
     tracking_pitch_deg = clamp_float(pitch_deg, kTrackingPitchMinDeg, kTrackingPitchMaxDeg);

@@ -115,24 +115,100 @@ menu "Xiaopai settings"
         default 1
 
     config STACKCHAN_DJI_MIC_USB_INPUT
-        bool "Enable DJI Mic receiver USB input auto-switch"
-        default n
+        bool "Enable DJI Mic receiver USB input"
+        default y
 
     config STACKCHAN_DJI_MIC_AUTO_START
         bool "Auto start DJI Mic USB input on boot"
         depends on STACKCHAN_DJI_MIC_USB_INPUT
         default n
+        help
+            Delayed boot start only. Audio init must not open USB Host. If a PC
+            USB Serial/JTAG host is detected, auto-start is skipped. Use
+            dji_mic_start after unplugging the PC and attaching the receiver.
 
     config STACKCHAN_DJI_MIC_DRIVE_VBUS
         bool "Drive CoreS3 USB VBUS for DJI Mic"
         depends on STACKCHAN_DJI_MIC_USB_INPUT
-        default n
+        default y
+
+    config STACKCHAN_DJI_MIC_STABLE_MS
+        int "Continuous DJI PCM required before source switch"
+        depends on STACKCHAN_DJI_MIC_USB_INPUT
+        default 800
+        range 100 5000
+
+    config STACKCHAN_DJI_MIC_VBUS_OFF_MS
+        int "DJI VBUS off time before USB host start"
+        depends on STACKCHAN_DJI_MIC_DRIVE_VBUS
+        default 800
+        range 100 5000
+
+    config STACKCHAN_DJI_MIC_HOST_LISTEN_MS
+        int "USB host listen time before enabling VBUS"
+        depends on STACKCHAN_DJI_MIC_DRIVE_VBUS
+        default 400
+        range 0 2000
+
+    config STACKCHAN_DJI_MIC_VBUS_SETTLE_MS
+        int "DJI VBUS settle time after enable"
+        depends on STACKCHAN_DJI_MIC_DRIVE_VBUS
+        default 2000
+        range 100 5000
+
+    choice STACKCHAN_DJI_MIC_CHANNEL_MODE
+        prompt "DJI Mic channel selection"
+        depends on STACKCHAN_DJI_MIC_USB_INPUT
+        default STACKCHAN_DJI_MIC_CHANNEL_AUTO_ONCE
+
+        config STACKCHAN_DJI_MIC_CHANNEL_LEFT
+            bool "Left"
+
+        config STACKCHAN_DJI_MIC_CHANNEL_RIGHT
+            bool "Right"
+
+        config STACKCHAN_DJI_MIC_CHANNEL_MIX
+            bool "Mix left and right"
+
+        config STACKCHAN_DJI_MIC_CHANNEL_AUTO_ONCE
+            bool "Choose strongest channel once per connection"
+    endchoice
+
+    config STACKCHAN_DJI_MIC_DIGITAL_GAIN_PERCENT
+        int "DJI Mic digital gain percent"
+        depends on STACKCHAN_DJI_MIC_USB_INPUT
+        default 100
+        range 25 400
+
+    config STACKCHAN_DJI_VOICE_START_THRESHOLD
+        int "DJI Mic voice start threshold"
+        depends on STACKCHAN_DJI_MIC_USB_INPUT
+        default 900
+        range 50 20000
+
+    config STACKCHAN_DJI_VOICE_STOP_THRESHOLD
+        int "DJI Mic voice stop threshold"
+        depends on STACKCHAN_DJI_MIC_USB_INPUT
+        default 400
+        range 25 10000
 
     config STACKCHAN_DJI_MIC_START_DELAY_MS
         int "Delay before starting DJI Mic USB input after boot"
         depends on STACKCHAN_DJI_MIC_USB_INPUT
-        default 5000
+        default 10000
         range 0 30000
+
+    config STACKCHAN_DJI_MIC_MAX_START_RETRIES
+        int "Maximum DJI USB host start attempts"
+        depends on STACKCHAN_DJI_MIC_USB_INPUT
+        default 3
+        range 1 10
+
+    config STACKCHAN_DJI_MIC_RETRY_BACKOFF_MS
+        int "DJI USB host retry backoff"
+        depends on STACKCHAN_DJI_MIC_USB_INPUT
+        default 2000
+        range 250 30000
 
     config STACKCHAN_DJI_MIC_ENUM_ONLY
         bool "Run only DJI Mic USB descriptor enumeration"
@@ -171,7 +247,7 @@ menu "Xiaopai settings"
     config STACKCHAN_DJI_MIC_UAC_RINGBUF_BYTES
         int "DJI Mic UAC callback ringbuffer bytes"
         depends on STACKCHAN_DJI_MIC_USB_INPUT
-        default 131072
+        default 65536
         range 8192 524288
 
     config STACKCHAN_DJI_MIC_UAC_INTERNAL_BUF_BYTES
@@ -189,6 +265,86 @@ menu "Xiaopai settings"
         int "Fallback USB microphone channels"
         default 2
         range 1 2
+
+    config STACKCHAN_NETWORK_DEBUG
+        bool "Enable permanent Wi-Fi command and log debugging"
+        default y
+        help
+            Receive commands through the normal device command channel and mirror
+            ESP-IDF logs to the server /device/logs endpoint without using USB.
+
+    config STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH
+        int "Pending log lines waiting for immediate upload"
+        depends on STACKCHAN_NETWORK_DEBUG
+        default 64
+        range 8 256
+        help
+            Transport queue only. Each captured line is posted to /device/logs
+            immediately by a dedicated task. If Wi-Fi is down or the uploader
+            is busy, extra lines are dropped instead of overwriting a ring.
+
+    config STACKCHAN_NETWORK_DEBUG_BATCH_LINES
+        int "Maximum log lines per upload"
+        depends on STACKCHAN_NETWORK_DEBUG
+        default 8
+        range 1 20
+        help
+            Lines that arrive while an HTTP post is in flight are sent together
+            on the next immediate upload.
+
+    config STACKCHAN_DJI_MIC_LOW_BATTERY_PROTECTION
+        bool "Stop DJI Mic and USB VBUS on low battery"
+        depends on STACKCHAN_DJI_MIC_USB_INPUT
+        default n
+        help
+            Enable this only when DJI Mic may run from the internal battery.
+            Keep it disabled when an external supply is mandatory: transient
+            battery-voltage dips will still be logged, but they will not stop
+            DJI USB capture or disable VBUS. USB overcurrent safe mode remains
+            active regardless of this setting.
+
+    config STACKCHAN_BATTERY_DJI_START_PERCENT
+        int "Minimum battery percent to start DJI USB"
+        depends on STACKCHAN_DJI_MIC_LOW_BATTERY_PROTECTION
+        default 30
+        range 5 100
+
+    config STACKCHAN_BATTERY_LOW_PERCENT
+        int "Battery percent that triggers load shedding"
+        default 15
+        range 1 50
+
+    config STACKCHAN_BATTERY_LOW_MV
+        int "Battery voltage that triggers load shedding"
+        default 3550
+        range 3200 4000
+
+    config STACKCHAN_BATTERY_CRITICAL_MV
+        int "Battery voltage that triggers safe power-off"
+        default 3400
+        range 3000 3800
+
+    config STACKCHAN_BATTERY_SAMPLE_MS
+        int "Battery monitor sample interval"
+        default 1000
+        range 200 10000
+
+    config STACKCHAN_BATTERY_DEBOUNCE_SAMPLES
+        int "Consecutive low battery samples before action"
+        default 5
+        range 1 30
+
+    config STACKCHAN_BATTERY_RECOVERY_HYSTERESIS_MV
+        int "Battery recovery hysteresis"
+        default 150
+        range 50 400
+
+    config STACKCHAN_BATTERY_EMERGENCY_POWEROFF
+        bool "Shed load after persistent critical battery"
+        default n
+        help
+            Do not call PMIC powerOff. A false low reading a few seconds after
+            boot was causing an automatic restart loop.
 
     config STACKCHAN_RECORD_MAX_MS
         int "Record max milliseconds"

@@ -20,7 +20,9 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_opus_dec.h"
+#include "freertos/idf_additions.h"
 #include "sdkconfig.h"
+#include "xiaopai_psram_task.h"
 #include "xiaopai_state.h"
 
 #include <algorithm>
@@ -1082,19 +1084,15 @@ public:
         }
 #if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT
         active_input_source_ = static_cast<int>(AudioInputSource::kInternalMic);
+        pending_input_source_ = static_cast<int>(AudioInputSource::kInternalMic);
+        input_source_generation_ = 1;
+        input_source_lost_ = false;
         vad_state_ = static_cast<int>(AudioVadState::kUnknown);
 
 #if CONFIG_STACKCHAN_DJI_MIC_AUTO_START
-        ESP_LOGI(TAG, "DJI Mic auto-start enabled");
+        ESP_LOGI(TAG, "DJI Mic auto-start deferred to delayed boot task");
         dji_start_timeout_logged_ = false;
-        dji_start_wait_ticks_ = xTaskGetTickCount();
-        if (!dji_mic_receiver_input_start()) {
-            ESP_LOGE(TAG, "DJI Mic receiver start failed: %s",
-                     dji_mic_receiver_input_status().detail);
-            dji_start_wait_ticks_ = 0;
-        } else {
-            ESP_LOGI(TAG, "DJI Mic接收器输入门控已启用: 收到首帧UAC PCM后切换输入源");
-        }
+        dji_start_wait_ticks_ = 0;
 #else
         ESP_LOGW(TAG, "DJI Mic USB input compiled but not auto-started");
 #endif
@@ -1102,11 +1100,9 @@ public:
         if (!ensure_output_started("audio service init")) {
             ESP_LOGW(TAG, "speaker output init failed; playback unavailable until retry");
         }
-#if !CONFIG_STACKCHAN_DJI_MIC_AUTO_START
-        if (!ensure_internal_input_started("audio service init without DJI auto-start")) {
+        if (!ensure_internal_input_started("audio service init hot standby")) {
             ESP_LOGW(TAG, "internal input init failed; microphone unavailable until retry");
         }
-#endif
 #else
         if (!ensure_output_started("audio service init")) {
             ESP_LOGE(TAG, "speaker output init failed");
@@ -1128,14 +1124,8 @@ public:
         if (!init()) {
             return false;
         }
-        DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
         ensure_output_started("audio service start");
-        if (!dji_receiver_should_own_input(dji) && !dji_receiver_startup_waiting(dji)) {
-            ensure_internal_input_started("audio service start fallback");
-        } else if (dji_receiver_startup_waiting(dji) && last_input_unavailable_log_ticks_ == 0) {
-            ESP_LOGI(TAG, "ES7210输入初始化已延后: 等待DJI Mic首帧UAC PCM，避免USB枚举期间并行采集");
-            last_input_unavailable_log_ticks_ = xTaskGetTickCount();
-        }
+        ensure_internal_input_started("audio service start hot standby");
         if (running_) {
             return true;
         }
@@ -1145,10 +1135,10 @@ public:
         BaseType_t input_ok = pdPASS;
         TaskHandle_t temp_input = nullptr;
         if (input_task_.load() == nullptr) {
-            input_ok = xTaskCreatePinnedToCore(
+            input_ok = xiaopai_task_create_psram(
                 [](void* arg) {
                     static_cast<XiaopaiAudioService*>(arg)->input_task();
-                    vTaskDelete(nullptr);
+                    vTaskDeleteWithCaps(nullptr);
                 },
                 "audio_input_task", 6144, this, 6, &temp_input, 1);
             if (input_ok == pdPASS) {
@@ -1159,10 +1149,10 @@ public:
         BaseType_t output_ok = pdPASS;
         TaskHandle_t temp_output = nullptr;
         if (output_task_.load() == nullptr) {
-            output_ok = xTaskCreate(
+            output_ok = xiaopai_task_create_psram_unpinned(
                 [](void* arg) {
                     static_cast<XiaopaiAudioService*>(arg)->output_task();
-                    vTaskDelete(nullptr);
+                    vTaskDeleteWithCaps(nullptr);
                 },
                 "audio_output_hw", 4096, this, 5, &temp_output);
             if (output_ok == pdPASS) {
@@ -1335,11 +1325,6 @@ public:
             return 0;
         }
 
-        if (dji_exclusive_waiting_for_audio()) {
-            drop_queued_clean_frames();
-            return 0;
-        }
-
         if (!clean_consumer_recent()) {
             drop_queued_clean_frames();
         }
@@ -1398,15 +1383,10 @@ public:
         DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
         AudioInputStatus status;
         AudioInputSource active_source = static_cast<AudioInputSource>(active_input_source_.load());
-#if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT && CONFIG_STACKCHAN_DJI_MIC_AUTO_START
-        TickType_t dji_start_ticks = dji_start_wait_ticks_.load();
-        if (dji_mic_receiver_input_is_enabled() && !dji.capture_ready && dji.identity_confirmed &&
-            dji_start_ticks != 0 && kDjiInputStartupTimeoutMs > 0 &&
-            (xTaskGetTickCount() - dji_start_ticks) < pdMS_TO_TICKS(kDjiInputStartupTimeoutMs)) {
-            active_source = AudioInputSource::kDjiMicReceiver;
-        }
-#endif
         status.active_source = active_source;
+        status.pending_source = static_cast<AudioInputSource>(pending_input_source_.load());
+        status.source_generation = input_source_generation_.load();
+        status.source_lost = input_source_lost_.load();
         status.dji_receiver_detected = dji.detected;
         status.dji_receiver_streaming = dji.audio_streaming;
         status.dji_receiver_capture_ready = dji.capture_ready;
@@ -1415,6 +1395,49 @@ public:
         status.dji_receiver_product = dji.product;
         status.detail = dji.detail;
         return status;
+    }
+
+    AudioInputLease begin_input_lease()
+    {
+        std::lock_guard<std::mutex> lock(input_source_mutex_);
+        AudioInputLease lease;
+        input_lease_count_.fetch_add(1);
+        lease.source = static_cast<AudioInputSource>(active_input_source_.load());
+        lease.generation = input_source_generation_.load();
+        lease.valid = true;
+        leased_source_ = static_cast<int>(lease.source);
+        leased_generation_ = lease.generation;
+        input_source_lost_ = false;
+        ESP_LOGI(TAG, "Audio input lease begin: source=%s generation=%u count=%u",
+                 audio_input_source_name_impl(lease.source), static_cast<unsigned>(lease.generation),
+                 static_cast<unsigned>(input_lease_count_.load()));
+        return lease;
+    }
+
+    void end_input_lease(const AudioInputLease& lease)
+    {
+        if (!lease.valid) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(input_source_mutex_);
+        uint32_t count = input_lease_count_.load();
+        while (count > 0 && !input_lease_count_.compare_exchange_weak(count, count - 1)) {
+        }
+        ESP_LOGI(TAG, "Audio input lease end: source=%s generation=%u valid=%d count=%u",
+                 audio_input_source_name_impl(lease.source), static_cast<unsigned>(lease.generation),
+                 static_cast<int>(input_lease_valid(lease)),
+                 static_cast<unsigned>(input_lease_count_.load()));
+        if (input_lease_count_.load() == 0) {
+            input_source_lost_ = false;
+        }
+    }
+
+    bool input_lease_valid(const AudioInputLease& lease) const
+    {
+        return lease.valid &&
+               lease.generation == input_source_generation_.load() &&
+               lease.source == static_cast<AudioInputSource>(leased_source_.load()) &&
+               !input_source_lost_.load();
     }
 
     void abort_playback()
@@ -1457,6 +1480,19 @@ public:
                  dji.manufacturer != nullptr && dji.manufacturer[0] != '\0' ? dji.manufacturer : "-",
                  dji.product != nullptr && dji.product[0] != '\0' ? dji.product : "-",
                  dji.detail != nullptr ? dji.detail : "");
+        ESP_LOGI(TAG,
+                 "input manager: active=%s pending=%s generation=%u lease_count=%u leased_generation=%u source_lost=%d "
+                 "dji_generation=%u stable=%d callbacks=%u bytes=%u output_samples=%u raw_drops=%u pcm_drops=%u format_errors=%u",
+                 audio_input_source_name_impl(static_cast<AudioInputSource>(active_input_source_.load())),
+                 audio_input_source_name_impl(static_cast<AudioInputSource>(pending_input_source_.load())),
+                 static_cast<unsigned>(input_source_generation_.load()),
+                 static_cast<unsigned>(input_lease_count_.load()),
+                 static_cast<unsigned>(leased_generation_.load()),
+                 static_cast<int>(input_source_lost_.load()),
+                 static_cast<unsigned>(dji.connection_generation), static_cast<int>(dji.stream_stable),
+                 static_cast<unsigned>(dji.callback_count), static_cast<unsigned>(dji.callback_bytes),
+                 static_cast<unsigned>(dji.output_samples), static_cast<unsigned>(dji.raw_drops),
+                 static_cast<unsigned>(dji.pcm_drops), static_cast<unsigned>(dji.format_errors));
     }
 
     bool test_tone(int sample_rate, int tone_hz, int duration_ms, int volume_percent)
@@ -1562,13 +1598,6 @@ private:
             return true;
         }
         DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
-        if (dji_receiver_startup_waiting(dji)) {
-            ESP_LOGI(TAG, "ES7210输入继续延后: reason=%s dji_capture=%d detail=%s",
-                     reason != nullptr ? reason : "-",
-                     static_cast<int>(dji.capture_ready),
-                     dji.detail != nullptr ? dji.detail : "-");
-            return false;
-        }
         if (!codec_.start_input()) {
             ESP_LOGE(TAG, "ES7210 input start failed: reason=%s", reason != nullptr ? reason : "-");
             return false;
@@ -1651,10 +1680,10 @@ private:
         if (!running_ || !afe_ready_ || afe_task_ != nullptr) {
             return;
         }
-        xTaskCreate(
+        xiaopai_task_create_psram_unpinned(
             [](void* arg) {
                 static_cast<XiaopaiAudioService*>(arg)->afe_fetch_task();
-                vTaskDelete(nullptr);
+                vTaskDeleteWithCaps(nullptr);
             },
             "xiaopai_afe_fetch", 6144, this, 4, &afe_task_);
     }
@@ -1707,9 +1736,24 @@ private:
         while (running_) {
             DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
             log_dji_status_if_changed(dji);
-            if (dji_receiver_should_own_input(dji)) {
-                set_active_input_source(AudioInputSource::kDjiMicReceiver, dji,
-                                        "DJI Mic接收器正在采集，内置麦克风停用");
+            const bool dji_ready = dji_receiver_should_own_input(dji);
+            const AudioInputSource desired = dji_ready ? AudioInputSource::kDjiMicReceiver
+                                                       : AudioInputSource::kInternalMic;
+            request_input_source(desired, dji,
+                                 dji_ready ? "DJI Mic稳定采集，提交待切换输入"
+                                           : "DJI Mic不可用，提交内置麦回退");
+
+            const AudioInputSource active =
+                static_cast<AudioInputSource>(active_input_source_.load());
+            if (active == AudioInputSource::kDjiMicReceiver) {
+                if (!dji_ready) {
+                    if (input_lease_count_.load() > 0) {
+                        input_source_lost_ = true;
+                        log_input_unavailable_if_needed(dji);
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                    continue;
+                }
                 size_t usb_read = try_read_dji_receiver(usb16, dji);
                 if (usb_read > 0) {
                     push_clean_samples(usb16.data(), usb_read);
@@ -1719,17 +1763,6 @@ private:
                 }
                 continue;
             }
-            if (dji_receiver_startup_waiting(dji)) {
-                set_active_input_source(AudioInputSource::kDjiMicReceiver, dji,
-                                        dji.detected ? "DJI Mic已接入，等待UAC音频，ES7210输入延后"
-                                                     : "等待DJI Mic USB接收器，ES7210输入延后");
-                drop_queued_clean_frames();
-                log_dji_priority_wait_if_needed(dji);
-                vTaskDelay(pdMS_TO_TICKS(20));
-                continue;
-            }
-            set_active_input_source(AudioInputSource::kInternalMic, dji,
-                                    dji.detected ? "DJI Mic接收器暂不可采集" : "未检测到DJI Mic接收器");
             if (!codec_input_started_.load() && !ensure_internal_input_started("audio input fallback")) {
                 log_input_unavailable_if_needed(dji);
                 vTaskDelay(pdMS_TO_TICKS(20));
@@ -1774,20 +1807,49 @@ private:
         return read;
     }
 
-    void set_active_input_source(AudioInputSource source, const DjiMicReceiverStatus& dji, const char* reason)
+    bool request_input_source(AudioInputSource source, const DjiMicReceiverStatus& dji, const char* reason)
     {
+        std::lock_guard<std::mutex> lock(input_source_mutex_);
         int source_value = static_cast<int>(source);
-        int previous_value = active_input_source_.exchange(source_value);
+        const int previous_pending = pending_input_source_.exchange(source_value);
+        int previous_value = active_input_source_.load();
         if (previous_value == source_value) {
-            return;
+            input_source_lost_ = false;
+            return true;
         }
-        xiaopai_audio_source_commit(source == AudioInputSource::kDjiMicReceiver ? MicSource::DjiMic
-                                                                                 : MicSource::InternalMic,
-                                    reason);
+        if (input_lease_count_.load() > 0 || playing_.load()) {
+            if (previous_pending != source_value) {
+                ESP_LOGI(TAG, "监听输入源延后切换: active=%s pending=%s lease=%u playing=%d reason=%s",
+                         audio_input_source_name_impl(static_cast<AudioInputSource>(previous_value)),
+                         audio_input_source_name_impl(source),
+                         static_cast<unsigned>(input_lease_count_.load()),
+                         static_cast<int>(playing_.load()), reason != nullptr ? reason : "-");
+            }
+            return false;
+        }
+        if (xiaopai_state_get().interaction_state == InteractionState::Recording) {
+            if (previous_pending != source_value) {
+                ESP_LOGI(TAG, "监听输入源延后切换: active=%s pending=%s interaction=recording reason=%s",
+                         audio_input_source_name_impl(static_cast<AudioInputSource>(previous_value)),
+                         audio_input_source_name_impl(source),
+                         reason != nullptr ? reason : "-");
+            }
+            return false;
+        }
+        if (!xiaopai_audio_source_commit(source == AudioInputSource::kDjiMicReceiver ? MicSource::DjiMic
+                                                                                     : MicSource::InternalMic,
+                                         reason)) {
+            return false;
+        }
+        drop_all_clean_frames_for_source_switch();
+        active_input_source_ = source_value;
+        input_source_generation_.fetch_add(1);
+        input_source_lost_ = false;
         AudioInputSource previous = static_cast<AudioInputSource>(previous_value);
-        ESP_LOGI(TAG, "监听输入源切换: from=%s from_label=%s to=%s to_label=%s reason=%s dji_detected=%d dji_streaming=%d dji_capture=%d dji_identity=%d dev=%04x:%04x manufacturer=%s product=%s detail=%s",
+        ESP_LOGI(TAG, "监听输入源切换: from=%s from_label=%s to=%s to_label=%s generation=%u reason=%s dji_detected=%d dji_streaming=%d dji_capture=%d dji_identity=%d dev=%04x:%04x manufacturer=%s product=%s detail=%s",
                  audio_input_source_name_impl(previous), audio_input_source_label_impl(previous),
                  audio_input_source_name_impl(source), audio_input_source_label_impl(source),
+                 static_cast<unsigned>(input_source_generation_.load()),
                  reason != nullptr ? reason : "-",
                  static_cast<int>(dji.detected), static_cast<int>(dji.audio_streaming),
                  static_cast<int>(dji.capture_ready), static_cast<int>(dji.identity_confirmed),
@@ -1795,6 +1857,7 @@ private:
                  dji.manufacturer != nullptr && dji.manufacturer[0] != '\0' ? dji.manufacturer : "-",
                  dji.product != nullptr && dji.product[0] != '\0' ? dji.product : "-",
                  dji.detail != nullptr ? dji.detail : "-");
+        return true;
     }
 
     void log_dji_priority_wait_if_needed(const DjiMicReceiverStatus& dji)
@@ -2078,6 +2141,21 @@ private:
         }
     }
 
+    void drop_all_clean_frames_for_source_switch()
+    {
+        if (read_mutex_ != nullptr && xSemaphoreTake(read_mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+            if (read_block_ != nullptr) {
+                free_block(read_block_);
+                read_block_ = nullptr;
+                read_offset_ = 0;
+            }
+            drop_queued_clean_frames();
+            xSemaphoreGive(read_mutex_);
+            return;
+        }
+        drop_queued_clean_frames();
+    }
+
     void update_energy_vad(const int16_t* data, size_t samples)
     {
         if (data == nullptr || samples == 0) {
@@ -2176,6 +2254,7 @@ private:
     XiaopaiAudioCodec codec_;
     std::mutex init_mutex_;
     std::mutex lifecycle_mutex_;
+    std::mutex input_source_mutex_;
     AudioBlockPool play_pool_;
     AudioBlockPool rec_pool_;
     uint8_t opus_decode_buffer_[kDownstreamFrameSamples * sizeof(int16_t)] = {};
@@ -2208,6 +2287,12 @@ private:
     TickType_t last_input_unavailable_log_ticks_ = 0;
     std::atomic<int> selected_input_channel_{0};
     std::atomic<int> active_input_source_{static_cast<int>(AudioInputSource::kInternalMic)};
+    std::atomic<int> pending_input_source_{static_cast<int>(AudioInputSource::kInternalMic)};
+    std::atomic<uint32_t> input_source_generation_{1};
+    std::atomic<uint32_t> input_lease_count_{0};
+    std::atomic<int> leased_source_{static_cast<int>(AudioInputSource::kInternalMic)};
+    std::atomic<uint32_t> leased_generation_{0};
+    std::atomic<bool> input_source_lost_{false};
     std::atomic<bool> codec_output_started_{false};
     std::atomic<bool> codec_input_started_{false};
     std::atomic<TickType_t> dji_start_wait_ticks_{0};
@@ -2353,6 +2438,21 @@ AudioVadState audio_service_get_vad_state()
 AudioInputStatus audio_service_get_input_status()
 {
     return g_audio_service.input_status();
+}
+
+AudioInputLease audio_service_begin_input_lease()
+{
+    return g_audio_service.begin_input_lease();
+}
+
+void audio_service_end_input_lease(const AudioInputLease& lease)
+{
+    g_audio_service.end_input_lease(lease);
+}
+
+bool audio_service_input_lease_valid(const AudioInputLease& lease)
+{
+    return g_audio_service.input_lease_valid(lease);
 }
 
 void audio_service_abort_playback()
