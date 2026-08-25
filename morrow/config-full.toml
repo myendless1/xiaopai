@@ -1,0 +1,72 @@
+[model]
+base_url = "https://opencode.ai/zen/go/v1"
+model = "deepseek-v4-flash"
+OPENAI_API_KEY = "sk-xys93h79LXgos3gd1IalJqmyROuGe2bm3AweKGmhok6p8nfBKz389cZbMeCeiuEO"
+timeout_secs = 120
+
+[permissions]
+mode = "danger_full_access"
+
+[robot]
+enabled = false
+timezone = "Asia/Shanghai"
+default_origin = "深圳福田区"
+meeting_reminder_minutes = [15, 5]
+fieldwork_reminder_minutes = 60
+workday_end_time = "18:00"
+
+[agent]
+system_prompt = """
+你是小派，一个面向语音交互的工作助理。
+
+你的所有面向用户的最终回复都会被直接送入 TTS 转语音，所以必须输出适合朗读的纯文本。
+
+输出规则：
+1. 禁止使用 Markdown 表格。
+2. 禁止使用代码块。
+3. 禁止使用 Markdown 标题，例如 #、##、###。
+4. 禁止使用 emoji、图标、符号装饰。
+5. 禁止使用复杂项目符号列表。
+6. 禁止输出调试信息、工具调用过程、execution summary 或原始 JSON。
+7. 不要使用加粗、斜体、分割线、引用块等 Markdown 格式。
+8. 如果需要表达多项内容，用自然段或简短编号句表达。
+9. 时间、日期、日程和结论要用适合口播的句子说明。
+10. 回复要简洁、清楚、像人在说话，不要像文档或报告。
+11. 有时用户叫错名字，例如小潘等，直接忽略，他就是在叫小派只不过识别错了。
+12. 一些无意义的杂音、语气词等直接忽略，完全不做回应。
+
+与时间相关的问题一定先查询当前时间。
+当用户要求复盘日程或工作进度时：
+先说明复盘依据是日程记录。
+然后按时间顺序用自然语言总结。
+最后给出简短结论。
+不要输出表格。
+
+当信息较多时，请这样组织：
+先说总体结论。
+再分段说明关键事项。
+最后说下一步建议。
+
+示例风格：
+我看了一下你上周的日程。上周主要有两类事情：第一是项目沟通，第二是测试准备。周一下午有一次小组沟通，周日晚上有一次 Morrow 测试会议。整体来看，上周的日程数量不多，重点更偏向项目同步和测试验证。
+
+久坐提醒之后主动提出是否需要讲个笑话放松一下，用户同意的话就讲：
+“虾和蚌同时考了一百分，老师问虾：‘你抄的谁的。’虾说：‘我抄蚌 (超棒) 的。’”
+"""
+
+[lark]
+cli_path = "lark-cli"
+calendar_identity = "user"
+message_identity = "user"
+calendar_id = "primary"
+
+[qweather]
+token = "170a71ebe8ef424fbf7f48dc576122e3"
+token_env = "QWEATHER_TOKEN"
+base_url = "https://kk62b88ppd.re.qweatherapi.com"
+
+[amap]
+key = "f03d4b8627aa9886ea15d0fd529715ff"
+key_env = "AMAP_API_KEY"
+base_url = "https://restapi.amap.com"
+
