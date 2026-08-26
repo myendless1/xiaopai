@@ -1,0 +1,875 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>与 Morrow 对话</title>
+  <style>
+    :root {
+      --ink: #17211d;
+      --muted: #68736e;
+      --line: rgba(31, 54, 44, .12);
+      --paper: rgba(255, 255, 252, .82);
+      --accent: #19835d;
+      --accent-dark: #0c6243;
+      --accent-soft: #e6f5ee;
+      --warm: #f5efe4;
+      --danger: #a13b35;
+      --shadow: 0 22px 70px rgba(39, 54, 47, .13);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { height: 100%; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at 12% 7%, rgba(238, 187, 108, .22), transparent 26rem),
+        radial-gradient(circle at 89% 88%, rgba(54, 151, 113, .18), transparent 30rem),
+        #f2f3ed;
+      overflow: hidden;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .25;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 160 160' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.10'/%3E%3C/svg%3E");
+    }
+
+    .app {
+      position: relative;
+      width: min(1120px, calc(100% - 36px));
+      height: min(900px, calc(100% - 36px));
+      margin: 18px auto;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      border: 1px solid rgba(255, 255, 255, .8);
+      border-radius: 28px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(22px);
+      overflow: hidden;
+    }
+
+    header {
+      min-height: 88px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 20px 26px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
+
+    .mark {
+      width: 46px;
+      height: 46px;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      color: white;
+      font-family: Georgia, serif;
+      font-size: 23px;
+      border-radius: 15px 15px 15px 5px;
+      background: linear-gradient(145deg, #28966e, #0e6445);
+      box-shadow: 0 9px 24px rgba(20, 122, 84, .22);
+    }
+
+    h1 { margin: 0; font-family: Georgia, "Songti SC", serif; font-size: 21px; letter-spacing: .01em; }
+
+    .meta { margin-top: 4px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; min-width: 0; }
+    .session { max-width: 290px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #a8aea9; box-shadow: 0 0 0 4px rgba(168, 174, 169, .13); }
+    .dot.online { background: #2ba674; box-shadow: 0 0 0 4px rgba(43, 166, 116, .13); }
+    .dot.offline { background: #ce6259; box-shadow: 0 0 0 4px rgba(206, 98, 89, .13); }
+
+    button { font: inherit; }
+
+    .header-actions { display: flex; align-items: center; gap: 10px; }
+    .mode-picker { position: relative; }
+    .mode-picker::after { content: "⌄"; position: absolute; right: 12px; top: 50%; transform: translateY(-55%); color: var(--accent-dark); pointer-events: none; font-size: 13px; }
+    .mode-picker select {
+      min-width: 148px;
+      height: 40px;
+      appearance: none;
+      padding: 0 34px 0 13px;
+      border: 1px solid rgba(31, 54, 44, .14);
+      border-radius: 13px;
+      outline: 0;
+      color: var(--ink);
+      background: rgba(255, 255, 255, .72);
+      font: 600 13px/1 inherit;
+      cursor: pointer;
+    }
+    .mode-picker select:focus { border-color: rgba(25, 131, 93, .45); box-shadow: 0 0 0 3px rgba(25, 131, 93, .08); }
+    .mode-picker select:disabled { opacity: .55; cursor: wait; }
+
+    .new-chat, .admin-button {
+      border: 1px solid rgba(17, 104, 72, .18);
+      border-radius: 13px;
+      padding: 10px 15px;
+      color: var(--accent-dark);
+      background: rgba(231, 246, 239, .76);
+      cursor: pointer;
+      font-weight: 650;
+      transition: transform .16s ease, background .16s ease, box-shadow .16s ease;
+    }
+
+    .new-chat:hover, .admin-button:hover { transform: translateY(-1px); background: #dcf2e8; box-shadow: 0 8px 22px rgba(31, 115, 81, .12); }
+    .new-chat:disabled, .admin-button:disabled { opacity: .5; cursor: wait; transform: none; }
+    .admin-button { display: flex; align-items: center; justify-content: center; gap: 7px; color: #35463e; background: rgba(255, 255, 255, .68); border-color: var(--line); }
+    .admin-icon { font-size: 16px; line-height: 1; }
+
+    main { min-height: 0; overflow-y: auto; scroll-behavior: smooth; }
+    .conversation { width: min(760px, calc(100% - 40px)); min-height: 100%; margin: 0 auto; padding: 34px 0 28px; }
+
+    .welcome { min-height: 100%; display: grid; place-content: center; text-align: center; padding: 50px 20px 90px; }
+    .welcome-symbol { width: 62px; height: 62px; margin: 0 auto 21px; display: grid; place-items: center; border-radius: 50%; color: var(--accent-dark); background: var(--accent-soft); font: 28px Georgia, serif; }
+    .welcome h2 { margin: 0 0 10px; font: 31px/1.2 Georgia, "Songti SC", serif; }
+    .welcome p { max-width: 430px; margin: 0 auto; color: var(--muted); line-height: 1.75; font-size: 14px; }
+
+    .row { display: flex; margin: 0 0 22px; animation: rise .24s ease both; }
+    .row.user { justify-content: flex-end; }
+    .message { max-width: min(82%, 650px); }
+    .speaker { margin: 0 0 7px 2px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+    .user .speaker { text-align: right; margin-right: 2px; }
+    .bubble { padding: 13px 16px; border-radius: 18px; font-size: 15px; line-height: 1.72; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .assistant .bubble { border: 1px solid var(--line); border-top-left-radius: 5px; background: rgba(255, 255, 255, .8); }
+    .user .bubble { color: white; border-top-right-radius: 5px; background: linear-gradient(145deg, #238e67, #126b4b); box-shadow: 0 8px 25px rgba(18, 107, 75, .15); }
+    .row.error .bubble { color: var(--danger); border-color: rgba(161, 59, 53, .18); background: #fff3f0; }
+
+    .typing { display: inline-flex; gap: 5px; align-items: center; min-width: 58px; min-height: 49px; }
+    .typing i { width: 6px; height: 6px; border-radius: 50%; background: #7d9188; animation: pulse 1.15s infinite ease-in-out; }
+    .typing i:nth-child(2) { animation-delay: .15s; }
+    .typing i:nth-child(3) { animation-delay: .3s; }
+
+    footer { padding: 15px 22px 19px; border-top: 1px solid var(--line); background: rgba(251, 251, 247, .72); }
+    .composer { width: min(800px, 100%); margin: 0 auto; display: flex; align-items: flex-end; gap: 10px; padding: 8px 9px 8px 17px; border: 1px solid rgba(34, 67, 52, .16); border-radius: 19px; background: rgba(255, 255, 255, .9); box-shadow: 0 7px 25px rgba(38, 61, 50, .06); transition: border .16s ease, box-shadow .16s ease; }
+    .composer:focus-within { border-color: rgba(25, 131, 93, .42); box-shadow: 0 8px 30px rgba(25, 131, 93, .10); }
+    textarea { flex: 1; min-height: 38px; max-height: 150px; padding: 8px 0 5px; resize: none; border: 0; outline: 0; color: var(--ink); background: transparent; font: 15px/1.5 inherit; }
+    textarea::placeholder { color: #939d98; }
+    textarea:disabled { cursor: wait; }
+    .send { width: 42px; height: 42px; flex: 0 0 auto; display: grid; place-items: center; border: 0; border-radius: 13px; color: white; background: var(--accent); cursor: pointer; box-shadow: 0 7px 18px rgba(25, 131, 93, .2); transition: transform .16s ease, background .16s ease; }
+    .send:hover { transform: translateY(-1px); background: var(--accent-dark); }
+    .send:disabled { opacity: .42; cursor: not-allowed; transform: none; box-shadow: none; }
+    .send svg { width: 19px; height: 19px; }
+    .hint { margin: 8px auto 0; text-align: center; color: #8a938f; font-size: 11px; }
+
+    .admin-overlay { position: fixed; inset: 0; z-index: 100; display: flex; justify-content: flex-end; visibility: hidden; background: rgba(18, 28, 23, 0); transition: background .22s ease, visibility .22s; }
+    .admin-overlay.open { visibility: visible; background: rgba(18, 28, 23, .28); }
+    .admin-panel { width: min(520px, 100%); height: 100%; overflow-y: auto; padding: 24px; background: #f8f8f3; box-shadow: -24px 0 70px rgba(20, 38, 29, .18); transform: translateX(102%); transition: transform .25s ease; }
+    .admin-overlay.open .admin-panel { transform: translateX(0); }
+    .admin-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
+    .admin-head h2 { margin: 0; font: 27px/1.2 Georgia, "Songti SC", serif; }
+    .admin-head p { margin: 7px 0 0; color: var(--muted); font-size: 13px; }
+    .icon-button { width: 38px; height: 38px; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 12px; color: var(--ink); background: white; cursor: pointer; font-size: 22px; line-height: 1; }
+    .admin-section { margin-top: 22px; }
+    .section-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .section-title h3 { margin: 0; font-size: 14px; letter-spacing: .02em; }
+    .text-button { padding: 0; border: 0; color: var(--accent-dark); background: transparent; cursor: pointer; font-size: 12px; font-weight: 650; }
+    .health-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .health-card, .control-card, .device-card { border: 1px solid var(--line); border-radius: 16px; background: rgba(255, 255, 255, .84); }
+    .health-card { min-height: 88px; padding: 14px; }
+    .health-name { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; }
+    .health-indicator { width: 8px; height: 8px; border-radius: 50%; background: #a7ada9; }
+    .health-indicator.good { background: #2ba674; box-shadow: 0 0 0 4px rgba(43,166,116,.1); }
+    .health-indicator.bad { background: #ce6259; box-shadow: 0 0 0 4px rgba(206,98,89,.1); }
+    .health-detail { margin-top: 10px; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+    .control-card { padding: 16px; }
+    .volume-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
+    .volume-value { color: var(--accent-dark); font: 700 22px/1 Georgia, serif; }
+    .device-select { max-width: 240px; height: 36px; padding: 0 28px 0 10px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); background: white; }
+    .range-row { display: grid; grid-template-columns: 1fr auto; gap: 13px; align-items: center; }
+    input[type="range"] { width: 100%; accent-color: var(--accent); }
+    .apply-button { min-width: 74px; height: 38px; border: 0; border-radius: 11px; color: white; background: var(--accent); cursor: pointer; font-weight: 700; }
+    .apply-button:disabled { opacity: .5; cursor: wait; }
+    .control-message { min-height: 18px; margin-top: 9px; color: var(--muted); font-size: 12px; }
+    .control-message.error { color: var(--danger); }
+    .device-list { display: grid; gap: 10px; }
+    .device-card { padding: 14px 15px; }
+    .device-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .device-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #304139; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; font-weight: 700; }
+    .device-state { flex: 0 0 auto; padding: 4px 8px; border-radius: 999px; color: #6d7571; background: #ecefeb; font-size: 11px; font-weight: 700; }
+    .device-state.online { color: #0e704d; background: #dff3e9; }
+    .device-meta { margin-top: 9px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+    .capabilities { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; }
+    .capability { padding: 3px 7px; border-radius: 7px; color: #596660; background: #f0f2ee; font-size: 10px; }
+    .empty-devices { padding: 28px 16px; text-align: center; color: var(--muted); border: 1px dashed rgba(31,54,44,.18); border-radius: 16px; font-size: 13px; }
+    .admin-updated { margin: 24px 0 5px; color: #929a96; text-align: center; font-size: 11px; }
+
+    @keyframes rise { from { opacity: 0; transform: translateY(7px); } }
+    @keyframes pulse { 0%, 70%, 100% { transform: translateY(0); opacity: .42; } 35% { transform: translateY(-4px); opacity: 1; } }
+
+    @media (max-width: 640px) {
+      body { overflow: hidden; }
+      .app { width: 100%; height: 100%; margin: 0; border: 0; border-radius: 0; }
+      header { min-height: 76px; padding: 14px 16px; gap: 10px; }
+      .mark { width: 42px; height: 42px; }
+      h1 { font-size: 18px; }
+      .session { max-width: 150px; }
+      .header-actions { gap: 6px; }
+      .mode-picker select { min-width: 116px; width: 116px; padding-left: 10px; font-size: 12px; }
+      .admin-button { width: 42px; height: 40px; padding: 0; }
+      .admin-label { display: none; }
+      .new-chat { padding: 9px 11px; font-size: 13px; }
+      .conversation { width: calc(100% - 28px); padding-top: 24px; }
+      .message { max-width: 90%; }
+      footer { padding: 11px 12px 13px; }
+      .hint { display: none; }
+    }
+
+    @media (max-width: 480px) {
+      .mark { display: none; }
+      .meta .session, .meta span:nth-last-child(2) { display: none; }
+      .mode-picker select { min-width: 100px; width: 100px; }
+      .new-chat { width: 40px; height: 40px; padding: 0; font-size: 0; }
+      .new-chat::after { content: "＋"; font-size: 19px; }
+      .admin-panel { padding: 19px 16px; }
+      .health-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="brand">
+        <div class="mark" aria-hidden="true">M</div>
+        <div>
+          <h1>与 Morrow 对话</h1>
+          <div class="meta">
+            <span class="dot" id="statusDot"></span>
+            <span id="statusText">正在连接</span>
+            <span>·</span>
+            <span class="session" id="sessionLabel">—</span>
+          </div>
+        </div>
+      </div>
+      <div class="header-actions">
+        <label class="mode-picker" title="切换 Morrow 模式会自动进入全新会话">
+          <select id="modeSelect" aria-label="Morrow 模式" disabled>
+            <option value="">加载模式…</option>
+          </select>
+        </label>
+        <button class="admin-button" id="openAdmin" type="button" title="小派管理">
+          <span class="admin-icon" aria-hidden="true">⚙</span><span class="admin-label">小派管理</span>
+        </button>
+        <button class="new-chat" id="newChat" type="button">＋ 新聊天</button>
+      </div>
+    </header>
+
+    <main id="scrollArea">
+      <section class="conversation" id="conversation" aria-live="polite"></section>
+    </main>
+
+    <footer>
+      <form class="composer" id="composer">
+        <textarea id="messageInput" rows="1" maxlength="20000" placeholder="给 Morrow 发消息…" aria-label="消息"></textarea>
+        <button class="send" id="sendButton" type="submit" aria-label="发送消息">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </form>
+      <div class="hint">Enter 发送 · Shift + Enter 换行</div>
+    </footer>
+  </div>
+
+  <div class="admin-overlay" id="adminOverlay" aria-hidden="true">
+    <aside class="admin-panel" role="dialog" aria-modal="true" aria-labelledby="adminTitle">
+      <div class="admin-head">
+        <div>
+          <h2 id="adminTitle">小派管理</h2>
+          <p>查看运行状态并调整硬件基础设置</p>
+        </div>
+        <button class="icon-button" id="closeAdmin" type="button" aria-label="关闭管理面板">×</button>
+      </div>
+
+      <section class="admin-section">
+        <div class="section-title">
+          <h3>服务连接</h3>
+          <button class="text-button" id="refreshAdmin" type="button">刷新</button>
+        </div>
+        <div class="health-grid">
+          <div class="health-card"><div class="health-name"><i class="health-indicator" id="serverHealthDot"></i>小派服务</div><div class="health-detail" id="serverHealthText">检查中…</div></div>
+          <div class="health-card"><div class="health-name"><i class="health-indicator" id="morrowHealthDot"></i>Morrow</div><div class="health-detail" id="morrowHealthText">检查中…</div></div>
+          <div class="health-card"><div class="health-name"><i class="health-indicator" id="realtimeHealthDot"></i>实时语音</div><div class="health-detail" id="realtimeHealthText">检查中…</div></div>
+          <div class="health-card"><div class="health-name"><i class="health-indicator" id="hardwareHealthDot"></i>小派硬件</div><div class="health-detail" id="hardwareHealthText">检查中…</div></div>
+        </div>
+      </section>
+
+      <section class="admin-section">
+        <div class="section-title"><h3>扬声器音量</h3></div>
+        <div class="control-card">
+          <div class="volume-top">
+            <select class="device-select" id="volumeDevice" aria-label="音量控制设备"></select>
+            <output class="volume-value" id="volumeValue">10%</output>
+          </div>
+          <div class="range-row">
+            <input id="volumeRange" type="range" min="5" max="100" step="5" value="10" aria-label="扬声器音量">
+            <button class="apply-button" id="applyVolume" type="button">应用</button>
+          </div>
+          <div class="control-message" id="volumeMessage">音量会同步到服务器，并在设备在线时下发。</div>
+        </div>
+      </section>
+
+      <section class="admin-section">
+        <div class="section-title"><h3>硬件连接</h3></div>
+        <div class="device-list" id="deviceList"><div class="empty-devices">正在读取设备…</div></div>
+      </section>
+      <div class="admin-updated" id="adminUpdated"></div>
+    </aside>
+  </div>
+
+  <script>
+    const els = {
+      conversation: document.getElementById('conversation'),
+      scrollArea: document.getElementById('scrollArea'),
+      composer: document.getElementById('composer'),
+      input: document.getElementById('messageInput'),
+      send: document.getElementById('sendButton'),
+      newChat: document.getElementById('newChat'),
+      openAdmin: document.getElementById('openAdmin'),
+      closeAdmin: document.getElementById('closeAdmin'),
+      adminOverlay: document.getElementById('adminOverlay'),
+      refreshAdmin: document.getElementById('refreshAdmin'),
+      adminUpdated: document.getElementById('adminUpdated'),
+      serverHealthDot: document.getElementById('serverHealthDot'),
+      serverHealthText: document.getElementById('serverHealthText'),
+      morrowHealthDot: document.getElementById('morrowHealthDot'),
+      morrowHealthText: document.getElementById('morrowHealthText'),
+      realtimeHealthDot: document.getElementById('realtimeHealthDot'),
+      realtimeHealthText: document.getElementById('realtimeHealthText'),
+      hardwareHealthDot: document.getElementById('hardwareHealthDot'),
+      hardwareHealthText: document.getElementById('hardwareHealthText'),
+      volumeDevice: document.getElementById('volumeDevice'),
+      volumeRange: document.getElementById('volumeRange'),
+      volumeValue: document.getElementById('volumeValue'),
+      volumeMessage: document.getElementById('volumeMessage'),
+      applyVolume: document.getElementById('applyVolume'),
+      deviceList: document.getElementById('deviceList'),
+      modeSelect: document.getElementById('modeSelect'),
+      statusDot: document.getElementById('statusDot'),
+      statusText: document.getElementById('statusText'),
+      sessionLabel: document.getElementById('sessionLabel')
+    };
+
+    let sessionId = '';
+    let busy = false;
+    let activeMode = '';
+    let availableModes = [];
+    let adminTimer = null;
+    let adminLoading = false;
+    let volumeDirty = false;
+
+    function setStatus(state, text) {
+      els.statusDot.className = `dot ${state || ''}`;
+      els.statusText.textContent = text;
+    }
+
+    function setBusy(value) {
+      busy = value;
+      els.input.disabled = value;
+      els.send.disabled = value || !els.input.value.trim();
+      els.newChat.disabled = value;
+      els.modeSelect.disabled = value || !availableModes.length;
+    }
+
+    function modeLabel(modeId = activeMode) {
+      return availableModes.find(mode => mode.id === modeId)?.label || 'Morrow';
+    }
+
+    function populateModes(modes, selected) {
+      availableModes = Array.isArray(modes) ? modes : [];
+      activeMode = selected || '';
+      els.modeSelect.replaceChildren();
+      for (const mode of availableModes) {
+        const option = document.createElement('option');
+        option.value = mode.id;
+        option.textContent = mode.label;
+        option.title = mode.description;
+        els.modeSelect.append(option);
+      }
+      if (activeMode) els.modeSelect.value = activeMode;
+      els.modeSelect.disabled = busy || !availableModes.length;
+      els.modeSelect.title = availableModes.find(mode => mode.id === activeMode)?.description || '';
+    }
+
+    function showWelcome() {
+      els.conversation.replaceChildren();
+      const box = document.createElement('div');
+      box.className = 'welcome';
+      const symbol = document.createElement('div');
+      symbol.className = 'welcome-symbol';
+      symbol.textContent = 'M';
+      const title = document.createElement('h2');
+      title.textContent = '今天想聊些什么？';
+      const text = document.createElement('p');
+      text.textContent = '这里的消息会发送给当前配置的 Morrow。点击“新聊天”可以创建一段完全独立的会话。';
+      box.append(symbol, title, text);
+      els.conversation.append(box);
+    }
+
+    function addMessage(role, text, kind = '') {
+      const welcome = els.conversation.querySelector('.welcome');
+      if (welcome) welcome.remove();
+      const row = document.createElement('div');
+      row.className = `row ${role === 'user' ? 'user' : 'assistant'} ${kind}`.trim();
+      const message = document.createElement('div');
+      message.className = 'message';
+      const speaker = document.createElement('div');
+      speaker.className = 'speaker';
+      speaker.textContent = role === 'user' ? '你' : 'Morrow';
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+      bubble.textContent = text;
+      message.append(speaker, bubble);
+      row.append(message);
+      els.conversation.append(row);
+      requestAnimationFrame(() => { els.scrollArea.scrollTop = els.scrollArea.scrollHeight; });
+      return row;
+    }
+
+    function addTyping() {
+      const row = addMessage('assistant', '');
+      row.dataset.typing = 'true';
+      const bubble = row.querySelector('.bubble');
+      bubble.classList.add('typing');
+      bubble.replaceChildren(document.createElement('i'), document.createElement('i'), document.createElement('i'));
+      return row;
+    }
+
+    function contentText(value) {
+      if (typeof value === 'string') return value;
+      if (Array.isArray(value)) return value.map(contentText).filter(Boolean).join('\n');
+      if (!value || typeof value !== 'object') return '';
+      return contentText(value.text ?? value.content ?? value.data ?? value.message ?? '');
+    }
+
+    function normalizeMessage(item) {
+      if (!item || typeof item !== 'object') return null;
+      if (typeof item.user === 'string') return { role: 'user', text: item.user };
+      if (typeof item.assistant === 'string') return { role: 'assistant', text: item.assistant };
+      const rawRole = String(item.role ?? item.type ?? item.kind ?? '').toLowerCase();
+      const role = rawRole.includes('user') || rawRole === 'human' ? 'user'
+        : rawRole.includes('assistant') || rawRole.includes('agent') ? 'assistant' : '';
+      const text = contentText(item.content ?? item.text ?? item.data ?? item.message);
+      return role && text ? { role, text } : null;
+    }
+
+    function historyMessages(payload) {
+      const outer = payload?.session ?? payload ?? {};
+      const session = outer?.session ?? outer;
+      const direct = session?.active_thread?.messages ?? session?.thread?.messages ?? session?.messages;
+      if (Array.isArray(direct) && direct.length) return direct.map(normalizeMessage).filter(Boolean);
+      const turns = Array.isArray(session?.turns) ? session.turns : [];
+      const messages = [];
+      for (const entry of turns) {
+        const turn = entry?.turn ?? entry;
+        const storedMessages = Array.isArray(entry?.messages) ? entry.messages.map(normalizeMessage).filter(Boolean) : [];
+        messages.push(...storedMessages);
+        const prompt = contentText(turn?.prompt ?? turn?.user_message ?? turn?.input);
+        const answer = contentText(turn?.response ?? turn?.assistant_message ?? turn?.output ?? turn?.message);
+        if (prompt && !storedMessages.some(item => item.role === 'user' && item.text === prompt)) {
+          messages.push({ role: 'user', text: prompt });
+        }
+        if (answer && !storedMessages.some(item => item.role === 'assistant' && item.text === answer)) {
+          messages.push({ role: 'assistant', text: answer });
+        }
+      }
+      return messages;
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        ...options,
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
+      });
+      let payload = {};
+      try { payload = await response.json(); } catch (_) {}
+      if (!response.ok) throw new Error(payload.message || `请求失败 (${response.status})`);
+      return payload;
+    }
+
+    function setHealth(dot, textElement, healthy, detail) {
+      dot.className = `health-indicator ${healthy ? 'good' : 'bad'}`;
+      textElement.textContent = detail;
+    }
+
+    function relativeSeen(seconds, isoTime) {
+      if (Number.isFinite(seconds)) {
+        if (seconds < 3) return '刚刚收到心跳';
+        if (seconds < 60) return `${Math.round(seconds)} 秒前收到心跳`;
+        if (seconds < 3600) return `${Math.round(seconds / 60)} 分钟前收到心跳`;
+      }
+      if (isoTime) {
+        const date = new Date(isoTime);
+        if (!Number.isNaN(date.getTime())) return `最后心跳 ${date.toLocaleString('zh-CN', { hour12: false })}`;
+      }
+      return '尚未收到本次服务启动后的心跳';
+    }
+
+    function mergeDevices(livePayload, registryPayload) {
+      const ttl = Number(livePayload?.online_ttl_seconds || registryPayload?.online_ttl_seconds || 90);
+      const merged = new Map();
+      const now = Date.now();
+      for (const item of registryPayload?.devices || []) {
+        if (!item?.device_id) continue;
+        const timestamp = item.last_heartbeat_at || item.last_seen_at || '';
+        const timestampMs = timestamp ? new Date(timestamp).getTime() : 0;
+        merged.set(item.device_id, {
+          ...item,
+          online: timestampMs > 0 && now - timestampMs <= ttl * 1000,
+          seenSeconds: timestampMs > 0 ? Math.max(0, (now - timestampMs) / 1000) : null,
+          seenAt: timestamp,
+          channel: '历史登记'
+        });
+      }
+      for (const item of livePayload?.devices || []) {
+        if (!item?.device_id) continue;
+        const previous = merged.get(item.device_id) || {};
+        merged.set(item.device_id, {
+          ...previous,
+          ...item,
+          online: Boolean(item.online),
+          seenSeconds: Number(item.last_seen_seconds_ago),
+          seenAt: previous.seenAt || '',
+          channel: 'HTTP 心跳'
+        });
+      }
+      for (const realtime of livePayload?.realtime_devices || []) {
+        const deviceId = typeof realtime === 'string' ? realtime : realtime?.device_id;
+        if (!deviceId) continue;
+        const previous = merged.get(deviceId) || {};
+        merged.set(deviceId, {
+          ...previous,
+          ...(typeof realtime === 'object' ? realtime : {}),
+          device_id: deviceId,
+          online: true,
+          seenSeconds: 0,
+          channel: '实时语音 WebSocket'
+        });
+      }
+      return [...merged.values()].sort((left, right) => Number(right.online) - Number(left.online) || left.device_id.localeCompare(right.device_id));
+    }
+
+    function renderDeviceOptions(devices, defaultDeviceId) {
+      const selected = els.volumeDevice.value;
+      els.volumeDevice.replaceChildren();
+      const candidates = devices.filter(device => device.device_id && device.device_id !== 'trace-sim');
+      if (!candidates.length) candidates.push({ device_id: defaultDeviceId || 'default', online: false });
+      for (const device of candidates) {
+        const option = document.createElement('option');
+        option.value = device.device_id;
+        option.textContent = `${device.online ? '在线' : '离线'} · ${device.device_id}`;
+        els.volumeDevice.append(option);
+      }
+      const preferred = candidates.some(device => device.device_id === selected) ? selected
+        : candidates.find(device => device.online)?.device_id
+          || candidates.find(device => device.device_id === defaultDeviceId)?.device_id
+          || candidates[0].device_id;
+      els.volumeDevice.value = preferred;
+    }
+
+    function renderDevices(devices) {
+      els.deviceList.replaceChildren();
+      const visible = devices.filter(device => device.device_id !== 'trace-sim' && device.device_id !== 'default');
+      if (!visible.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-devices';
+        empty.textContent = '尚未发现小派硬件。设备发送心跳后会显示在这里。';
+        els.deviceList.append(empty);
+        return;
+      }
+      const capabilityNames = {
+        internal_mic: '内置麦克风', dji_uac: 'DJI 麦克风', camera: '摄像头', servo: '舵机',
+        network_debug: '网络调试', remote_commands: '远程控制', wifi_log_upload: '日志上传',
+        dji_mic_control: 'DJI 控制'
+      };
+      for (const device of visible) {
+        const card = document.createElement('div');
+        card.className = 'device-card';
+        const line = document.createElement('div');
+        line.className = 'device-line';
+        const id = document.createElement('div');
+        id.className = 'device-id';
+        id.textContent = device.device_id;
+        id.title = device.device_id;
+        const state = document.createElement('span');
+        state.className = `device-state ${device.online ? 'online' : ''}`;
+        state.textContent = device.online ? '在线' : '离线';
+        line.append(id, state);
+        const meta = document.createElement('div');
+        meta.className = 'device-meta';
+        const seen = Number.isFinite(device.seenSeconds) ? device.seenSeconds : null;
+        const pending = Number.isFinite(Number(device.pending_commands)) ? ` · 待执行 ${Number(device.pending_commands)}` : '';
+        meta.textContent = `${relativeSeen(seen, device.seenAt)} · ${device.channel || '设备登记'}${pending}`;
+        card.append(line, meta);
+        const capabilities = Array.isArray(device.capabilities) ? device.capabilities : [];
+        if (capabilities.length) {
+          const box = document.createElement('div');
+          box.className = 'capabilities';
+          for (const capability of capabilities) {
+            const badge = document.createElement('span');
+            badge.className = 'capability';
+            badge.textContent = capabilityNames[capability] || capability;
+            box.append(badge);
+          }
+          card.append(box);
+        }
+        els.deviceList.append(card);
+      }
+    }
+
+    async function loadAdmin() {
+      if (adminLoading) return;
+      adminLoading = true;
+      els.refreshAdmin.disabled = true;
+      try {
+        const [health, liveDevices, registryDevices] = await Promise.all([
+          api('/health'), api('/devices'), api('/v3/devices')
+        ]);
+        const devices = mergeDevices(liveDevices, registryDevices);
+        const onlineDevices = devices.filter(device => device.online && device.device_id !== 'default' && device.device_id !== 'trace-sim');
+        setHealth(els.serverHealthDot, els.serverHealthText, health.ok, `HTTP 8091 正常 · 协议 V${health.protocol_version}`);
+        const morrowReady = Boolean(health.morrow?.connected && health.morrow?.snapshot_received);
+        setHealth(
+          els.morrowHealthDot,
+          els.morrowHealthText,
+          morrowReady,
+          morrowReady ? `已连接 · session ${health.morrow.session}` : health.morrow?.last_error || '尚未完成连接'
+        );
+        const realtimeOk = Boolean(health.realtime?.enabled);
+        setHealth(
+          els.realtimeHealthDot,
+          els.realtimeHealthText,
+          realtimeOk,
+          realtimeOk ? `WebSocket 8092 · ${health.realtime.devices || 0} 个实时连接` : '实时语音未启用'
+        );
+        setHealth(
+          els.hardwareHealthDot,
+          els.hardwareHealthText,
+          onlineDevices.length > 0,
+          onlineDevices.length ? `${onlineDevices.length} 台设备当前在线` : '当前没有设备心跳'
+        );
+        if (!volumeDirty) {
+          const volume = Math.max(5, Math.min(100, Number(health.speaker_volume || 10)));
+          els.volumeRange.value = String(volume);
+          els.volumeValue.textContent = `${volume}%`;
+        }
+        renderDeviceOptions(devices, liveDevices.default_device_id || registryDevices.default_device_id);
+        renderDevices(devices);
+        els.adminUpdated.textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
+      } catch (error) {
+        setHealth(els.serverHealthDot, els.serverHealthText, false, error.message);
+        setHealth(els.morrowHealthDot, els.morrowHealthText, false, '状态不可用');
+        setHealth(els.realtimeHealthDot, els.realtimeHealthText, false, '状态不可用');
+        setHealth(els.hardwareHealthDot, els.hardwareHealthText, false, '状态不可用');
+        els.adminUpdated.textContent = '刷新失败';
+      } finally {
+        adminLoading = false;
+        els.refreshAdmin.disabled = false;
+      }
+    }
+
+    function openAdmin() {
+      els.adminOverlay.classList.add('open');
+      els.adminOverlay.setAttribute('aria-hidden', 'false');
+      loadAdmin();
+      clearInterval(adminTimer);
+      adminTimer = setInterval(loadAdmin, 10000);
+      els.closeAdmin.focus();
+    }
+
+    function closeAdmin() {
+      els.adminOverlay.classList.remove('open');
+      els.adminOverlay.setAttribute('aria-hidden', 'true');
+      clearInterval(adminTimer);
+      adminTimer = null;
+      els.openAdmin.focus();
+    }
+
+    async function applyVolume() {
+      const value = Number(els.volumeRange.value);
+      const deviceId = els.volumeDevice.value || 'default';
+      els.applyVolume.disabled = true;
+      els.volumeMessage.className = 'control-message';
+      els.volumeMessage.textContent = '正在应用音量…';
+      try {
+        const query = new URLSearchParams({ device_id: deviceId, mode: 'set', value: String(value) });
+        await api(`/command/volume?${query}`);
+        volumeDirty = false;
+        els.volumeMessage.textContent = `已将 ${deviceId} 的扬声器音量设为 ${value}%`;
+        await loadAdmin();
+      } catch (error) {
+        els.volumeMessage.className = 'control-message error';
+        els.volumeMessage.textContent = `设置失败：${error.message}`;
+      } finally {
+        els.applyVolume.disabled = false;
+      }
+    }
+
+    function selectSession(id) {
+      sessionId = id;
+      els.sessionLabel.textContent = id;
+      els.sessionLabel.title = id;
+      localStorage.setItem('morrow-web-session', id);
+      if (activeMode) localStorage.setItem('morrow-web-session-mode', activeMode);
+      const url = new URL(location.href);
+      url.searchParams.set('session', id);
+      history.replaceState(null, '', url);
+    }
+
+    async function loadSession(id) {
+      selectSession(id);
+      els.conversation.replaceChildren();
+      try {
+        const payload = await api(`/web/api/sessions/${encodeURIComponent(id)}`);
+        const messages = historyMessages(payload);
+        if (!messages.length) showWelcome();
+        else messages.forEach(message => addMessage(message.role, message.text));
+      } catch (error) {
+        showWelcome();
+        addMessage('assistant', `暂时无法读取这段会话：${error.message}`, 'error');
+      }
+    }
+
+    async function initialise() {
+      setBusy(true);
+      try {
+        const status = await api('/web/api/status');
+        populateModes(status.modes, status.active_mode);
+        if (!status.connected) {
+          setStatus('offline', 'Morrow 未连接');
+          showWelcome();
+          addMessage('assistant', status.error || '请先启动 Morrow 服务。', 'error');
+          return;
+        }
+        setStatus('online', `已连接 · ${modeLabel()}`);
+        const querySession = new URLSearchParams(location.search).get('session');
+        const remembered = localStorage.getItem('morrow-web-session');
+        const rememberedMode = localStorage.getItem('morrow-web-session-mode');
+        if (!querySession && remembered && rememberedMode && activeMode && rememberedMode !== activeMode) {
+          const fresh = await api('/web/api/sessions', { method: 'POST', body: '{}' });
+          await loadSession(fresh.session_id);
+        } else {
+          await loadSession(querySession || remembered || status.default_session || 'default');
+        }
+      } catch (error) {
+        setStatus('offline', '服务不可用');
+        showWelcome();
+        addMessage('assistant', error.message, 'error');
+      } finally {
+        setBusy(false);
+        els.input.focus();
+      }
+    }
+
+    async function sendMessage() {
+      const text = els.input.value.trim();
+      if (!text || busy || !sessionId) return;
+      els.input.value = '';
+      resizeInput();
+      addMessage('user', text);
+      const typing = addTyping();
+      setBusy(true);
+      try {
+        const result = await api(`/web/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
+          method: 'POST', body: JSON.stringify({ message: text })
+        });
+        typing.remove();
+        addMessage('assistant', result.message || 'Morrow 已完成处理，但没有返回文本。');
+      } catch (error) {
+        typing.remove();
+        addMessage('assistant', `消息发送失败：${error.message}`, 'error');
+      } finally {
+        setBusy(false);
+        els.input.focus();
+      }
+    }
+
+    async function createNewChat() {
+      if (busy) return;
+      setBusy(true);
+      try {
+        const result = await api('/web/api/sessions', { method: 'POST', body: '{}' });
+        await loadSession(result.session_id);
+        setStatus('online', `已连接 · ${modeLabel()}`);
+      } catch (error) {
+        addMessage('assistant', `新建聊天失败：${error.message}`, 'error');
+      } finally {
+        setBusy(false);
+        els.input.focus();
+      }
+    }
+
+    async function switchMode() {
+      const requestedMode = els.modeSelect.value;
+      if (!requestedMode || requestedMode === activeMode || busy) return;
+      const previousMode = activeMode;
+      const requestedLabel = modeLabel(requestedMode);
+      setBusy(true);
+      setStatus('', `正在切换到${requestedLabel}`);
+      try {
+        const result = await api('/web/api/morrow/mode', {
+          method: 'POST', body: JSON.stringify({ mode: requestedMode })
+        });
+        activeMode = result.mode.id;
+        els.modeSelect.value = activeMode;
+        els.modeSelect.title = result.mode.description || '';
+        selectSession(result.session_id);
+        showWelcome();
+        setStatus('online', `已连接 · ${result.mode.label}`);
+      } catch (error) {
+        els.modeSelect.value = previousMode;
+        setStatus('offline', '模式切换失败');
+        addMessage('assistant', `模式切换失败：${error.message}`, 'error');
+      } finally {
+        setBusy(false);
+        els.input.focus();
+      }
+    }
+
+    function resizeInput() {
+      els.input.style.height = 'auto';
+      els.input.style.height = `${Math.min(els.input.scrollHeight, 150)}px`;
+      els.send.disabled = busy || !els.input.value.trim();
+    }
+
+    els.composer.addEventListener('submit', event => { event.preventDefault(); sendMessage(); });
+    els.newChat.addEventListener('click', createNewChat);
+    els.openAdmin.addEventListener('click', openAdmin);
+    els.closeAdmin.addEventListener('click', closeAdmin);
+    els.refreshAdmin.addEventListener('click', loadAdmin);
+    els.applyVolume.addEventListener('click', applyVolume);
+    els.volumeRange.addEventListener('input', () => {
+      volumeDirty = true;
+      els.volumeValue.textContent = `${els.volumeRange.value}%`;
+      els.volumeMessage.className = 'control-message';
+      els.volumeMessage.textContent = '点击“应用”后下发到所选设备。';
+    });
+    els.adminOverlay.addEventListener('click', event => {
+      if (event.target === els.adminOverlay) closeAdmin();
+    });
+    els.modeSelect.addEventListener('change', switchMode);
+    els.input.addEventListener('input', resizeInput);
+    els.input.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        sendMessage();
+      }
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && els.adminOverlay.classList.contains('open')) closeAdmin();
+    });
+
+    initialise();
+  </script>
+</body>
+</html>

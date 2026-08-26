@@ -19,6 +19,26 @@ git submodule update --init --recursive
 
 The three Morrow configurations must be paired with the correct runtime mode. Stop the current Morrow server before switching modes because these commands listen on port `3000`.
 
+### Morrow API key
+
+Provider credentials are not stored in the repository TOML files. Every mode reads the key from the current Ubuntu
+user's standard configuration directory:
+
+```text
+${XDG_CONFIG_HOME:-$HOME/.config}/xiaopai/morrow-api-key
+```
+
+Create the directory and move your key file there without `sudo`:
+
+```sh
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/xiaopai"
+mv /path/to/your/key-file "${XDG_CONFIG_HOME:-$HOME/.config}/xiaopai/morrow-api-key"
+chmod 600 "${XDG_CONFIG_HOME:-$HOME/.config}/xiaopai/morrow-api-key"
+```
+
+The file may contain the raw key or a single assignment such as `OPENAI_API_KEY="..."`. It is parsed as data and
+never executed as a shell script. Override the location with `MORROW_API_KEY_FILE=/another/path` when needed.
+
 Use the controller script to select a mode:
 
 ```sh

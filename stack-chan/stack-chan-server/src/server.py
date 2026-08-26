@@ -32,6 +32,7 @@ from morrow_coordinator import (
     command_store_segment_sink,
     parse_expression_tags,
 )
+from morrow_web import MorrowWebError, MorrowWebGateway
 from realtime_server import RealtimeConfig, RealtimeManager
 from realtime_protocol import ota_config
 from yunet_service import YunetFaceService
@@ -1334,6 +1335,7 @@ class AliyunVoiceServer(ThreadingHTTPServer):
     morrow_coordinator: MorrowTurnCoordinator | None
     morrow_notice_stop_event: threading.Event
     morrow_notice_thread: threading.Thread | None
+    morrow_web_gateway: MorrowWebGateway
     debug_log: bool
     device_lock: threading.Lock
     face_detector_backend: str
@@ -1414,6 +1416,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path, query = self._path_query()
+        if path in ("/web", "/web/"):
+            self._handle_web_page()
+            return
+        if path == "/web/api/status":
+            self._send_json(self.server.morrow_web_gateway.status())
+            return
+        if path.startswith("/web/api/sessions/"):
+            session_id = urllib.parse.unquote(path[len("/web/api/sessions/") :])
+            if not session_id or "/" in session_id:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            try:
+                session = self.server.morrow_web_gateway.get_session(session_id)
+                self._send_json({"session_id": session_id, "session": session})
+            except MorrowWebError as exc:
+                self._send_json({"type": "error", "message": str(exc)}, exc.status)
+            return
         if path in ("/", "/health"):
             self._send_json(
                 {
@@ -1468,6 +1487,7 @@ class Handler(BaseHTTPRequestHandler):
                         "queued_total": self.server.sedentary_reminder_queued_total,
                     },
                     "morrow": self._morrow_health(),
+                    "web_chat": "/web",
                     "commands": self._command_health(),
                     "devices": self._device_health(),
                     "realtime": self._realtime_status(),
@@ -1590,6 +1610,38 @@ class Handler(BaseHTTPRequestHandler):
         path, query = self._path_query()
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length) if length > 0 else b""
+        if path == "/web/api/morrow/mode":
+            try:
+                payload = json.loads(body.decode("utf-8")) if body else {}
+                if not isinstance(payload, dict):
+                    raise MorrowWebError("request body must be a JSON object", 400)
+                result = self.server.morrow_web_gateway.switch_mode(payload.get("mode", ""))
+                self._send_json(result)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._send_json({"type": "error", "message": "invalid JSON body"}, HTTPStatus.BAD_REQUEST)
+            except MorrowWebError as exc:
+                self._send_json({"type": "error", "message": str(exc)}, exc.status)
+            return
+        if path == "/web/api/sessions":
+            try:
+                self._send_json(self.server.morrow_web_gateway.create_session(), HTTPStatus.CREATED)
+            except MorrowWebError as exc:
+                self._send_json({"type": "error", "message": str(exc)}, exc.status)
+            return
+        if path.startswith("/web/api/sessions/") and path.endswith("/messages"):
+            session_path = path[len("/web/api/sessions/") : -len("/messages")]
+            session_id = urllib.parse.unquote(session_path.rstrip("/"))
+            try:
+                payload = json.loads(body.decode("utf-8")) if body else {}
+                if not isinstance(payload, dict):
+                    raise MorrowWebError("request body must be a JSON object", 400)
+                result = self.server.morrow_web_gateway.send_message(session_id, payload.get("message", ""))
+                self._send_json(result)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._send_json({"type": "error", "message": "invalid JSON body"}, HTTPStatus.BAD_REQUEST)
+            except MorrowWebError as exc:
+                self._send_json({"type": "error", "message": str(exc)}, exc.status)
+            return
         if path == "/upload":
             self._handle_upload(body)
             return
@@ -1644,6 +1696,27 @@ class Handler(BaseHTTPRequestHandler):
     def _path_query(self):
         parsed = urllib.parse.urlparse(self.path)
         return parsed.path, urllib.parse.parse_qs(parsed.query)
+
+    def _handle_web_page(self) -> None:
+        page_path = os.path.join(self.server.static_dir, "web", "index.html")
+        try:
+            with open(page_path, "rb") as handle:
+                content = handle.read()
+        except OSError as exc:
+            self._log_error(f"网页加载失败: path={page_path} error={exc}")
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "web chat page is unavailable")
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+            "connect-src 'self'; img-src 'self' data:",
+        )
+        self.end_headers()
+        self.wfile.write(content)
 
     def _handle_v3_devices(self) -> None:
         now = time.time()
@@ -4933,6 +5006,13 @@ def main():
         reconnect_min=args.morrow_reconnect_min,
         reconnect_max=args.morrow_reconnect_max,
     ) if args.morrow_base_url else None
+    httpd.morrow_web_gateway = MorrowWebGateway(
+        base_url=args.morrow_base_url,
+        default_session=args.morrow_session,
+        auth_token=args.morrow_auth_token,
+        connect_timeout=args.morrow_connect_timeout,
+        turn_timeout=args.morrow_turn_timeout,
+    )
     httpd.morrow_coordinator = MorrowTurnCoordinator(
         httpd.morrow_client,
         command_store_segment_sink(
@@ -5078,6 +5158,7 @@ def main():
             else "禁用"
         )
     )
+    log_print(f"  网页对话: http://{args.host}:{args.port}/web")
     if args.debug:
         log_print("  调试: 启用")
         log_print(f"  健康检查: http://127.0.0.1:{args.port}/health")

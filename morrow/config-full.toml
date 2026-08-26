@@ -1,7 +1,7 @@
 [model]
-base_url = "https://opencode.ai/zen/go/v1"
+base_url = "https://ark.cn-beijing.volces.com/api/coding/v3"
 model = "deepseek-v4-flash"
-OPENAI_API_KEY = "sk-xys93h79LXgos3gd1IalJqmyROuGe2bm3AweKGmhok6p8nfBKz389cZbMeCeiuEO"
+api_key_env = "OPENAI_API_KEY"
 timeout_secs = 120
 
 [permissions]

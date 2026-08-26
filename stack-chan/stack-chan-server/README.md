@@ -216,6 +216,26 @@ Final ASR text is sent as a Morrow `start_turn` prompt over the default session 
 
 At server startup, Morrow WebSocket mode also opens a long-lived listener on `/api/sessions/default/ws` for proactive `robot_notice` messages. Each `robot_notice.data.text` is queued as Xiaopai speech for the currently online device; this listener is independent of user-triggered ASR turns.
 
+### Morrow web chat
+
+After starting Morrow with the desired config and starting this server, open:
+
+```text
+http://<server-ip>:8091/web
+```
+
+The page restores the selected Morrow session, sends messages through the 8091 server, and creates a distinct
+Morrow session whenever **New chat** is selected. Morrow's port (3000 by default) can remain private. The page uses
+`MORROW_BASE_URL`, `MORROW_SESSION`, `MORROW_AUTH_TOKEN`, and the existing Morrow timeout settings.
+
+The mode selector exposes the allowlisted configurations as **General Q&A** (`nolark`) and **Feishu Office
+Assistant** (`lark`). Switching runs the workspace `start_morrow.sh` controller and automatically creates and selects
+a fresh session so context from different tool configurations is never mixed.
+
+The **Xiaopai Management** drawer uses the existing `/health`, `/devices`, `/v3/devices`, and `/command/volume`
+interfaces to show service/Morrow/realtime status, distinguish live hardware heartbeats from stale registry records,
+and set the server-owned physical speaker volume for a selected device. It refreshes while open every ten seconds.
+
 `POST /upload-audio`
 
 Alias for `/upload`. The firmware uses this route in background listening mode.

@@ -4,11 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # Runtime configuration
-MORROW_BIN="${MORROW_BIN:-/home/myendless/.local/bin/morrow}"
+MORROW_BIN="${MORROW_BIN:-$HOME/.local/bin/morrow}"
 HOST="${MORROW_HOST:-0.0.0.0}"
 PORT="${MORROW_PORT:-3000}"
 LOG_FILE="${MORROW_LOG:-/tmp/morrow-server.log}"
 HEALTH_HOST="${MORROW_HEALTH_HOST:-127.0.0.1}"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+API_KEY_FILE="${MORROW_API_KEY_FILE:-$CONFIG_HOME/xiaopai/morrow-api-key}"
 
 usage() {
   cat >&2 <<EOF
@@ -49,6 +51,49 @@ case "$MODE" in
     ;;
 esac
 
+# Keep provider credentials outside the repository. The file may contain
+# either the raw key or one OPENAI_API_KEY="..." assignment. It is parsed as
+# data and is never sourced as shell code.
+API_KEY_DIR="$(dirname -- "$API_KEY_FILE")"
+mkdir -p "$API_KEY_DIR"
+chmod 700 "$API_KEY_DIR" 2>/dev/null || true
+if [ ! -r "$API_KEY_FILE" ]; then
+  cat >&2 <<EOF
+Error: Morrow API key file is not readable: $API_KEY_FILE
+
+Create it without sudo, then restrict its permissions:
+  mkdir -p "$API_KEY_DIR"
+  mv /path/to/your/key-file "$API_KEY_FILE"
+  chmod 600 "$API_KEY_FILE"
+
+The file may contain either the raw API key or:
+  OPENAI_API_KEY="your-api-key"
+EOF
+  exit 1
+fi
+
+KEY_LINE="$(awk 'NF && $1 !~ /^#/ { sub(/\r$/, ""); print; exit }' "$API_KEY_FILE")"
+if [[ "$KEY_LINE" =~ ^[[:space:]]*(export[[:space:]]+)?OPENAI_API_KEY[[:space:]]*= ]]; then
+  OPENAI_API_KEY_VALUE="${KEY_LINE#*=}"
+else
+  OPENAI_API_KEY_VALUE="$KEY_LINE"
+fi
+OPENAI_API_KEY_VALUE="${OPENAI_API_KEY_VALUE#"${OPENAI_API_KEY_VALUE%%[![:space:]]*}"}"
+OPENAI_API_KEY_VALUE="${OPENAI_API_KEY_VALUE%"${OPENAI_API_KEY_VALUE##*[![:space:]]}"}"
+if [[ "$OPENAI_API_KEY_VALUE" == \"*\" || "$OPENAI_API_KEY_VALUE" == \'*\' ]]; then
+  OPENAI_API_KEY_VALUE="${OPENAI_API_KEY_VALUE:1:${#OPENAI_API_KEY_VALUE}-2}"
+fi
+if [ -z "$OPENAI_API_KEY_VALUE" ]; then
+  echo "Error: Morrow API key file is empty: $API_KEY_FILE" >&2
+  exit 1
+fi
+if ! chmod 600 "$API_KEY_FILE" 2>/dev/null; then
+  echo "Error: cannot restrict Morrow API key file permissions to 600: $API_KEY_FILE" >&2
+  exit 1
+fi
+export OPENAI_API_KEY="$OPENAI_API_KEY_VALUE"
+unset OPENAI_API_KEY_VALUE KEY_LINE
+
 # Morrow must reach its model provider directly. Do not inherit stale proxy
 # settings from the interactive shell, env.sh, cron, or a service manager.
 unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
@@ -82,6 +127,7 @@ echo "  Binary: $MORROW_BIN"
 echo "  Host:   $HOST"
 echo "  Port:   $PORT"
 echo "  Log:    $LOG_FILE"
+echo "  Key:    $API_KEY_FILE"
 echo "  Proxy:  disabled for Morrow"
 echo
 
