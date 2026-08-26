@@ -17,7 +17,7 @@ usage() {
 Usage: $0 <lark|nolark|demo>
 
   lark    Load morrow/config-full.toml and enable Feishu tools with --robot.
-  nolark  Load morrow/config-final-event.toml without registering Feishu tools.
+  nolark  Load morrow/config-final-event.toml with local shell commands, without registering Feishu tools.
   demo    Load morrow/config-demo.toml for the scripted final-event demo.
 EOF
 }
@@ -37,7 +37,7 @@ case "$MODE" in
   nolark)
     CONFIG_FILE="$SCRIPT_DIR/morrow/config-final-event.toml"
     ROBOT_ARGS=()
-    TOOL_MODE="Q&A only; Feishu tools not registered"
+    TOOL_MODE="Local shell enabled; Feishu tools not registered"
     ;;
   demo)
     CONFIG_FILE="$SCRIPT_DIR/morrow/config-demo.toml"

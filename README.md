@@ -58,7 +58,7 @@ morrow --config /home/myendless/xiaopai/morrow/config-demo.toml \
 
 ### Final-event Q&A mode
 
-This mode loads `config-final-event.toml` for on-site conversation and project Q&A only. Do not add `--robot`; without that flag, Morrow does not register the Feishu, weather, or map tools.
+This mode loads `config-final-event.toml` for on-site conversation and project Q&A. Local shell commands are allowed, but do not add `--robot`; without that flag, Morrow does not register the Feishu, weather, or map tools.
 
 ```sh
 morrow --config /home/myendless/xiaopai/morrow/config-final-event.toml \
