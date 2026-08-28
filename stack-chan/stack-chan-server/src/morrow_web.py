@@ -85,6 +85,7 @@ class MorrowWebGateway:
         urlopen: Callable[..., Any] = urllib.request.urlopen,
         start_script: str = "",
         run_command: Callable[..., Any] = subprocess.run,
+        device_session_switcher: Callable[[str], Any] | None = None,
     ) -> None:
         self.base_url = str(base_url or "").strip()
         self.default_session = validate_session_id(default_session or "default")
@@ -98,6 +99,7 @@ class MorrowWebGateway:
             or os.path.join(os.path.dirname(__file__), "..", "..", "..", "start_morrow.sh")
         )
         self.run_command = run_command
+        self.device_session_switcher = device_session_switcher
         self._session_locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
         self._mode_lock = threading.Lock()
@@ -163,10 +165,20 @@ class MorrowWebGateway:
             if self._mode_from_status(upstream) != mode:
                 raise MorrowWebError("Morrow started with an unexpected configuration", 502)
             new_session = self.create_session()
+            device_session_id = ""
+            if self.device_session_switcher is not None:
+                device_session = self._create_session("xiaopai")
+                device_session_id = device_session["session_id"]
+                try:
+                    self.device_session_switcher(device_session_id)
+                except Exception as exc:
+                    raise MorrowWebError(f"could not switch Xiaopai Morrow session: {exc}", 502) from exc
+                self.default_session = device_session_id
             return {
                 "mode": {key: selected[key] for key in ("id", "label", "description")},
                 "session_id": new_session["session_id"],
                 "session": new_session["session"],
+                "xiaopai_session_id": device_session_id,
                 "morrow": upstream,
             }
         finally:
@@ -178,7 +190,10 @@ class MorrowWebGateway:
         return self._request_json("GET", f"/api/sessions/{self._quote(session_id)}")
 
     def create_session(self) -> dict[str, Any]:
-        session_id = f"web-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+        return self._create_session("web")
+
+    def _create_session(self, prefix: str) -> dict[str, Any]:
+        session_id = f"{prefix}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
         upstream = self._request_json("POST", f"/api/sessions/{self._quote(session_id)}")
         return {"session_id": session_id, "session": upstream}
 

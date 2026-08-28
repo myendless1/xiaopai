@@ -97,6 +97,43 @@ class MorrowClientTest(unittest.TestCase):
         self.assertEqual(ws.sent[-1], {"type": "cancel_turn", "data": {"turn_id": "turn-7"}})
         client.stop()
 
+    def test_switch_session_reconnects_to_new_session_and_waits_for_snapshot(self):
+        first = FakeWebSocket()
+        second = FakeWebSocket()
+        second.frames.put(json.dumps({"type": "snapshot", "data": {}}))
+        sockets = queue.Queue()
+        sockets.put(first)
+        sockets.put(second)
+        urls = []
+
+        def factory(url, **_kwargs):
+            urls.append(url)
+            return sockets.get(timeout=0.2)
+
+        client = MorrowClient(
+            base_url="http://morrow:3000",
+            websocket_factory=factory,
+            reconnect_min=0.01,
+            reconnect_max=0.02,
+        )
+        client.start()
+        first.frames.put(json.dumps({"type": "snapshot", "data": {}}))
+        self.assertTrue(client.wait_ready(0.2))
+
+        client.switch_session("xiaopai-new", timeout=0.5)
+
+        self.assertTrue(first.closed)
+        self.assertTrue(client.ready)
+        self.assertEqual(client.session, "xiaopai-new")
+        self.assertEqual(
+            urls,
+            [
+                "ws://morrow:3000/api/sessions/default/ws",
+                "ws://morrow:3000/api/sessions/xiaopai-new/ws",
+            ],
+        )
+        client.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

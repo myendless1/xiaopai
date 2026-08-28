@@ -154,6 +154,7 @@ class MorrowWebGatewayTest(unittest.TestCase):
 
     def test_switch_mode_runs_allowlisted_script_and_returns_fresh_session(self):
         commands = []
+        switched_sessions = []
 
         def run_command(command, **kwargs):
             commands.append((command, kwargs))
@@ -170,12 +171,16 @@ class MorrowWebGatewayTest(unittest.TestCase):
             urlopen=urlopen,
             start_script="/bin/true",
             run_command=run_command,
+            device_session_switcher=switched_sessions.append,
         )
         result = gateway.switch_mode("lark")
 
         self.assertEqual(commands[0][0], ["/bin/true", "lark"])
         self.assertEqual(result["mode"]["label"], "飞书办公助手")
         self.assertTrue(result["session_id"].startswith("web-"))
+        self.assertTrue(result["xiaopai_session_id"].startswith("xiaopai-"))
+        self.assertEqual(switched_sessions, [result["xiaopai_session_id"]])
+        self.assertEqual(gateway.default_session, result["xiaopai_session_id"])
 
     def test_switch_mode_rejects_values_outside_allowlist(self):
         with self.assertRaises(MorrowWebError) as raised:

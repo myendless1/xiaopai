@@ -75,6 +75,9 @@ class MorrowClient:
         self._ws: Any = None
         self._send_lock = threading.Lock()
         self._state_lock = threading.Lock()
+        self._session_lock = threading.Lock()
+        self._session_generation = 0
+        self._reconnect_now = threading.Event()
         self._morrow_turn_id = ""
         self.last_message_at = 0.0
         self.last_notice_at = 0.0
@@ -100,11 +103,13 @@ class MorrowClient:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
+        self._reconnect_now.clear()
         self._thread = threading.Thread(target=self._connection_loop, name="morrow-client", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
+        self._reconnect_now.set()
         self._ready.clear()
         self._connected.clear()
         ws = self._ws
@@ -116,6 +121,39 @@ class MorrowClient:
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=self.connect_timeout + 1)
+
+    def switch_session(self, session: str, timeout: float | None = None) -> None:
+        """Reconnect this client to a different, already-created Morrow session."""
+        session = str(session or "").strip()
+        if not session:
+            raise ValueError("Morrow session is required")
+        ws_url = build_morrow_ws_url(self.base_url, session)
+        if not ws_url:
+            raise RuntimeError("Morrow WebSocket URL is empty")
+
+        with self._session_lock:
+            if session == self.session and self.ready:
+                return
+            self.session = session
+            self.ws_url = ws_url
+            self._session_generation += 1
+            self._ready.clear()
+            self._connected.clear()
+            ws = self._ws
+
+        # Closing the old socket retires its reader.  The separate wake event
+        # skips any reconnect backoff left over from the Morrow process restart.
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+        self._reconnect_now.set()
+        self.start()
+        wait_timeout = self.connect_timeout if timeout is None else max(0.1, float(timeout))
+        if not self._ready.wait(wait_timeout):
+            detail = self.last_error or "snapshot was not received"
+            raise RuntimeError(f"Morrow session switch failed: {detail}")
 
     def wait_ready(self, timeout: float | None = None) -> bool:
         self.start()
@@ -156,17 +194,18 @@ class MorrowClient:
                 raise RuntimeError("Morrow disconnected before send")
             self._ws.send(payload)
 
-    def _connect(self) -> Any:
+    def _connect(self, ws_url: str | None = None) -> Any:
+        ws_url = ws_url or self.ws_url
         headers = [f"Authorization: Bearer {self.auth_token}"] if self.auth_token else []
         if self._websocket_factory is not None:
-            ws = self._websocket_factory(self.ws_url, timeout=self.connect_timeout, header=headers)
+            ws = self._websocket_factory(ws_url, timeout=self.connect_timeout, header=headers)
             self._disable_read_timeout(ws)
             return ws
         try:
             import websocket  # type: ignore
         except Exception as exc:
             raise RuntimeError("websocket-client is required for Morrow") from exc
-        ws = websocket.create_connection(self.ws_url, timeout=self.connect_timeout, header=headers)
+        ws = websocket.create_connection(ws_url, timeout=self.connect_timeout, header=headers)
         self._disable_read_timeout(ws)
         return ws
 
@@ -181,12 +220,20 @@ class MorrowClient:
         delay = self.reconnect_min
         while not self._stop.is_set():
             try:
-                self._ws = self._connect()
+                with self._session_lock:
+                    ws_url = self.ws_url
+                    session_generation = self._session_generation
+                ws = self._connect(ws_url)
+                with self._session_lock:
+                    if session_generation != self._session_generation:
+                        ws.close()
+                        continue
+                    self._ws = ws
                 self._connected.set()
                 self._ready.clear()
                 self.last_error = ""
                 delay = self.reconnect_min
-                self._read_connection()
+                self._read_connection(session_generation)
                 if not self._stop.is_set():
                     raise RuntimeError("Morrow WebSocket closed")
             except Exception as exc:
@@ -208,15 +255,20 @@ class MorrowClient:
                         ws.close()
                     except Exception:
                         pass
-            if self._stop.wait(delay):
+            if self._stop.is_set():
                 break
+            self._reconnect_now.wait(delay)
+            self._reconnect_now.clear()
             delay = min(self.reconnect_max, delay * 2)
 
-    def _read_connection(self) -> None:
+    def _read_connection(self, session_generation: int) -> None:
         while not self._stop.is_set():
             raw = self._ws.recv()
             if raw in (None, ""):
                 return
+            with self._session_lock:
+                if session_generation != self._session_generation:
+                    return
             try:
                 message = json.loads(raw)
             except (TypeError, json.JSONDecodeError):

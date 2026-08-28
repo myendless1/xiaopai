@@ -5154,6 +5154,12 @@ def main():
         auth_token=args.morrow_auth_token,
         connect_timeout=args.morrow_connect_timeout,
         turn_timeout=args.morrow_turn_timeout,
+        device_session_switcher=(
+            lambda session_id: httpd.morrow_client.switch_session(
+                session_id,
+                timeout=args.morrow_connect_timeout,
+            )
+        ) if httpd.morrow_client else None,
     )
     httpd.morrow_coordinator = MorrowTurnCoordinator(
         httpd.morrow_client,
