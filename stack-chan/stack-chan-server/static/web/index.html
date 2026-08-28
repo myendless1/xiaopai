@@ -166,7 +166,7 @@
 
     .admin-overlay { position: fixed; inset: 0; z-index: 100; display: flex; justify-content: flex-end; visibility: hidden; background: rgba(18, 28, 23, 0); transition: background .22s ease, visibility .22s; }
     .admin-overlay.open { visibility: visible; background: rgba(18, 28, 23, .28); }
-    .admin-panel { width: min(520px, 100%); height: 100%; overflow-y: auto; padding: 24px; background: #f8f8f3; box-shadow: -24px 0 70px rgba(20, 38, 29, .18); transform: translateX(102%); transition: transform .25s ease; }
+    .admin-panel { width: max(520px, 50vw); max-width: 100%; height: 100%; overflow-y: auto; padding: 24px; background: #f8f8f3; box-shadow: -24px 0 70px rgba(20, 38, 29, .18); transform: translateX(102%); transition: transform .25s ease; }
     .admin-overlay.open .admin-panel { transform: translateX(0); }
     .admin-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
     .admin-head h2 { margin: 0; font: 27px/1.2 Georgia, "Songti SC", serif; }
@@ -188,12 +188,46 @@
     .volume-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
     .volume-value { color: var(--accent-dark); font: 700 22px/1 Georgia, serif; }
     .device-select { max-width: 240px; height: 36px; padding: 0 28px 0 10px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); background: white; }
+    .device-select:disabled { color: var(--muted); background: #f1f3ef; cursor: not-allowed; }
     .range-row { display: grid; grid-template-columns: 1fr auto; gap: 13px; align-items: center; }
     input[type="range"] { width: 100%; accent-color: var(--accent); }
     .apply-button { min-width: 74px; height: 38px; border: 0; border-radius: 11px; color: white; background: var(--accent); cursor: pointer; font-weight: 700; }
     .apply-button:disabled { opacity: .5; cursor: wait; }
     .control-message { min-height: 18px; margin-top: 9px; color: var(--muted); font-size: 12px; }
+    .control-message.success { color: var(--accent-dark); }
     .control-message.error { color: var(--danger); }
+    .remote-card { display: grid; gap: 14px; }
+    .remote-device-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 13px; border-bottom: 1px solid var(--line); }
+    .remote-device-copy { min-width: 0; }
+    .remote-device-title { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 700; }
+    .connection-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #a7ada9; }
+    .connection-dot.online { background: #2ba674; box-shadow: 0 0 0 4px rgba(43,166,116,.1); }
+    .remote-device-summary { margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .remote-device-id { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #304139; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; font-weight: 700; }
+    .remote-action { display: grid; gap: 8px; }
+    .remote-action + .remote-action { padding-top: 14px; border-top: 1px solid var(--line); }
+    .remote-action-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+    .remote-action-title { font-size: 13px; font-weight: 700; }
+    .remote-action-detail { margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .speech-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; }
+    .speech-input { min-width: 0; height: 40px; padding: 0 12px; border: 1px solid var(--line); border-radius: 11px; outline: 0; color: var(--ink); background: white; font: 13px/1 inherit; }
+    .speech-input:focus { border-color: rgba(25, 131, 93, .45); box-shadow: 0 0 0 3px rgba(25, 131, 93, .08); }
+    .speech-input:disabled { color: var(--muted); background: #f1f3ef; cursor: not-allowed; }
+    .remote-button { min-width: 86px; height: 40px; padding: 0 13px; border: 1px solid rgba(17,104,72,.16); border-radius: 11px; color: var(--accent-dark); background: var(--accent-soft); cursor: pointer; font-weight: 700; }
+    .remote-button.primary { border-color: transparent; color: white; background: var(--accent); }
+    .remote-button:disabled { opacity: .45; cursor: not-allowed; }
+    .servo-control { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+    .servo-pad { display: grid; grid-template-columns: repeat(3, 44px); grid-template-rows: repeat(3, 44px); gap: 5px; flex: 0 0 auto; }
+    .servo-button { width: 44px; height: 44px; padding: 0; border: 1px solid rgba(17,104,72,.16); border-radius: 13px; color: var(--accent-dark); background: var(--accent-soft); cursor: pointer; font-size: 21px; font-weight: 800; line-height: 1; }
+    .servo-button:hover:not(:disabled) { border-color: rgba(17,104,72,.32); background: #d7f0e4; transform: translateY(-1px); }
+    .servo-button:active:not(:disabled) { transform: translateY(0); }
+    .servo-button:disabled { opacity: .45; cursor: not-allowed; }
+    .servo-button.up { grid-area: 1 / 2; }
+    .servo-button.left { grid-area: 2 / 1; }
+    .servo-button.right { grid-area: 2 / 3; }
+    .servo-button.down { grid-area: 3 / 2; }
+    .servo-center { grid-area: 2 / 2; display: grid; place-items: center; color: #759087; font-size: 18px; }
+    .remote-message { margin-top: -2px; }
     .device-list { display: grid; gap: 10px; }
     .device-card { padding: 14px 15px; }
     .device-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -235,6 +269,10 @@
       .new-chat::after { content: "＋"; font-size: 19px; }
       .admin-panel { padding: 19px 16px; }
       .health-grid { grid-template-columns: 1fr; }
+      .remote-device-row, .remote-action-head { align-items: flex-start; }
+      .remote-device-row { flex-direction: column; }
+      .remote-device-row .device-select { width: 100%; max-width: none; }
+      .servo-control { align-items: flex-start; }
     }
   </style>
 </head>
@@ -305,6 +343,67 @@
       </section>
 
       <section class="admin-section">
+        <div class="section-title"><h3>远程控制</h3></div>
+        <div class="control-card remote-card">
+          <div class="remote-device-row">
+            <div class="remote-device-copy">
+              <div class="remote-device-title"><i class="connection-dot" id="remoteConnectionDot"></i>控制设备</div>
+              <div class="remote-device-summary" id="remoteDeviceSummary">正在读取在线设备…</div>
+            </div>
+            <select class="device-select" id="remoteDevice" aria-label="远程控制设备" hidden disabled></select>
+            <div class="remote-device-id" id="remoteDeviceLabel">—</div>
+          </div>
+
+          <div class="remote-action">
+            <div>
+              <div class="remote-action-title">小派说话</div>
+              <div class="remote-action-detail">输入一句话并发送到所选小派。</div>
+            </div>
+            <div class="speech-row">
+              <input class="speech-input" id="remoteSpeech" type="text" maxlength="1000" placeholder="输入要说的话" aria-label="小派要说的话" disabled>
+              <button class="remote-button" id="remoteSpeak" type="button" disabled>让小派说</button>
+            </div>
+          </div>
+
+          <div class="remote-action">
+            <div class="remote-action-head">
+              <div>
+                <div class="remote-action-title">小派找人</div>
+                <div class="remote-action-detail">转动摄像头寻找并面向现场的人，不播放台词。</div>
+              </div>
+              <button class="remote-button" id="remoteFindOwner" type="button" disabled>开始找人</button>
+            </div>
+          </div>
+
+          <div class="remote-action servo-control">
+            <div>
+              <div class="remote-action-title">舵机方向</div>
+              <div class="remote-action-detail">按面向小派时看到的方向控制，每次移动 10°。</div>
+            </div>
+            <div class="servo-pad" role="group" aria-label="小派舵机方向控制">
+              <button class="servo-button up" type="button" data-servo-direction="up" aria-label="舵机向上" title="向上">↑</button>
+              <button class="servo-button left" type="button" data-servo-direction="left" aria-label="舵机向左" title="向左">←</button>
+              <span class="servo-center" aria-hidden="true">●</span>
+              <button class="servo-button right" type="button" data-servo-direction="right" aria-label="舵机向右" title="向右">→</button>
+              <button class="servo-button down" type="button" data-servo-direction="down" aria-label="舵机向下" title="向下">↓</button>
+            </div>
+          </div>
+
+          <div class="remote-action">
+            <div class="remote-action-head">
+              <div>
+                <div class="remote-action-title">展示排练</div>
+                <div class="remote-action-detail">先寻找并面向现场的人，找到后说“我看你站在这里好久啦，有什么需要帮助的吗？”</div>
+              </div>
+              <button class="remote-button primary" id="remoteRehearsal" type="button" disabled>一键启动</button>
+            </div>
+          </div>
+
+          <div class="control-message remote-message" id="remoteMessage">连接小派后即可使用远程控制。</div>
+        </div>
+      </section>
+
+      <section class="admin-section">
         <div class="section-title"><h3>扬声器音量</h3></div>
         <div class="control-card">
           <div class="volume-top">
@@ -353,6 +452,16 @@
       volumeValue: document.getElementById('volumeValue'),
       volumeMessage: document.getElementById('volumeMessage'),
       applyVolume: document.getElementById('applyVolume'),
+      remoteConnectionDot: document.getElementById('remoteConnectionDot'),
+      remoteDeviceSummary: document.getElementById('remoteDeviceSummary'),
+      remoteDevice: document.getElementById('remoteDevice'),
+      remoteDeviceLabel: document.getElementById('remoteDeviceLabel'),
+      remoteSpeech: document.getElementById('remoteSpeech'),
+      remoteSpeak: document.getElementById('remoteSpeak'),
+      remoteFindOwner: document.getElementById('remoteFindOwner'),
+      remoteRehearsal: document.getElementById('remoteRehearsal'),
+      servoButtons: document.querySelectorAll('[data-servo-direction]'),
+      remoteMessage: document.getElementById('remoteMessage'),
       deviceList: document.getElementById('deviceList'),
       modeSelect: document.getElementById('modeSelect'),
       statusDot: document.getElementById('statusDot'),
@@ -367,6 +476,11 @@
     let adminTimer = null;
     let adminLoading = false;
     let volumeDirty = false;
+    let remoteBusy = false;
+    let remoteAvailable = false;
+    let onlineRemoteDevices = [];
+
+    const REHEARSAL_REPLY = '我看你站在这里好久啦，有什么需要帮助的吗？';
 
     function setStatus(state, text) {
       els.statusDot.className = `dot ${state || ''}`;
@@ -577,6 +691,136 @@
       els.volumeDevice.value = preferred;
     }
 
+    function updateRemoteControlState() {
+      const available = onlineRemoteDevices.length > 0;
+      els.remoteDevice.disabled = remoteBusy || !available;
+      els.remoteSpeech.disabled = remoteBusy || !available;
+      els.remoteSpeak.disabled = remoteBusy || !available || !els.remoteSpeech.value.trim();
+      els.remoteFindOwner.disabled = remoteBusy || !available;
+      els.remoteRehearsal.disabled = remoteBusy || !available;
+      els.servoButtons.forEach(button => { button.disabled = remoteBusy || !available; });
+    }
+
+    function renderRemoteControls(devices) {
+      const previousDeviceId = els.remoteDevice.value;
+      const wasAvailable = remoteAvailable;
+      onlineRemoteDevices = devices.filter(device => device.device_id);
+      remoteAvailable = onlineRemoteDevices.length > 0;
+
+      els.remoteDevice.replaceChildren();
+      for (const device of onlineRemoteDevices) {
+        const option = document.createElement('option');
+        option.value = device.device_id;
+        option.textContent = device.device_id;
+        els.remoteDevice.append(option);
+      }
+      const selectedDeviceId = onlineRemoteDevices.some(device => device.device_id === previousDeviceId)
+        ? previousDeviceId
+        : onlineRemoteDevices[0]?.device_id || '';
+      els.remoteDevice.value = selectedDeviceId;
+
+      const multiple = onlineRemoteDevices.length > 1;
+      els.remoteDevice.hidden = !multiple;
+      els.remoteDeviceLabel.hidden = multiple;
+      els.remoteDeviceLabel.textContent = selectedDeviceId || '—';
+      els.remoteDeviceLabel.title = selectedDeviceId;
+      els.remoteConnectionDot.className = `connection-dot ${remoteAvailable ? 'online' : ''}`;
+      els.remoteDeviceSummary.textContent = !remoteAvailable
+        ? '当前没有在线小派'
+        : multiple
+          ? `${onlineRemoteDevices.length} 台小派在线，请选择控制设备`
+          : '1 台小派在线';
+
+      if (!remoteAvailable) {
+        els.remoteMessage.className = 'control-message remote-message';
+        els.remoteMessage.textContent = '连接小派后即可使用远程控制。';
+      } else if (!wasAvailable) {
+        els.remoteMessage.className = 'control-message remote-message success';
+        els.remoteMessage.textContent = '设备已连接，可以发送远程控制命令。';
+      }
+      updateRemoteControlState();
+    }
+
+    async function sendRemoteCommand(button, path, params, pendingText, successText) {
+      const deviceId = els.remoteDevice.value || onlineRemoteDevices[0]?.device_id || '';
+      if (!deviceId || !onlineRemoteDevices.some(device => device.device_id === deviceId)) {
+        renderRemoteControls([]);
+        return;
+      }
+
+      remoteBusy = true;
+      const originalLabel = button.textContent;
+      button.textContent = pendingText;
+      els.remoteMessage.className = 'control-message remote-message';
+      els.remoteMessage.textContent = `正在向 ${deviceId} 发送命令…`;
+      updateRemoteControlState();
+      try {
+        const query = new URLSearchParams({ device_id: deviceId, ...params });
+        const result = await api(`${path}?${query}`);
+        if (result.type !== 'queued') throw new Error('设备命令队列繁忙，请稍后重试');
+        els.remoteMessage.className = 'control-message remote-message success';
+        els.remoteMessage.textContent = successText(deviceId);
+      } catch (error) {
+        els.remoteMessage.className = 'control-message remote-message error';
+        els.remoteMessage.textContent = `命令发送失败：${error.message}`;
+      } finally {
+        remoteBusy = false;
+        button.textContent = originalLabel;
+        updateRemoteControlState();
+      }
+    }
+
+    function makeXiaopaiSpeak() {
+      const text = els.remoteSpeech.value.trim();
+      if (!text) {
+        els.remoteMessage.className = 'control-message remote-message error';
+        els.remoteMessage.textContent = '请先输入小派要说的话。';
+        els.remoteSpeech.focus();
+        return;
+      }
+      sendRemoteCommand(
+        els.remoteSpeak,
+        '/command/speak',
+        { text },
+        '发送中…',
+        deviceId => `说话命令已发送给 ${deviceId}`
+      );
+    }
+
+    function findOwner() {
+      sendRemoteCommand(
+        els.remoteFindOwner,
+        '/command/find_owner',
+        { speak: 'false', interrupt: 'true' },
+        '启动中…',
+        deviceId => `找人命令已发送给 ${deviceId}`
+      );
+    }
+
+    function moveServo(button) {
+      const direction = button.dataset.servoDirection;
+      const directionNames = { up: '上', down: '下', left: '左', right: '右' };
+      const deviceDirections = { up: 'up', down: 'down', left: 'right', right: 'left' };
+      if (!directionNames[direction]) return;
+      sendRemoteCommand(
+        button,
+        '/command/move',
+        { type: deviceDirections[direction], degree: '10', duration_ms: '350' },
+        '…',
+        deviceId => `已控制 ${deviceId} 的舵机向${directionNames[direction]}移动 10°`
+      );
+    }
+
+    function startRehearsal() {
+      sendRemoteCommand(
+        els.remoteRehearsal,
+        '/command/find_owner',
+        { reply: REHEARSAL_REPLY, interrupt: 'true' },
+        '启动中…',
+        deviceId => `展示排练已在 ${deviceId} 启动，找到人后会播放固定台词。`
+      );
+    }
+
     function renderDevices(devices) {
       els.deviceList.replaceChildren();
       const visible = devices.filter(device => device.device_id !== 'trace-sim' && device.device_id !== 'default');
@@ -664,6 +908,7 @@
           els.volumeValue.textContent = `${volume}%`;
         }
         renderDeviceOptions(devices, liveDevices.default_device_id || registryDevices.default_device_id);
+        renderRemoteControls(onlineDevices);
         renderDevices(devices);
         els.adminUpdated.textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
       } catch (error) {
@@ -671,6 +916,7 @@
         setHealth(els.morrowHealthDot, els.morrowHealthText, false, '状态不可用');
         setHealth(els.realtimeHealthDot, els.realtimeHealthText, false, '状态不可用');
         setHealth(els.hardwareHealthDot, els.hardwareHealthText, false, '状态不可用');
+        renderRemoteControls([]);
         els.adminUpdated.textContent = '刷新失败';
       } finally {
         adminLoading = false;
@@ -848,6 +1094,21 @@
     els.closeAdmin.addEventListener('click', closeAdmin);
     els.refreshAdmin.addEventListener('click', loadAdmin);
     els.applyVolume.addEventListener('click', applyVolume);
+    els.remoteSpeak.addEventListener('click', makeXiaopaiSpeak);
+    els.remoteFindOwner.addEventListener('click', findOwner);
+    els.remoteRehearsal.addEventListener('click', startRehearsal);
+    els.servoButtons.forEach(button => button.addEventListener('click', () => moveServo(button)));
+    els.remoteSpeech.addEventListener('input', updateRemoteControlState);
+    els.remoteSpeech.addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        makeXiaopaiSpeak();
+      }
+    });
+    els.remoteDevice.addEventListener('change', () => {
+      els.remoteMessage.className = 'control-message remote-message';
+      els.remoteMessage.textContent = `将控制 ${els.remoteDevice.value}`;
+    });
     els.volumeRange.addEventListener('input', () => {
       volumeDirty = true;
       els.volumeValue.textContent = `${els.volumeRange.value}%`;

@@ -215,6 +215,8 @@ class CoordinatorTest(unittest.TestCase):
         self.assertTrue(outcome.finished.wait(0.3))
         self.assertEqual(self.spoken, [])
         self.assertEqual(self.client.cancelled, 1)
+        self.assertTrue(self._wait(lambda: not self.coordinator.has_pending_turn("dev1")))
+        self.assertEqual(self.ended, [])
 
     def test_reset_session_cancels_dialogue_and_waits_for_fresh_snapshot(self):
         result_holder = []

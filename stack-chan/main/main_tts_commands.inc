@@ -1038,14 +1038,6 @@ static bool execute_speak_command_internal(const char* text, bool pause_voice_li
     return ok && current_completion;
 }
 
-static bool execute_speak_command(const char* text)
-{
-    if (voice_recording_active) {
-        return enqueue_speak_command("", text, "", true);
-    }
-    return execute_speak_command_internal(text, true);
-}
-
 static void wait_for_voice_recording_to_finish()
 {
     while (voice_recording_active && !app1_stop_requested) {
@@ -1262,12 +1254,13 @@ static bool execute_volume_command(const cJSON* payload)
     }
     speaker_volume_percent =
         std::max(kSpeakerVolumePercentMin, std::min(kSpeakerVolumePercentMax, speaker_volume_percent));
+    apply_speaker_volume();
 
     char reply[64];
     snprintf(reply, sizeof(reply), "已经将声音调到%d", speaker_volume_percent);
     ESP_LOGI(TAG, "Speaker volume adjusted: percent=%d", speaker_volume_percent);
-    if (!execute_speak_command(reply)) {
-        ESP_LOGW(TAG, "Speaker volume reply failed after adjustment");
+    if (!enqueue_speak_command("", reply, "", true)) {
+        ESP_LOGW(TAG, "Speaker volume reply could not be queued after adjustment");
     }
     return true;
 }

@@ -64,20 +64,26 @@ class DeviceRegistry:
             "device_config_version": 1,
         }
 
-    def heartbeat(self, device_id: str, *, last_ack_seq: int = 0) -> dict[str, Any]:
+    def heartbeat(self, device_id: str, *, boot_id: int = 0, last_ack_seq: int = 0) -> dict[str, Any]:
         now = utc_now()
         with self.database.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO devices(device_id, last_seen_at, last_heartbeat_at, last_ack_seq, online)
-                VALUES (?, ?, ?, ?, 1)
+                INSERT INTO devices(
+                  device_id, current_boot_id, last_seen_at, last_heartbeat_at, last_ack_seq, online
+                ) VALUES (?, ?, ?, ?, ?, 1)
                 ON CONFLICT(device_id) DO UPDATE SET
+                  current_boot_id=CASE
+                    WHEN devices.current_boot_id=0 AND excluded.current_boot_id > 0
+                      THEN excluded.current_boot_id
+                    ELSE devices.current_boot_id
+                  END,
                   last_seen_at=excluded.last_seen_at,
                   last_heartbeat_at=excluded.last_heartbeat_at,
                   last_ack_seq=max(devices.last_ack_seq, excluded.last_ack_seq),
                   online=1
                 """,
-                (device_id, now, now, int(last_ack_seq or 0)),
+                (device_id, max(0, int(boot_id or 0)), now, now, int(last_ack_seq or 0)),
             )
         return {"type": "heartbeat_ack", "device_id": device_id, "server_time": now}
 

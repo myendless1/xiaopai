@@ -64,6 +64,7 @@ class CommandEnvelope:
     device_id: str
     type: str
     payload: Any
+    boot_id: int = 0
     priority: int = 50
     ttl_ms: int = 30_000
     attempt: int = 1
@@ -91,6 +92,7 @@ class CommandEnvelope:
             device_id=str(device_id or command.get("device_id") or "default"),
             type=command_type,
             payload=command.get("payload", {}),
+            boot_id=max(0, int(command.get("boot_id") or 0)),
             priority=int(command.get("priority") or 50),
             ttl_ms=ttl_ms,
             attempt=int(command.get("attempt") or 1),
@@ -112,6 +114,7 @@ class CommandEnvelope:
         return {
             "cmd_id": self.cmd_id,
             "type": self.type,
+            "boot_id": self.boot_id,
             "priority": self.priority,
             "ttl_ms": self.ttl_ms,
             "attempt": self.attempt,

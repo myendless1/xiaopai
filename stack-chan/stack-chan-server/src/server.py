@@ -1086,6 +1086,33 @@ def normalize_command_speech_payload(command_type: str, payload) -> None:
                         step["cache_name"] = cache_name
 
 
+def apply_current_speech_generation(server, device_id: str, command_type: str, payload) -> None:
+    """Attach the generation expected by firmware to non-Morrow speech commands."""
+    generation = 0
+    coordinator = getattr(server, "morrow_coordinator", None)
+    generation_getter = getattr(coordinator, "generation_for_device", None)
+    if callable(generation_getter):
+        generation = max(0, int(generation_getter(device_id)))
+    else:
+        command_store = getattr(server, "command_store", None)
+        generation_getter = getattr(command_store, "speech_generation_for_device", None)
+        if callable(generation_getter):
+            generation = max(0, int(generation_getter(device_id)))
+
+    if command_type == "speak" and isinstance(payload, dict):
+        payload.setdefault("generation", generation)
+        return
+    if command_type == "sequence" and isinstance(payload, list):
+        for step in payload:
+            if not isinstance(step, dict) or step.get("type") != "speak":
+                continue
+            step_payload = step.get("payload")
+            if isinstance(step_payload, dict):
+                step_payload.setdefault("generation", generation)
+            else:
+                step.setdefault("generation", generation)
+
+
 def clamp_speaker_volume(value) -> int:
     try:
         percent = int(value)
@@ -1229,6 +1256,7 @@ class DeviceCommandQueue:
         self,
         timeout: float | None = None,
         *,
+        boot_id: int = 0,
         allow_speak: bool = True,
         allow_find_owner: bool | Callable[[], bool] = True,
     ) -> dict:
@@ -1240,7 +1268,11 @@ class DeviceCommandQueue:
                 eligible = [
                     index
                     for index, item in enumerate(self._items)
-                    if (allow_speak or str(item["command"].get("type") or "") != "speak")
+                    if (
+                        int(boot_id or 0) <= 0
+                        or int(item["command"].get("boot_id") or 0) in (0, int(boot_id))
+                    )
+                    and (allow_speak or str(item["command"].get("type") or "") != "speak")
                     and (
                         find_owner_allowed
                         or str(item["command"].get("type") or "") not in ("find_owner", "locate_owner")
@@ -1262,10 +1294,16 @@ class DeviceCommandQueue:
     def get_nowait(
         self,
         *,
+        boot_id: int = 0,
         allow_speak: bool = True,
         allow_find_owner: bool | Callable[[], bool] = True,
     ) -> dict:
-        return self.get(timeout=0, allow_speak=allow_speak, allow_find_owner=allow_find_owner)
+        return self.get(
+            timeout=0,
+            boot_id=boot_id,
+            allow_speak=allow_speak,
+            allow_find_owner=allow_find_owner,
+        )
 
     def discard(self, cmd_id: str) -> bool:
         cmd_id = str(cmd_id or "")
@@ -1277,6 +1315,47 @@ class DeviceCommandQueue:
                     self._items.pop(index)
                     return True
         return False
+
+    def discard_other_boots(self, boot_id: int) -> int:
+        """Remove commands that were bound to an older incarnation of this device."""
+        boot_id = max(0, int(boot_id or 0))
+        if boot_id <= 0:
+            return 0
+        with self._cv:
+            kept = []
+            discarded = 0
+            for item in self._items:
+                command_boot_id = max(0, int(item["command"].get("boot_id") or 0))
+                if command_boot_id > 0 and command_boot_id != boot_id:
+                    discarded += 1
+                else:
+                    kept.append(item)
+            self._items = kept
+            if discarded:
+                self._cv.notify_all()
+            return discarded
+
+    def discard_speech_before_generation(self, generation: int) -> int:
+        """Drop queued speech superseded by a device/session reset."""
+        generation = max(0, int(generation))
+        with self._cv:
+            kept = []
+            discarded = 0
+            for item in self._items:
+                command = item["command"]
+                payload = command.get("payload")
+                try:
+                    command_generation = int(payload.get("generation") or 0) if isinstance(payload, dict) else 0
+                except (TypeError, ValueError):
+                    command_generation = 0
+                if str(command.get("type") or "") == "speak" and command_generation < generation:
+                    discarded += 1
+                else:
+                    kept.append(item)
+            self._items = kept
+            if discarded:
+                self._cv.notify_all()
+            return discarded
 
     def _drop_expired_locked(self, now: float) -> int:
         before = len(self._items)
@@ -1749,9 +1828,39 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_v3_hello(self, payload: dict) -> None:
         body = self.server.device_registry.hello(payload)
         device_id = safe_device_id(payload.get("device_id") or "default")
+        self._observe_device_boot(device_id, payload.get("boot_id"), authoritative=True)
         self._sync_device_speech_generation(device_id, payload)
         self._mark_device_seen(device_id)
         self._send_json(body)
+
+    def _observe_device_boot(self, device_id: str, boot_id, *, authoritative: bool = False) -> bool:
+        try:
+            boot_id = max(0, int(boot_id or 0))
+        except (TypeError, ValueError):
+            return False
+        if boot_id <= 0:
+            return False
+        expired = 0
+        command_store = getattr(self.server, "command_store", None)
+        if command_store is not None:
+            current_boot_id = command_store.current_boot_id(device_id)
+            if current_boot_id > 0 and current_boot_id != boot_id and not authoritative:
+                command_store.expire_inactive_boot_commands()
+                self._log_info(
+                    f"已忽略过期 boot 请求: device={device_id} "
+                    f"boot={boot_id} current_boot={current_boot_id}"
+                )
+                return False
+            if current_boot_id != boot_id or authoritative:
+                expired = command_store.observe_device_boot(device_id, boot_id)
+        queue = self._queue_for(device_id)
+        discarded = queue.discard_other_boots(boot_id)
+        if expired or discarded:
+            self._log_info(
+                f"设备 boot 切换已清理旧命令: device={device_id} boot={boot_id} "
+                f"expired={expired} memory_discarded={discarded}"
+            )
+        return True
 
     def _sync_device_speech_generation(self, device_id: str, payload: dict) -> None:
         if "speech_generation" not in payload:
@@ -1770,7 +1879,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_v3_heartbeat(self, payload: dict) -> None:
         device_id = safe_device_id(payload.get("device_id") or self.headers.get("X-Device-Id", "") or "default")
-        body = self.server.device_registry.heartbeat(device_id, last_ack_seq=int(payload.get("last_ack_seq") or 0))
+        boot_id = max(0, int(payload.get("boot_id") or 0))
+        self._observe_device_boot(device_id, boot_id)
+        body = self.server.device_registry.heartbeat(
+            device_id,
+            boot_id=boot_id,
+            last_ack_seq=int(payload.get("last_ack_seq") or 0),
+        )
         self._sync_device_speech_generation(device_id, payload)
         self._mark_device_seen(device_id)
         self._log_info(
@@ -2301,6 +2416,12 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
 
+            reported_generation = posted.get("generation") or details.get("generation")
+            if reported_generation not in (None, ""):
+                try:
+                    coordinator.sync_device_generation(device_id, max(0, int(reported_generation)))
+                except (AttributeError, TypeError, ValueError):
+                    pass
             result = coordinator.reset_session(device_id)
             queued_commands = []
             if result.success:
@@ -2558,6 +2679,10 @@ class Handler(BaseHTTPRequestHandler):
         timeout = float(first_value(query, "timeout") or "25")
         timeout = max(0.0, min(timeout, 55.0))
         boot_id = int(first_value(query, "boot_id") or self.headers.get("X-Boot-Id", "0") or "0")
+        if boot_id > 0 and not self._observe_device_boot(device_id, boot_id):
+            self._mark_device_seen(device_id)
+            self._send_json({"type": "noop", "device_id": device_id, "reason": "stale_boot"})
+            return
         queue_depth_text = first_value(query, "speech_queue_depth")
         queue_capacity_text = first_value(query, "speech_queue_capacity")
         allow_speak = True
@@ -2594,6 +2719,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             command = queue.get(
                 timeout=timeout,
+                boot_id=boot_id,
                 allow_speak=allow_speak,
                 allow_find_owner=allow_find_owner_now,
             )
@@ -2621,6 +2747,7 @@ class Handler(BaseHTTPRequestHandler):
             if self._expire_dialog_if_needed(device_id):
                 try:
                     command = queue.get_nowait(
+                        boot_id=boot_id,
                         allow_speak=allow_speak,
                         allow_find_owner=allow_find_owner_now,
                     )
@@ -2672,10 +2799,12 @@ class Handler(BaseHTTPRequestHandler):
         device_id = safe_device_id(device_id)
         command_type = str(command.get("type") or "")
         payload = command.get("payload")
+        apply_current_speech_generation(self.server, device_id, command_type, payload)
         prepare_server_command_audio(self.server, command_type, payload)
         command_store = getattr(self.server, "command_store", None)
         if command_store is not None:
             try:
+                command["boot_id"] = command_store.current_boot_id(device_id)
                 envelope = CommandEnvelope.from_legacy(device_id, command)
                 command_store.create_command(envelope)
             except Exception as exc:
@@ -3989,11 +4118,13 @@ def enqueue_server_command(server, device_id: str, command: dict, *, persist: bo
 
     command_type = str(command.get("type") or "")
     payload = command.get("payload")
+    apply_current_speech_generation(server, device_id, command_type, payload)
     prepare_server_command_audio(server, command_type, payload)
     normalize_command_speech_payload(command_type, payload)
     command_store = getattr(server, "command_store", None)
     if persist and command_store is not None:
         try:
+            command["boot_id"] = command_store.current_boot_id(device_id)
             command_store.create_command(CommandEnvelope.from_legacy(device_id, command))
         except Exception as exc:
             log_print(
@@ -4929,6 +5060,12 @@ def main():
     httpd.command_queue_max_size = args.command_queue_max_size
     httpd.v3_database = Database(args.database_path)
     httpd.command_store = CommandStore(httpd.v3_database)
+    recovered_boot_commands = httpd.command_store.expire_inactive_boot_commands()
+    if recovered_boot_commands:
+        log_print(f"启动时已过期旧 boot 命令: count={recovered_boot_commands}")
+    recovered_dialogues = httpd.command_store.expire_stale_dialogue_commands()
+    if recovered_dialogues:
+        log_print(f"启动时已回收陈旧对话命令: count={recovered_dialogues}")
     httpd.device_registry = DeviceRegistry(httpd.v3_database)
     httpd.capture_save_mode = args.capture_save_mode
     httpd.save_audio_uploads = args.save_recording
@@ -4996,7 +5133,12 @@ def main():
 
     def cancel_morrow_generation(device_id: str, generation: int) -> int:
         httpd.command_store.set_speech_generation(device_id, generation)
-        return httpd.command_store.cancel_pending_before_generation(device_id, generation)
+        cancelled = httpd.command_store.cancel_pending_before_generation(device_id, generation)
+        with httpd.device_lock:
+            queue = httpd.device_queues.get(device_id)
+        if queue is not None:
+            cancelled += queue.discard_speech_before_generation(generation)
+        return cancelled
 
     httpd.morrow_client = MorrowClient(
         base_url=args.morrow_base_url,

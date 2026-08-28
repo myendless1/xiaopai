@@ -133,7 +133,6 @@ static void update_speaking_light_level(const int16_t* samples, size_t sample_co
 static void start_speaking_light_animation();
 static void stop_speaking_light_animation();
 static void apply_speaker_volume();
-static bool execute_speak_command(const char* text);
 static bool execute_speak_command_internal(const char* text, bool pause_voice_listener, const char* cache_name = nullptr,
                                            const char* voice = nullptr, int sample_rate = 0, int volume = 0,
                                            int speech_rate = 0, int pitch_rate = 0, const char* cmd_id = "",

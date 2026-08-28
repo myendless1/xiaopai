@@ -126,6 +126,35 @@ class MorrowCommandStoreTest(unittest.TestCase):
         store.record_ack({"cmd_id": command["cmd_id"], "state": "rendered"})
         self.assertFalse(store.has_unfinished_dialogue("robot-1"))
 
+    def test_stale_received_dialogue_no_longer_blocks_device(self):
+        store = self.make_store()
+        sink = command_store_segment_sink(store)
+        request = MorrowRequest("req-stale", "问题", "robot-1", "voice", 1, 60, 3)
+        sink(request, "不会永久阻塞。", 0)
+        command = store.lease_next_command("robot-1")
+        store.record_ack({"cmd_id": command["cmd_id"], "state": "received"})
+        with store.database.connect() as conn:
+            conn.execute(
+                "UPDATE commands SET updated_at='2026-01-01T00:00:00+00:00' WHERE cmd_id=?",
+                (command["cmd_id"],),
+            )
+
+        self.assertFalse(store.has_unfinished_dialogue("robot-1"))
+        with store.database.connect() as conn:
+            row = conn.execute(
+                "SELECT state, last_message FROM commands WHERE cmd_id=?",
+                (command["cmd_id"],),
+            ).fetchone()
+        self.assertEqual(row["state"], "expired")
+        self.assertEqual(row["last_message"], "stale dialogue command recovered")
+
+    def test_speech_generation_can_be_read_for_one_device(self):
+        store = self.make_store()
+        store.set_speech_generation("robot-1", 12)
+
+        self.assertEqual(store.speech_generation_for_device("robot-1"), 12)
+        self.assertEqual(store.speech_generation_for_device("missing"), 0)
+
     def test_full_device_queue_leaves_speech_queued_on_server(self):
         store = self.make_store()
         sink = command_store_segment_sink(store)
@@ -157,6 +186,80 @@ class MorrowCommandStoreTest(unittest.TestCase):
             state = conn.execute("SELECT state FROM commands WHERE cmd_id='find-owner'").fetchone()[0]
         self.assertEqual(state, "queued")
         self.assertEqual(store.lease_next_command("robot-1", allow_find_owner=True)["cmd_id"], "find-owner")
+
+    def test_new_boot_expires_old_dialogue_and_can_lease_find_owner(self):
+        store = self.make_store()
+        store.observe_device_boot("robot-1", 101)
+        enqueued = []
+        sink = command_store_segment_sink(
+            store,
+            enqueue=lambda _device_id, command: enqueued.append(command),
+        )
+        request = MorrowRequest("req-old-boot", "问题", "robot-1", "voice", 1, 60, 3)
+        sink(request, "旧启动仍在播放。", 0)
+        self.assertEqual(enqueued[0]["boot_id"], 101)
+
+        old = store.lease_next_command("robot-1", boot_id=101)
+        store.record_ack({"cmd_id": old["cmd_id"], "boot_id": 101, "state": "running"})
+        self.assertTrue(store.has_unfinished_dialogue("robot-1"))
+
+        self.assertEqual(store.observe_device_boot("robot-1", 202), 1)
+        self.assertFalse(store.has_unfinished_dialogue("robot-1"))
+        with store.database.connect() as conn:
+            expired = conn.execute(
+                "SELECT boot_id, state, last_message FROM commands WHERE cmd_id=?",
+                (old["cmd_id"],),
+            ).fetchone()
+        self.assertEqual(dict(expired), {
+            "boot_id": 101,
+            "state": "expired",
+            "last_message": "device boot expired",
+        })
+
+        store.create_command(
+            CommandEnvelope(
+                cmd_id="find-current-boot",
+                device_id="robot-1",
+                type="find_owner",
+                payload={"speak": False},
+                priority=85,
+            )
+        )
+        current = store.lease_next_command("robot-1", boot_id=202)
+        self.assertEqual(current["cmd_id"], "find-current-boot")
+        self.assertEqual(current["boot_id"], 202)
+
+    def test_boot_change_expires_only_that_devices_old_commands(self):
+        store = self.make_store()
+        store.observe_device_boot("robot-1", 11)
+        store.observe_device_boot("robot-2", 22)
+        store.create_command(CommandEnvelope("robot-1-old", "robot-1", "find_owner", {}))
+        store.create_command(CommandEnvelope("robot-2-current", "robot-2", "find_owner", {}))
+
+        self.assertEqual(store.observe_device_boot("robot-1", 12), 1)
+        with store.database.connect() as conn:
+            rows = {
+                row["cmd_id"]: (row["boot_id"], row["state"])
+                for row in conn.execute(
+                    "SELECT cmd_id, boot_id, state FROM commands ORDER BY cmd_id"
+                ).fetchall()
+            }
+        self.assertEqual(rows["robot-1-old"], (11, "expired"))
+        self.assertEqual(rows["robot-2-current"], (22, "queued"))
+
+    def test_ack_from_another_boot_cannot_advance_current_command(self):
+        store = self.make_store()
+        store.observe_device_boot("robot-1", 202)
+        store.create_command(CommandEnvelope("current", "robot-1", "find_owner", {}))
+
+        result = store.record_ack(
+            {"cmd_id": "current", "device_id": "robot-1", "boot_id": 101, "state": "done"}
+        )
+
+        self.assertTrue(result["ignored"])
+        with store.database.connect() as conn:
+            state = conn.execute("SELECT state FROM commands WHERE cmd_id='current'").fetchone()[0]
+        self.assertEqual(state, "queued")
 
     def test_device_deferred_ack_requeues_without_losing_order(self):
         store = self.make_store()
@@ -220,13 +323,16 @@ class MorrowCommandStoreTest(unittest.TestCase):
             count = conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
         self.assertEqual(count, 1)
 
-    def test_cancel_old_generation_only_cancels_queued(self):
+    def test_cancel_old_generation_cancels_all_unfinished_speech_only(self):
         store = self.make_store()
         sink = command_store_segment_sink(store)
         old = MorrowRequest("old", "问题", "robot-1", "voice", 1, 60, 0)
         current = MorrowRequest("new", "问题", "robot-1", "voice", 1, 60, 1)
         sink(old, "旧回复。", 0)
         sink(current, "新回复。", 0)
+
+        old_command = store.lease_next_command("robot-1")
+        store.record_ack({"cmd_id": old_command["cmd_id"], "state": "running"})
 
         self.assertEqual(store.cancel_pending_before_generation("robot-1", 1), 1)
         leased = store.lease_next_command("robot-1")

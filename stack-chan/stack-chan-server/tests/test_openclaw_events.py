@@ -31,6 +31,30 @@ class DeviceCommandQueueFlowControlTest(unittest.TestCase):
         self.assertEqual(queue.qsize(), 0)
         self.assertFalse(queue.discard("speak-1"))
 
+    def test_generation_reset_discards_only_stale_speech(self):
+        queue = server.DeviceCommandQueue(4)
+        queue.put(
+            {"cmd_id": "old-speak", "type": "speak", "payload": {"generation": 3}, "coalesce_key": "old"}
+        )
+        queue.put(
+            {"cmd_id": "new-speak", "type": "speak", "payload": {"generation": 4}, "coalesce_key": "new"}
+        )
+        queue.put({"cmd_id": "face-1", "type": "face", "payload": {}})
+
+        self.assertEqual(queue.discard_speech_before_generation(4), 1)
+        remaining = {queue.get_nowait()["cmd_id"], queue.get_nowait()["cmd_id"]}
+        self.assertEqual(remaining, {"new-speak", "face-1"})
+
+    def test_boot_switch_discards_only_commands_from_older_boots(self):
+        queue = server.DeviceCommandQueue(4)
+        queue.put({"cmd_id": "old", "type": "find_owner", "boot_id": 101})
+        queue.put({"cmd_id": "current", "type": "find_owner", "boot_id": 202})
+        queue.put({"cmd_id": "unbound", "type": "stop", "boot_id": 0})
+
+        self.assertEqual(queue.discard_other_boots(202), 1)
+        remaining = {queue.get_nowait(boot_id=202)["cmd_id"], queue.get_nowait(boot_id=202)["cmd_id"]}
+        self.assertEqual(remaining, {"current", "unbound"})
+
     def test_pending_dialogue_defers_find_owner_but_allows_other_control(self):
         queue = server.DeviceCommandQueue(4)
         queue.put({"cmd_id": "find-1", "type": "find_owner", "priority": 85})
@@ -329,6 +353,45 @@ class CommandRoutingTest(unittest.TestCase):
         self.assertEqual(handler.server.realtime_manager.sent, [])
         self.assertEqual(handler._queue_for(device_id).get_nowait()["cmd_id"], command["cmd_id"])
 
+    def test_http_command_is_bound_to_the_devices_current_boot(self):
+        handler = self.make_handler()
+        created = []
+
+        class FakeStore:
+            def current_boot_id(self, _device_id):
+                return 202
+
+            def create_command(self, command):
+                created.append(command)
+
+        handler.server.command_store = FakeStore()
+        command = server.make_command("face", {"expression": "shy"})
+
+        self.assertTrue(handler._enqueue_command("44:1b:f6:e4:83:8c", command))
+        self.assertEqual(command["boot_id"], 202)
+        self.assertEqual(created[0].boot_id, 202)
+
+    def test_stale_boot_poll_cannot_replace_the_current_boot(self):
+        handler = self.make_handler()
+        calls = []
+
+        class FakeStore:
+            def current_boot_id(self, _device_id):
+                return 202
+
+            def observe_device_boot(self, device_id, boot_id):
+                calls.append((device_id, boot_id))
+                return 0
+
+            def expire_inactive_boot_commands(self):
+                calls.append("expired")
+                return 0
+
+        handler.server.command_store = FakeStore()
+
+        self.assertFalse(handler._observe_device_boot("44:1b:f6:e4:83:8c", 101))
+        self.assertEqual(calls, ["expired"])
+
     def test_realtime_connected_device_still_uses_http_command_queue(self):
         handler = self.make_handler()
         device_id = "44:1b:f6:e4:83:8c"
@@ -409,6 +472,10 @@ class DeviceEventForwardingTest(unittest.TestCase):
         class ResetCoordinator:
             def __init__(self):
                 self.devices = []
+                self.synced = []
+
+            def sync_device_generation(self, device_id, generation):
+                self.synced.append((device_id, generation))
 
             def reset_session(self, device_id):
                 self.devices.append(device_id)
@@ -418,10 +485,11 @@ class DeviceEventForwardingTest(unittest.TestCase):
         handler.server.morrow_coordinator = coordinator
         handler._wake_dialog = lambda *args, **kwargs: self.fail("session reset must not change dialog wake state")
         handler._handle_device_event(
-            {"device_id": ["robot-001"], "type": ["reset_session"]},
+            {"device_id": ["robot-001"], "type": ["reset_session"], "generation": ["6"]},
             None,
         )
 
+        self.assertEqual(coordinator.synced, [("robot-001", 6)])
         self.assertEqual(coordinator.devices, ["robot-001"])
         self.assertEqual(forwarded_events, [])
         self.assertEqual(len(enqueued_commands), 1)

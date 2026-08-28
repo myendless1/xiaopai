@@ -563,6 +563,10 @@ class MorrowTurnCoordinator:
         outcome = self._outcomes[request.request_id]
         if not outcome.finished.is_set() or self.reply_end_sink is None:
             return
+        with self._lock:
+            current_generation = self._generations.get(request.device_id, 0)
+        if request.generation != current_generation:
+            return
         try:
             self.reply_end_sink(request, outcome.segment_count, outcome.state)
         except Exception as exc:

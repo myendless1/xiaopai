@@ -66,6 +66,16 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         run_find_owner = self.commands.index("return run_find_owner_command", find_owner)
         self.assertLess(apply_volume, run_find_owner)
 
+    def test_volume_command_applies_immediately_and_queues_confirmation(self):
+        start = self.tts.index("static bool execute_volume_command")
+        end = self.tts.index("\n}", start)
+        volume_command = self.tts[start:end]
+
+        apply_volume = volume_command.index("apply_speaker_volume();")
+        queue_reply = volume_command.index('enqueue_speak_command("", reply, "", true)')
+        self.assertLess(apply_volume, queue_reply)
+        self.assertNotIn("execute_speak_command", volume_command)
+
     def test_boot_pose_and_find_owner_scan_order(self):
         self.assertIn("kTrackingHomePitchDeg = 45.0f", self.state)
         self.assertIn("kFindOwnerLookUpDeltaDeg = 30.0f", self.state)
@@ -168,7 +178,7 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         self.assertIn('type == "dji_mic_start"', self.commands)
         self.assertIn('type == "dji_mic_stop"', self.commands)
 
-    def test_three_second_screen_press_only_requests_session_reset(self):
+    def test_three_second_screen_press_resets_speech_queue_and_session(self):
         self.assertIn("kSessionResetLongPressMs = 3000", self.touch)
         self.assertIn('"reset_session"', self.touch)
         self.assertIn('make_server_url("/device/event")', self.touch)
@@ -176,11 +186,11 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
             self.touch.index("if (event == HeadTouchEvent::LongPress)"):
             self.touch.index("LocalVoiceState state = xiaopai_state_get().state;")
         ]
-        self.assertNotIn("request_speak_preempt", long_press_handler)
-        self.assertNotIn("advance_speech_generation", long_press_handler)
+        self.assertIn('request_speak_preempt("session reset")', long_press_handler)
+        self.assertIn("advance_speech_generation();", long_press_handler)
         self.assertNotIn("xiaopai_state_set", long_press_handler)
         self.assertNotIn("expression_state_set", long_press_handler)
-        self.assertNotIn('"generation"', long_press_handler)
+        self.assertIn('"generation"', long_press_handler)
 
     def test_firmware_ota_stops_dji_and_delays_boot_autostart(self):
         self.assertIn('dji_mic_receiver_input_stop("firmware ota")', self.ota)

@@ -45,9 +45,12 @@ static void run_head_touch_audio_loop()
         if (xQueueReceive(head_touch_event_queue, &event, portMAX_DELAY) == pdTRUE) {
             if (event == HeadTouchEvent::LongPress) {
                 ESP_LOGW(TAG, "Screen 3-second press session reset triggered");
+                request_speak_preempt("session reset");
+                advance_speech_generation();
                 cJSON* root = cJSON_CreateObject();
                 cJSON_AddStringToObject(root, "device_id", mac_address().c_str());
                 cJSON_AddStringToObject(root, "type", "reset_session");
+                cJSON_AddNumberToObject(root, "generation", speech_command_generation);
                 char* encoded = cJSON_PrintUnformatted(root);
                 std::string body = encoded != nullptr ? encoded : "{}";
                 if (encoded != nullptr) cJSON_free(encoded);

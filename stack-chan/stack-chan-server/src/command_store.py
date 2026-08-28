@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import json
 from typing import Any
 
@@ -8,6 +9,7 @@ from schemas import CommandEnvelope, DEFAULT_LEASE_MS, TERMINAL_COMMAND_STATES, 
 
 
 RUNNABLE_STATES = ("queued", "leased")
+STALE_DIALOGUE_SECONDS = 10 * 60
 STATE_RANK = {
     "queued": 0,
     "leased": 1,
@@ -29,15 +31,21 @@ class CommandStore:
         row = command.to_store_dict()
         now = utc_now()
         with self.database.connect() as conn:
+            if int(command.boot_id or 0) <= 0:
+                device = conn.execute(
+                    "SELECT current_boot_id FROM devices WHERE device_id=?",
+                    (str(command.device_id or "default"),),
+                ).fetchone()
+                command.boot_id = max(0, int(device["current_boot_id"] or 0)) if device else 0
             conn.execute(
                 """
                 INSERT OR IGNORE INTO commands (
-                  cmd_id, delivery_id, device_id, type, priority, ttl_ms, attempt, max_attempts,
+                  cmd_id, delivery_id, device_id, boot_id, type, priority, ttl_ms, attempt, max_attempts,
                   state, coalesce_key, safety_class, turn_id, admission_json, payload_json,
                   created_at, updated_at, expires_at, source_type, source_id, segment_index,
                   turn_generation, queue_seq, payload_retention_until
                 ) VALUES (
-                  ?, ?, ?, ?, ?, ?, 0, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                  ?, ?, ?, ?, ?, ?, ?, 0, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                   (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM commands), ?
                 )
                 """,
@@ -45,6 +53,7 @@ class CommandStore:
                     command.cmd_id,
                     command.delivery_id,
                     command.device_id,
+                    command.boot_id,
                     command.type,
                     command.priority,
                     command.ttl_ms,
@@ -64,9 +73,108 @@ class CommandStore:
                     command.payload_retention_until,
                 ),
             )
+        row["boot_id"] = command.boot_id
         return row
 
+    def current_boot_id(self, device_id: str) -> int:
+        with self.database.connect() as conn:
+            row = conn.execute(
+                "SELECT current_boot_id FROM devices WHERE device_id=?",
+                (str(device_id or "default"),),
+            ).fetchone()
+        return max(0, int(row["current_boot_id"] or 0)) if row else 0
+
+    def observe_device_boot(self, device_id: str, boot_id: int) -> int:
+        """Adopt a device boot and expire commands bound to every older boot."""
+        device_id = str(device_id or "default")
+        boot_id = max(0, int(boot_id or 0))
+        if boot_id <= 0:
+            return 0
+        now = utc_now()
+        with self.database.connect() as conn:
+            current = conn.execute(
+                "SELECT current_boot_id FROM devices WHERE device_id=?",
+                (device_id,),
+            ).fetchone()
+            previous_boot_id = max(0, int(current["current_boot_id"] or 0)) if current else 0
+            conn.execute(
+                """
+                INSERT INTO devices(device_id, current_boot_id)
+                VALUES (?, ?)
+                ON CONFLICT(device_id) DO UPDATE SET current_boot_id=excluded.current_boot_id
+                """,
+                (device_id, boot_id),
+            )
+            if previous_boot_id <= 0:
+                conn.execute(
+                    """
+                    UPDATE commands SET boot_id=?
+                     WHERE device_id=? AND boot_id=0
+                       AND state NOT IN ('rendered', 'done', 'failed', 'cancelled', 'expired')
+                    """,
+                    (boot_id, device_id),
+                )
+
+            delivery_rows = conn.execute(
+                """
+                SELECT DISTINCT delivery_id FROM commands
+                 WHERE device_id=? AND boot_id>0 AND boot_id!=?
+                   AND state NOT IN ('rendered', 'done', 'failed', 'cancelled', 'expired')
+                """,
+                (device_id, boot_id),
+            ).fetchall()
+            cursor = conn.execute(
+                """
+                UPDATE commands
+                   SET state='expired', updated_at=?, lease_expires_at='',
+                       last_message='device boot expired'
+                 WHERE device_id=? AND boot_id>0 AND boot_id!=?
+                   AND state NOT IN ('rendered', 'done', 'failed', 'cancelled', 'expired')
+                """,
+                (now, device_id, boot_id),
+            )
+            for row in delivery_rows:
+                if row["delivery_id"]:
+                    self._refresh_delivery_state(conn, row["delivery_id"], now)
+        return max(0, int(cursor.rowcount or 0))
+
+    def expire_inactive_boot_commands(self) -> int:
+        """Recover commands left behind by device boots that are no longer current."""
+        now = utc_now()
+        with self.database.connect() as conn:
+            delivery_rows = conn.execute(
+                """
+                SELECT DISTINCT commands.delivery_id
+                  FROM commands JOIN devices USING(device_id)
+                 WHERE commands.boot_id>0 AND devices.current_boot_id>0
+                   AND commands.boot_id!=devices.current_boot_id
+                   AND commands.state NOT IN ('rendered', 'done', 'failed', 'cancelled', 'expired')
+                """
+            ).fetchall()
+            cursor = conn.execute(
+                """
+                UPDATE commands
+                   SET state='expired', updated_at=?, lease_expires_at='',
+                       last_message='device boot expired'
+                 WHERE boot_id>0
+                   AND state NOT IN ('rendered', 'done', 'failed', 'cancelled', 'expired')
+                   AND EXISTS (
+                     SELECT 1 FROM devices
+                      WHERE devices.device_id=commands.device_id
+                        AND devices.current_boot_id>0
+                        AND devices.current_boot_id!=commands.boot_id
+                   )
+                """,
+                (now,),
+            )
+            for row in delivery_rows:
+                if row["delivery_id"]:
+                    self._refresh_delivery_state(conn, row["delivery_id"], now)
+        return max(0, int(cursor.rowcount or 0))
+
     def has_unfinished_dialogue(self, device_id: str) -> bool:
+        self.expire_stale_dialogue_commands(device_id=device_id)
+        current_boot_id = self.current_boot_id(device_id)
         placeholders = ",".join("?" for _ in TERMINAL_COMMAND_STATES)
         with self.database.connect() as conn:
             row = conn.execute(
@@ -75,12 +183,60 @@ class CommandStore:
                   FROM commands
                  WHERE device_id=?
                    AND source_type='dialogue'
+                   AND (?=0 OR boot_id IN (0, ?))
                    AND state NOT IN ({placeholders})
                  LIMIT 1
                 """,
-                (str(device_id or "default"), *sorted(TERMINAL_COMMAND_STATES)),
+                (
+                    str(device_id or "default"),
+                    current_boot_id,
+                    current_boot_id,
+                    *sorted(TERMINAL_COMMAND_STATES),
+                ),
             ).fetchone()
         return row is not None
+
+    def expire_stale_dialogue_commands(
+        self,
+        *,
+        device_id: str = "",
+        stale_after_seconds: int = STALE_DIALOGUE_SECONDS,
+    ) -> int:
+        """Release dialogue commands that can no longer receive a terminal device ACK."""
+        now = dt.datetime.now(dt.timezone.utc)
+        cutoff = (now - dt.timedelta(seconds=max(1, int(stale_after_seconds)))).isoformat()
+        now_text = now.isoformat()
+        device_clause = " AND device_id=?" if device_id else ""
+        parameters = [cutoff]
+        if device_id:
+            parameters.append(str(device_id))
+        with self.database.connect() as conn:
+            delivery_rows = conn.execute(
+                f"""
+                SELECT DISTINCT delivery_id FROM commands
+                 WHERE source_type='dialogue'
+                   AND state NOT IN ('rendered', 'done', 'failed', 'cancelled', 'expired')
+                   AND updated_at <= ?
+                   {device_clause}
+                """,
+                tuple(parameters),
+            ).fetchall()
+            cursor = conn.execute(
+                f"""
+                UPDATE commands
+                   SET state='expired', updated_at=?, lease_expires_at='',
+                       last_message='stale dialogue command recovered'
+                 WHERE source_type='dialogue'
+                   AND state NOT IN ('rendered', 'done', 'failed', 'cancelled', 'expired')
+                   AND updated_at <= ?
+                   {device_clause}
+                """,
+                (now_text, *parameters),
+            )
+            for row in delivery_rows:
+                if row["delivery_id"]:
+                    self._refresh_delivery_state(conn, row["delivery_id"], now_text)
+            return max(0, int(cursor.rowcount or 0))
 
     def speech_generations(self) -> dict[str, int]:
         with self.database.connect() as conn:
@@ -88,6 +244,14 @@ class CommandStore:
                 "SELECT device_id, speech_generation FROM devices WHERE speech_generation > 0"
             ).fetchall()
         return {str(row["device_id"]): int(row["speech_generation"] or 0) for row in rows}
+
+    def speech_generation_for_device(self, device_id: str) -> int:
+        with self.database.connect() as conn:
+            row = conn.execute(
+                "SELECT speech_generation FROM devices WHERE device_id=?",
+                (str(device_id or "default"),),
+            ).fetchone()
+        return max(0, int(row["speech_generation"] or 0)) if row else 0
 
     def set_speech_generation(self, device_id: str, generation: int) -> None:
         with self.database.connect() as conn:
@@ -109,6 +273,10 @@ class CommandStore:
             row = conn.execute("SELECT * FROM commands WHERE cmd_id = ?", (cmd_id,)).fetchone()
             if row is None:
                 return None
+            command_boot_id = max(0, int(row["boot_id"] or 0))
+            boot_id = max(0, int(boot_id or 0))
+            if command_boot_id > 0 and boot_id > 0 and command_boot_id != boot_id:
+                return None
             if row["state"] in TERMINAL_COMMAND_STATES:
                 return self._row_to_command(row)
             if int(row["attempt"] or 0) >= int(row["max_attempts"] or 1):
@@ -123,10 +291,11 @@ class CommandStore:
             conn.execute(
                 """
                 UPDATE commands
-                   SET state='leased', attempt=?, lease_expires_at=?, updated_at=?
+                   SET state='leased', boot_id=CASE WHEN boot_id=0 THEN ? ELSE boot_id END,
+                       attempt=?, lease_expires_at=?, updated_at=?
                  WHERE cmd_id=?
                 """,
-                (attempt, lease_expires_at, now, cmd_id),
+                (boot_id, attempt, lease_expires_at, now, cmd_id),
             )
             conn.execute(
                 """
@@ -155,6 +324,7 @@ class CommandStore:
                 """
                 SELECT * FROM commands
                  WHERE device_id=?
+                   AND (?=0 OR boot_id IN (0, ?))
                    AND state IN ('queued', 'leased')
                    AND (? OR type!='speak')
                    AND (? OR type NOT IN ('find_owner', 'locate_owner'))
@@ -164,7 +334,15 @@ class CommandStore:
                  ORDER BY safety_class DESC, priority DESC, queue_seq ASC
                  LIMIT 1
                 """,
-                (device_id, int(bool(allow_speak)), int(bool(allow_find_owner)), now, now),
+                (
+                    device_id,
+                    int(boot_id or 0),
+                    int(boot_id or 0),
+                    int(bool(allow_speak)),
+                    int(bool(allow_find_owner)),
+                    now,
+                    now,
+                ),
             ).fetchone()
         if row is None:
             return None
@@ -197,8 +375,21 @@ class CommandStore:
                 ),
             )
             if cmd_id:
-                command = conn.execute("SELECT delivery_id, state FROM commands WHERE cmd_id=?", (cmd_id,)).fetchone()
+                command = conn.execute(
+                    "SELECT delivery_id, state, boot_id FROM commands WHERE cmd_id=?",
+                    (cmd_id,),
+                ).fetchone()
                 if command is not None:
+                    ack_boot_id = max(0, int(ack.get("boot_id") or 0))
+                    command_boot_id = max(0, int(command["boot_id"] or 0))
+                    if command_boot_id > 0 and ack_boot_id > 0 and command_boot_id != ack_boot_id:
+                        return {
+                            "cmd_id": cmd_id,
+                            "state": str(command["state"] or "expired"),
+                            "received_at": now,
+                            "ignored": True,
+                            "message": "ack boot_id does not match command boot_id",
+                        }
                     current_state = str(command["state"] or "queued")
                     if state == "deferred" and current_state not in TERMINAL_COMMAND_STATES:
                         state = "queued"
@@ -292,11 +483,21 @@ class CommandStore:
     def cancel_pending_before_generation(self, device_id: str, generation: int, message: str = "old generation") -> int:
         now = utc_now()
         with self.database.connect() as conn:
+            delivery_rows = conn.execute(
+                """
+                SELECT DISTINCT delivery_id FROM commands
+                 WHERE device_id=? AND type='speak' AND turn_generation < ?
+                   AND state NOT IN ('rendered', 'done', 'failed', 'cancelled', 'expired')
+                   AND delivery_id!=''
+                """,
+                (str(device_id), int(generation)),
+            ).fetchall()
             cursor = conn.execute(
                 """
                 UPDATE commands
-                   SET state='cancelled', updated_at=?, last_message=?
-                 WHERE device_id=? AND turn_generation < ? AND state='queued'
+                   SET state='cancelled', updated_at=?, lease_expires_at='', last_message=?
+                 WHERE device_id=? AND type='speak' AND turn_generation < ?
+                   AND state NOT IN ('rendered', 'done', 'failed', 'cancelled', 'expired')
                 """,
                 (now, message, str(device_id), int(generation)),
             )
@@ -311,6 +512,8 @@ class CommandStore:
                 """,
                 (message, str(device_id), int(generation)),
             )
+            for row in delivery_rows:
+                self._refresh_delivery_state(conn, row["delivery_id"], now, cancelled=True)
         return int(cursor.rowcount or 0)
 
     def find_terminal_ack(self, cmd_id: str) -> dict[str, Any] | None:
@@ -478,6 +681,7 @@ class CommandStore:
         command = {
             "cmd_id": row["cmd_id"],
             "type": row["type"],
+            "boot_id": row["boot_id"],
             "priority": row["priority"],
             "ttl_ms": row["ttl_ms"],
             "attempt": row["attempt"],

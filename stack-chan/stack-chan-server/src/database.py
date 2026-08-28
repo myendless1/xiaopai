@@ -44,6 +44,7 @@ class Database:
                       last_heartbeat_at TEXT NOT NULL DEFAULT '',
                       last_ack_seq INTEGER NOT NULL DEFAULT 0,
                       speech_generation INTEGER NOT NULL DEFAULT 0,
+                      current_boot_id INTEGER NOT NULL DEFAULT 0,
                       online INTEGER NOT NULL DEFAULT 0
                     );
 
@@ -76,6 +77,7 @@ class Database:
                       cmd_id TEXT PRIMARY KEY,
                       delivery_id TEXT NOT NULL DEFAULT '',
                       device_id TEXT NOT NULL,
+                      boot_id INTEGER NOT NULL DEFAULT 0,
                       type TEXT NOT NULL,
                       priority INTEGER NOT NULL DEFAULT 50,
                       ttl_ms INTEGER NOT NULL DEFAULT 30000,
@@ -183,6 +185,10 @@ class Database:
             conn.execute(
                 "ALTER TABLE devices ADD COLUMN speech_generation INTEGER NOT NULL DEFAULT 0"
             )
+        if "current_boot_id" not in columns:
+            conn.execute(
+                "ALTER TABLE devices ADD COLUMN current_boot_id INTEGER NOT NULL DEFAULT 0"
+            )
         # Older databases already contain the generation on dialogue commands.
         # Backfill it so a Server restart cannot make new speech stale.
         conn.execute(
@@ -204,11 +210,25 @@ class Database:
                    )
             """
         )
+        conn.execute(
+            """
+            UPDATE devices
+               SET current_boot_id=COALESCE((
+                     SELECT sessions.boot_id
+                       FROM device_sessions AS sessions
+                      WHERE sessions.device_id=devices.device_id
+                      ORDER BY sessions.connected_at DESC
+                      LIMIT 1
+                   ), current_boot_id)
+             WHERE current_boot_id=0
+            """
+        )
 
     @staticmethod
     def _migrate_commands(conn: sqlite3.Connection) -> None:
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(commands)")}
         additions = {
+            "boot_id": "INTEGER NOT NULL DEFAULT 0",
             "source_type": "TEXT NOT NULL DEFAULT ''",
             "source_id": "TEXT NOT NULL DEFAULT ''",
             "segment_index": "INTEGER NOT NULL DEFAULT 0",
@@ -224,8 +244,21 @@ class Database:
         conn.execute("UPDATE commands SET queue_seq=rowid WHERE queue_seq=0")
         conn.execute(
             """
-            CREATE INDEX IF NOT EXISTS idx_commands_device_queue
-              ON commands(device_id, state, priority, queue_seq)
+            UPDATE commands
+               SET boot_id=COALESCE((
+                     SELECT attempts.boot_id
+                       FROM command_attempts AS attempts
+                      WHERE attempts.cmd_id=commands.cmd_id
+                      ORDER BY attempts.id DESC
+                      LIMIT 1
+                   ), 0)
+             WHERE boot_id=0
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_commands_device_boot_queue
+              ON commands(device_id, boot_id, state, priority, queue_seq)
             """
         )
         conn.execute(
