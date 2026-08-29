@@ -224,13 +224,14 @@ After starting Morrow with the desired config and starting this server, open:
 http://<server-ip>:8091/web
 ```
 
-The page restores the selected Morrow session, sends messages through the 8091 server, and creates a distinct
-Morrow session whenever **New chat** is selected. Morrow's port (3000 by default) can remain private. The page uses
+The page and every connected Xiaopai device share the server's active Morrow session. Web messages enter the same
+serialized coordinator queue as device speech, and **New chat** resets that shared context and retires queued speech
+for every known device. Morrow's port (3000 by default) can remain private. The page uses
 `MORROW_BASE_URL`, `MORROW_SESSION`, `MORROW_AUTH_TOKEN`, and the existing Morrow timeout settings.
 
 The mode selector exposes the allowlisted configurations as **General Q&A** (`nolark`) and **Feishu Office
-Assistant** (`lark`). Switching runs the workspace `start_morrow.sh` controller and automatically creates and selects
-a fresh session so context from different tool configurations is never mixed.
+Assistant** (`lark`). Switching runs the workspace `start_morrow.sh` controller, creates one fresh shared session,
+and switches the web page and all devices together so context from different tool configurations is never mixed.
 
 The **Xiaopai Management** drawer uses the existing `/health`, `/devices`, `/v3/devices`, and `/command/volume`
 interfaces to show service/Morrow/realtime status, distinguish live hardware heartbeats from stale registry records,

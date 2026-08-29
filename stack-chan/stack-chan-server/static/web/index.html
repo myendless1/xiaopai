@@ -508,6 +508,7 @@
     let sessionId = '';
     let busy = false;
     let activeMode = '';
+    let sessionRevision = -1;
     let availableModes = [];
     let adminTimer = null;
     let adminLoading = false;
@@ -1135,10 +1136,10 @@
     }
 
     async function loadSession(id) {
-      selectSession(id);
       els.conversation.replaceChildren();
       try {
         const payload = await api(`/web/api/sessions/${encodeURIComponent(id)}`);
+        selectSession(payload.session_id || id);
         const messages = historyMessages(payload);
         if (!messages.length) showWelcome();
         else messages.forEach(message => addMessage(message.role, message.text));
@@ -1153,6 +1154,7 @@
       try {
         const status = await api('/web/api/status');
         populateModes(status.modes, status.active_mode);
+        sessionRevision = Number(status.session_revision || 0);
         if (!status.connected) {
           setStatus('offline', 'Morrow 未连接');
           showWelcome();
@@ -1160,15 +1162,7 @@
           return;
         }
         setStatus('online', `已连接 · ${modeLabel()}`);
-        const querySession = new URLSearchParams(location.search).get('session');
-        const remembered = localStorage.getItem('morrow-web-session');
-        const rememberedMode = localStorage.getItem('morrow-web-session-mode');
-        if (!querySession && remembered && rememberedMode && activeMode && rememberedMode !== activeMode) {
-          const fresh = await api('/web/api/sessions', { method: 'POST', body: '{}' });
-          await loadSession(fresh.session_id);
-        } else {
-          await loadSession(querySession || remembered || status.default_session || 'default');
-        }
+        await loadSession(status.default_session || 'default');
       } catch (error) {
         setStatus('offline', '服务不可用');
         showWelcome();
@@ -1244,6 +1238,24 @@
       }
     }
 
+    async function syncSharedSession() {
+      if (busy) return;
+      try {
+        const status = await api('/web/api/status');
+        if (!status.connected || status.switching) return;
+        const revision = Number(status.session_revision || 0);
+        const nextSession = status.default_session || 'default';
+        const nextMode = status.active_mode || activeMode;
+        if (revision === sessionRevision && nextSession === sessionId && nextMode === activeMode) return;
+        sessionRevision = revision;
+        populateModes(status.modes, nextMode);
+        setStatus('online', `已连接 · ${modeLabel()}`);
+        await loadSession(nextSession);
+      } catch (_error) {
+        // The normal status UI will recover on the next successful poll.
+      }
+    }
+
     function resizeInput() {
       els.input.style.height = 'auto';
       els.input.style.height = `${Math.min(els.input.scrollHeight, 150)}px`;
@@ -1306,6 +1318,7 @@
     });
 
     initialise();
+    setInterval(syncSharedSession, 3000);
   </script>
 </body>
 </html>

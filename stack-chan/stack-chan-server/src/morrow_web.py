@@ -86,6 +86,8 @@ class MorrowWebGateway:
         start_script: str = "",
         run_command: Callable[..., Any] = subprocess.run,
         device_session_switcher: Callable[[str], Any] | None = None,
+        shared_turn_submitter: Callable[[str], Any] | None = None,
+        shared_session_resetter: Callable[[], Any] | None = None,
     ) -> None:
         self.base_url = str(base_url or "").strip()
         self.default_session = validate_session_id(default_session or "default")
@@ -100,10 +102,13 @@ class MorrowWebGateway:
         )
         self.run_command = run_command
         self.device_session_switcher = device_session_switcher
+        self.shared_turn_submitter = shared_turn_submitter
+        self.shared_session_resetter = shared_session_resetter
         self._session_locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
         self._mode_lock = threading.Lock()
         self._switching = threading.Event()
+        self._session_revision = 0
 
     def status(self) -> dict[str, Any]:
         try:
@@ -115,6 +120,7 @@ class MorrowWebGateway:
                 "active_mode": self._mode_from_status(upstream),
                 "modes": self.available_modes(),
                 "switching": self._switching.is_set(),
+                "session_revision": self._session_revision,
             }
         except MorrowWebError as exc:
             return {
@@ -124,6 +130,7 @@ class MorrowWebGateway:
                 "active_mode": "",
                 "modes": self.available_modes(),
                 "switching": self._switching.is_set(),
+                "session_revision": self._session_revision,
             }
 
     @staticmethod
@@ -164,16 +171,15 @@ class MorrowWebGateway:
             upstream = self._request_json("GET", "/api/status")
             if self._mode_from_status(upstream) != mode:
                 raise MorrowWebError("Morrow started with an unexpected configuration", 502)
-            new_session = self.create_session()
-            device_session_id = ""
+            new_session = self._create_session("shared")
+            device_session_id = new_session["session_id"]
             if self.device_session_switcher is not None:
-                device_session = self._create_session("xiaopai")
-                device_session_id = device_session["session_id"]
                 try:
                     self.device_session_switcher(device_session_id)
                 except Exception as exc:
                     raise MorrowWebError(f"could not switch Xiaopai Morrow session: {exc}", 502) from exc
-                self.default_session = device_session_id
+            self.default_session = device_session_id
+            self.mark_shared_session_changed()
             return {
                 "mode": {key: selected[key] for key in ("id", "label", "description")},
                 "session_id": new_session["session_id"],
@@ -186,11 +192,30 @@ class MorrowWebGateway:
             self._mode_lock.release()
 
     def get_session(self, session_id: str) -> dict[str, Any]:
-        session_id = validate_session_id(session_id)
+        session_id = self._shared_session_id(session_id)
         return self._request_json("GET", f"/api/sessions/{self._quote(session_id)}")
 
     def create_session(self) -> dict[str, Any]:
+        if self.shared_session_resetter is not None:
+            try:
+                result = self.shared_session_resetter()
+            except Exception as exc:
+                raise MorrowWebError(f"could not reset shared Morrow session: {exc}", 502) from exc
+            if not bool(getattr(result, "success", result)):
+                message = str(getattr(result, "message", "shared session reset failed"))
+                raise MorrowWebError(message, 409)
+            self.mark_shared_session_changed()
+            return {
+                "session_id": self.default_session,
+                "session": self.get_session(self.default_session),
+            }
         return self._create_session("web")
+
+    def mark_shared_session_changed(self) -> int:
+        """Advance the browser-visible revision after a global clear or switch."""
+        with self._locks_guard:
+            self._session_revision += 1
+            return self._session_revision
 
     def _create_session(self, prefix: str) -> dict[str, Any]:
         session_id = f"{prefix}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
@@ -200,12 +225,15 @@ class MorrowWebGateway:
     def send_message(self, session_id: str, prompt: str) -> dict[str, Any]:
         if self._switching.is_set():
             raise MorrowWebError("Morrow mode switch is in progress", 409)
-        session_id = validate_session_id(session_id)
+        session_id = self._shared_session_id(session_id)
         prompt = str(prompt or "").strip()
         if not prompt:
             raise MorrowWebError("message is required", 400)
         if len(prompt) > 20_000:
             raise MorrowWebError("message is too long", 400)
+
+        if self.shared_turn_submitter is not None:
+            return self._run_shared_turn(session_id, prompt)
 
         lock = self._lock_for_session(session_id)
         if not lock.acquire(blocking=False):
@@ -214,6 +242,30 @@ class MorrowWebGateway:
             return self._run_turn(session_id, prompt)
         finally:
             lock.release()
+
+    def _run_shared_turn(self, session_id: str, prompt: str) -> dict[str, Any]:
+        try:
+            outcome = self.shared_turn_submitter(prompt)
+        except Exception as exc:
+            raise MorrowWebError(str(exc), 409) from exc
+        if not outcome.finished.wait(self.turn_timeout):
+            raise MorrowWebError("Morrow response timed out", 504)
+        if outcome.state != "saved":
+            raise MorrowWebError(outcome.message or f"Morrow turn ended as {outcome.state}", 502)
+        return {
+            "request_id": outcome.request_id,
+            "session_id": session_id,
+            "message": clean_assistant_text(outcome.response_text),
+        }
+
+    def _shared_session_id(self, requested_session_id: str) -> str:
+        requested_session_id = validate_session_id(requested_session_id)
+        if self.shared_turn_submitter is not None or self.shared_session_resetter is not None:
+            return self.default_session
+        return requested_session_id
+
+    def resolved_session_id(self, requested_session_id: str) -> str:
+        return self._shared_session_id(requested_session_id)
 
     def _run_turn(self, session_id: str, prompt: str) -> dict[str, Any]:
         request_id = f"web-{uuid.uuid4()}"

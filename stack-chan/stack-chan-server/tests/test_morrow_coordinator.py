@@ -170,6 +170,18 @@ class CoordinatorTest(unittest.TestCase):
         self.assertTrue(outcome.finished.wait(0.3))
         self.assertEqual([item[1] for item in self.spoken], ["最终回复"])
 
+    def test_web_turn_uses_shared_queue_without_sending_device_speech(self):
+        outcome = self.coordinator.submit("网页问题", "__web__", source="web", request_id="web-1")
+        self.assertTrue(self._wait(lambda: self.client.started == [("web-1", "网页问题")]))
+        self.client.events.put(
+            event({"type": "agent_event", "data": {"event": {"type": "text_delta", "data": "共享回复。"}}})
+        )
+        self.client.events.put(event({"type": "turn_saved", "data": {}}))
+        self.assertTrue(outcome.finished.wait(0.3))
+        self.assertEqual(outcome.response_text, "共享回复。")
+        self.assertEqual(self.spoken, [])
+        self.assertEqual(self.ended, [])
+
     def test_saved_empty_reply_still_emits_one_end_control(self):
         outcome = self.submit("req-empty")
         self.assertTrue(self._wait(lambda: len(self.client.started) == 1))
@@ -251,6 +263,23 @@ class CoordinatorTest(unittest.TestCase):
         self.client.events.put(event({"type": "snapshot", "data": {"session": {"active_thread": {"messages": []}}}}))
         thread.join(timeout=0.5)
         self.assertTrue(result_holder[0].success)
+
+    def test_shared_reset_advances_every_device_generation(self):
+        result_holder = []
+        thread = threading.Thread(
+            target=lambda: result_holder.append(
+                self.coordinator.reset_shared_session({"dev1", "dev2"}, timeout=0.5)
+            )
+        )
+        thread.start()
+        self.assertTrue(self._wait(lambda: len(self.client.resets) == 1))
+        self.client.events.put(event({"type": "snapshot", "data": {"session": {}}}))
+        thread.join(timeout=0.5)
+        self.assertTrue(result_holder[0].success)
+        self.assertEqual(self.coordinator.generation_for_device("dev1"), 1)
+        self.assertEqual(self.coordinator.generation_for_device("dev2"), 1)
+        self.assertIn(("dev1", 1), self.cancelled_generations)
+        self.assertIn(("dev2", 1), self.cancelled_generations)
 
     def test_disconnect_ends_turn_without_flushing_incomplete_tail(self):
         outcome = self.submit("req-1")

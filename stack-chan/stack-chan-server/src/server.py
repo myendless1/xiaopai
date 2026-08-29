@@ -1508,7 +1508,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 session = self.server.morrow_web_gateway.get_session(session_id)
-                self._send_json({"session_id": session_id, "session": session})
+                self._send_json(
+                    {
+                        "session_id": self.server.morrow_web_gateway.resolved_session_id(session_id),
+                        "session": session,
+                    }
+                )
             except MorrowWebError as exc:
                 self._send_json({"type": "error", "message": str(exc)}, exc.status)
             return
@@ -2430,14 +2435,30 @@ class Handler(BaseHTTPRequestHandler):
                     coordinator.sync_device_generation(device_id, max(0, int(reported_generation)))
                 except (AttributeError, TypeError, ValueError):
                     pass
-            result = coordinator.reset_session(device_id)
+            reset_shared = getattr(coordinator, "reset_shared_session", None)
+            device_ids = getattr(self.server, "morrow_device_ids", lambda extra: {extra})(device_id)
+            result = (
+                reset_shared(device_ids)
+                if callable(reset_shared)
+                else coordinator.reset_session(device_id)
+            )
+            generation_for_device = getattr(coordinator, "generation_for_device", None)
+            device_generation = (
+                generation_for_device(device_id)
+                if callable(generation_for_device)
+                else result.generation
+            )
             queued_commands = []
             if result.success:
+                web_gateway = getattr(self.server, "morrow_web_gateway", None)
+                mark_changed = getattr(web_gateway, "mark_shared_session_changed", None)
+                if callable(mark_changed):
+                    mark_changed()
                 command = make_command(
                     "speak",
                     {
                         "text": "你好，我是小派，今天有什么需要帮忙的？",
-                        "generation": result.generation,
+                        "generation": device_generation,
                     },
                     interrupt=False,
                     discardable=False,
@@ -2454,7 +2475,7 @@ class Handler(BaseHTTPRequestHandler):
                     "device_id": device_id,
                     "event_type": event_type,
                     "session_reset": result.success,
-                    "generation": result.generation,
+                    "generation": device_generation,
                     "error": result.message,
                     "queued_commands": queued_commands,
                 },
@@ -5153,6 +5174,17 @@ def main():
             cancelled += queue.discard_speech_before_generation(generation)
         return cancelled
 
+    def morrow_device_ids(extra_device_id: str = "") -> set[str]:
+        with httpd.device_lock:
+            device_ids = set(httpd.device_order)
+            device_ids.update(httpd.device_queues)
+            device_ids.update(httpd.last_seen)
+        if extra_device_id:
+            device_ids.add(safe_device_id(extra_device_id))
+        return device_ids
+
+    httpd.morrow_device_ids = morrow_device_ids
+
     httpd.morrow_client = MorrowClient(
         base_url=args.morrow_base_url,
         session=args.morrow_session,
@@ -5168,8 +5200,23 @@ def main():
         connect_timeout=args.morrow_connect_timeout,
         turn_timeout=args.morrow_turn_timeout,
         device_session_switcher=(
-            lambda session_id: httpd.morrow_client.switch_session(
+            lambda session_id: httpd.morrow_coordinator.switch_shared_session(
                 session_id,
+                httpd.morrow_device_ids(),
+                timeout=args.morrow_connect_timeout,
+            )
+        ) if httpd.morrow_client else None,
+        shared_turn_submitter=(
+            lambda prompt: httpd.morrow_coordinator.submit(
+                prompt,
+                "__web__",
+                source="web",
+                ttl=args.morrow_turn_timeout,
+            )
+        ) if httpd.morrow_client else None,
+        shared_session_resetter=(
+            lambda: httpd.morrow_coordinator.reset_shared_session(
+                httpd.morrow_device_ids(),
                 timeout=args.morrow_connect_timeout,
             )
         ) if httpd.morrow_client else None,

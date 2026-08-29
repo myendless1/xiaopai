@@ -120,6 +120,7 @@ class TurnOutcome:
     request_id: str
     state: str
     message: str = ""
+    response_text: str = ""
     segment_count: int = 0
     finished: threading.Event = field(default_factory=threading.Event, repr=False)
 
@@ -261,6 +262,7 @@ class MorrowTurnCoordinator:
         self._outcomes: dict[str, TurnOutcome] = {}
         self._pending_requests: dict[str, MorrowRequest] = {}
         self._resetting_devices: set[str] = set()
+        self._shared_transition = False
         self.metrics = {
             "morrow_turn_submitted_total": 0,
             "morrow_turn_rejected_total": 0,
@@ -340,11 +342,13 @@ class MorrowTurnCoordinator:
         prompt = str(prompt or "").strip()
         if not prompt:
             raise ValueError("prompt is required")
-        if source not in {"voice", "touch", "system", "admin"}:
+        if source not in {"voice", "touch", "system", "admin", "web"}:
             raise ValueError(f"unsupported Morrow request source: {source}")
         now = self.clock()
         device_id = str(device_id or "default")
         with self._lock:
+            if self._shared_transition:
+                raise RuntimeError("Morrow shared session transition is in progress")
             if device_id in self._resetting_devices:
                 raise RuntimeError("Morrow session reset is in progress")
             generation = self._generations.get(device_id, 0)
@@ -383,22 +387,48 @@ class MorrowTurnCoordinator:
         return generation
 
     def reset_session(self, device_id: str, *, timeout: float = 8.0) -> SessionResetResult:
-        """Cancel device dialogue, then reset the shared Morrow session."""
+        """Backward-compatible single-device entry point for a shared reset."""
         device_id = str(device_id or "default")
+        result = self.reset_shared_session([device_id], timeout=timeout)
+        return SessionResetResult(result.success, self.generation_for_device(device_id), result.message)
+
+    def reset_shared_session(
+        self,
+        device_ids: list[str] | tuple[str, ...] | set[str],
+        *,
+        timeout: float = 8.0,
+    ) -> SessionResetResult:
+        """Cancel every source and reset the one Morrow session shared by all clients."""
         timeout = max(0.1, float(timeout))
         with self._lock:
-            if device_id in self._resetting_devices:
-                return SessionResetResult(False, self._generations.get(device_id, 0), "reset already in progress")
-            self._resetting_devices.add(device_id)
+            if self._shared_transition:
+                generation = max(self._generations.values(), default=0)
+                return SessionResetResult(False, generation, "shared session transition already in progress")
+            self._shared_transition = True
+            targets = {str(device_id or "default") for device_id in device_ids}
+            targets.update(self._generations)
+            targets.update(request.device_id for request in self._pending_requests.values())
+            generations: dict[str, int] = {}
+            for target in targets:
+                generation = self._generations.get(target, 0) + 1
+                self._generations[target] = generation
+                generations[target] = generation
+            active = self._active
 
-        generation = self.cancel_device(device_id)
+        for target, generation in generations.items():
+            if self.cancel_sink is not None and target != "__web__":
+                self.cancel_sink(target, generation)
+        if active is not None:
+            self.client.cancel_turn()
+
+        generation = max(generations.values(), default=0)
         deadline = self.clock() + timeout
         request_id = f"reset-{uuid.uuid4()}"
         try:
             while True:
                 with self._lock:
                     active = self._active
-                if active is None or active.device_id != device_id:
+                if active is None:
                     break
                 if self.clock() >= deadline:
                     return SessionResetResult(False, generation, "active turn did not stop before reset timeout")
@@ -441,7 +471,57 @@ class MorrowTurnCoordinator:
             return SessionResetResult(False, generation, str(exc))
         finally:
             with self._lock:
-                self._resetting_devices.discard(device_id)
+                self._shared_transition = False
+
+    def switch_shared_session(
+        self,
+        session_id: str,
+        device_ids: list[str] | tuple[str, ...] | set[str],
+        *,
+        timeout: float = 10.0,
+    ) -> None:
+        """Retire all queued output and reconnect the shared client to one new session."""
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            raise ValueError("Morrow session is required")
+        timeout = max(0.1, float(timeout))
+        with self._lock:
+            if self._shared_transition:
+                raise RuntimeError("shared session transition already in progress")
+            self._shared_transition = True
+            targets = {str(device_id or "default") for device_id in device_ids}
+            targets.update(self._generations)
+            targets.update(request.device_id for request in self._pending_requests.values())
+            generations: dict[str, int] = {}
+            for target in targets:
+                generation = self._generations.get(target, 0) + 1
+                self._generations[target] = generation
+                generations[target] = generation
+            active = self._active
+        try:
+            for target, generation in generations.items():
+                if self.cancel_sink is not None and target != "__web__":
+                    self.cancel_sink(target, generation)
+            if active is not None:
+                try:
+                    self.client.cancel_turn()
+                except Exception:
+                    # A mode switch restarts Morrow before this transition runs,
+                    # so the old socket may already be gone.
+                    pass
+            deadline = self.clock() + timeout
+            while True:
+                with self._lock:
+                    active = self._active
+                if active is None:
+                    break
+                if self.clock() >= deadline:
+                    raise RuntimeError("active turn did not stop before session switch timeout")
+                time.sleep(0.02)
+            self.client.switch_session(session_id, timeout=max(0.1, deadline - self.clock()))
+        finally:
+            with self._lock:
+                self._shared_transition = False
 
     def outcome(self, request_id: str) -> TurnOutcome | None:
         with self._lock:
@@ -520,6 +600,8 @@ class MorrowTurnCoordinator:
                         saw_delta = True
                         outcome.state = "streaming"
                         cleaned = tag_parser.feed(text)
+                        if request.source == "web":
+                            outcome.response_text += cleaned
                         request.expression = tag_parser.expression
                         self._deliver(request, outcome, segmenter.feed(cleaned))
                     elif event_type == "agent_message":
@@ -528,6 +610,8 @@ class MorrowTurnCoordinator:
                 if event.type == "turn_saved":
                     if not saw_delta and final_message:
                         cleaned = tag_parser.feed(final_message)
+                        if request.source == "web":
+                            outcome.response_text += cleaned
                         request.expression = tag_parser.expression
                         self._deliver(request, outcome, segmenter.feed(cleaned))
                     segmenter.feed(tag_parser.flush())
@@ -561,7 +645,7 @@ class MorrowTurnCoordinator:
     def _emit_reply_end(self, request: MorrowRequest) -> None:
         """Emit exactly one FIFO sentinel for every terminal accepted request."""
         outcome = self._outcomes[request.request_id]
-        if not outcome.finished.is_set() or self.reply_end_sink is None:
+        if request.source == "web" or not outcome.finished.is_set() or self.reply_end_sink is None:
             return
         with self._lock:
             current_generation = self._generations.get(request.device_id, 0)
@@ -578,6 +662,9 @@ class MorrowTurnCoordinator:
         if self._is_stale(request):
             return
         for segment in segments:
+            if request.source == "web":
+                outcome.segment_count += 1
+                continue
             if outcome.segment_count == 0:
                 self.metrics["morrow_first_speech_command_latency_ms"] = (self.clock() - request.created_at) * 1000
             self.segment_sink(request, segment, outcome.segment_count)

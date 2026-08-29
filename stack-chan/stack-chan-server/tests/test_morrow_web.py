@@ -118,6 +118,38 @@ class MorrowWebGatewayTest(unittest.TestCase):
         self.assertEqual(FakeClient.instances[0].sent[0][1], "你好")
         self.assertTrue(FakeClient.instances[0].stopped)
 
+    def test_shared_gateway_uses_one_session_for_web_turns_and_new_chat_reset(self):
+        submitted = []
+        resets = []
+
+        def submit(prompt):
+            submitted.append(prompt)
+            return SimpleNamespace(
+                request_id="shared-web-1",
+                state="saved",
+                message="",
+                response_text="<happy>统一回复",
+                finished=SimpleNamespace(wait=lambda _timeout: True),
+            )
+
+        gateway = MorrowWebGateway(
+            base_url="http://127.0.0.1:3000",
+            default_session="shared-current",
+            client_factory=FakeClient,
+            urlopen=self.gateway.urlopen,
+            shared_turn_submitter=submit,
+            shared_session_resetter=lambda: resets.append(True) or SimpleNamespace(success=True, message=""),
+        )
+
+        result = gateway.send_message("obsolete-web-session", "网页问题")
+        self.assertEqual(result["session_id"], "shared-current")
+        self.assertEqual(result["message"], "统一回复")
+        self.assertEqual(submitted, ["网页问题"])
+        fresh = gateway.create_session()
+        self.assertEqual(fresh["session_id"], "shared-current")
+        self.assertEqual(resets, [True])
+        self.assertEqual(gateway.status()["session_revision"], 1)
+
     def test_validation_and_expression_cleanup(self):
         self.assertEqual(validate_session_id("web-1:chat"), "web-1:chat")
         self.assertEqual(clean_assistant_text("<thinking>正在处理"), "正在处理")
@@ -177,8 +209,8 @@ class MorrowWebGatewayTest(unittest.TestCase):
 
         self.assertEqual(commands[0][0], ["/bin/true", "lark"])
         self.assertEqual(result["mode"]["label"], "飞书办公助手")
-        self.assertTrue(result["session_id"].startswith("web-"))
-        self.assertTrue(result["xiaopai_session_id"].startswith("xiaopai-"))
+        self.assertTrue(result["session_id"].startswith("shared-"))
+        self.assertEqual(result["xiaopai_session_id"], result["session_id"])
         self.assertEqual(switched_sessions, [result["xiaopai_session_id"]])
         self.assertEqual(gateway.default_session, result["xiaopai_session_id"])
 

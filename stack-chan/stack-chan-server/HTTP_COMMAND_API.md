@@ -418,7 +418,8 @@ Content-Type: application/json
 
 Holding the Xiaopai screen for three seconds sends `type=reset_session`. The
 firmware does not stop playback, change voice state, change the expression, or
-touch the local speech queue. After the Morrow context is reset, the server adds
+touch the local speech queue. The server resets the Morrow context shared by the
+web page and all devices, retires old queued speech for every known device, then adds
 the speech `你好，我是小派，今天有什么需要帮忙的？` to the device command queue
 without changing the dialog wake state or preempting other queued commands. The
 action fires once per press and does not require a second confirmation.
