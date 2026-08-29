@@ -1,4 +1,6 @@
+import os
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -160,6 +162,39 @@ class CommandPayloadTest(unittest.TestCase):
         self.assertEqual(result, 20)
         self.assertEqual(fake_server.speaker_volume, 20)
         self.assertEqual(payload, {"mode": "set", "value": 20})
+
+    def test_volume_command_persists_and_reloads_from_sqlite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "xiaopai.sqlite3")
+            database = server.Database(path)
+            fake_server = type(
+                "FakeServer",
+                (),
+                {"speaker_volume": 10, "v3_database": database},
+            )()
+
+            server.normalize_server_volume_command(fake_server, {"mode": "set", "value": 45})
+
+            reopened = server.Database(path)
+            self.assertEqual(server.load_persisted_speaker_volume(reopened), 45)
+            self.assertEqual(reopened.get_setting(server.SPEAKER_VOLUME_SETTING_KEY), "45")
+
+    def test_first_start_creates_default_volume_setting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            database = server.Database(os.path.join(tmp, "xiaopai.sqlite3"))
+
+            self.assertEqual(server.load_persisted_speaker_volume(database, 25), 25)
+            self.assertEqual(database.get_setting(server.SPEAKER_VOLUME_SETTING_KEY), "25")
+
+    def test_device_brightness_persists_across_registry_recreation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "xiaopai.sqlite3")
+            server.DeviceRegistry(server.Database(path)).set_display_brightness("robot-1", 65)
+
+            devices = server.DeviceRegistry(server.Database(path)).list_devices()
+
+            self.assertEqual(devices[0]["device_id"], "robot-1")
+            self.assertEqual(devices[0]["display_brightness"], 65)
 
     def test_sequence_volume_change_updates_global_before_later_speech(self):
         fake_server = type("FakeServer", (), {"speaker_volume": 10})()

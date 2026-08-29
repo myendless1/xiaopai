@@ -415,7 +415,6 @@ Environment variables:
 | `STACKCHAN_ALIYUN_ASR_SAMPLE_RATE` | `16000` | Microphone/Opus/ASR upstream sample rate |
 | `STACKCHAN_ALIYUN_SAMPLE_RATE` | `24000` | TTS/Opus/playback downstream sample rate |
 | `STACKCHAN_ALIYUN_VOLUME` | `80` | Aliyun TTS synthesis amplitude; this is not the physical speaker volume |
-| `STACKCHAN_SPEAKER_VOLUME` | `10` | Global Xiaopai hardware speaker volume attached to every speech command |
 | `STACKCHAN_ALIYUN_SPEECH_RATE` | `0` | TTS speech rate |
 | `STACKCHAN_ALIYUN_PITCH_RATE` | `0` | TTS pitch rate |
 | `STACKCHAN_ALIYUN_MAX_SENTENCE_CHARS` | `120` | Sentence chunk size for TTS |
@@ -425,6 +424,7 @@ Environment variables:
 | `STACKCHAN_CAPTURE_DIR` | `captures` | Directory for image uploads |
 | `STACKCHAN_CAPTURE_SAVE_MODE` | `none` | Image persistence mode: `none`, `raw`, or `debug` |
 | `STACKCHAN_COMMAND_QUEUE_MAX_SIZE` | `24` | Per-device command queue size before discard/preempt policy applies |
+| `STACKCHAN_DATABASE_PATH` | `data/xiaopai-v3.sqlite3` | SQLite database containing device state and persistent server settings |
 | `STACKCHAN_STATIC_DIR` | `static` | Directory for cached static assets such as head-touch event audio |
 | `STACKCHAN_FACE_DETECTOR` | `yunet` | Face detector backend for `/upload-image`: `yunet`, `legacy`, or `none` |
 | `STACKCHAN_YUNET_MODEL` | `models/face_detection_yunet_2023mar.onnx` | YuNet ONNX checkpoint path |
@@ -438,6 +438,10 @@ Environment variables:
 | `MORROW_TURN_TIMEOUT_SECONDS` | `120` | Maximum duration of one serialized turn |
 | `MORROW_RECONNECT_MIN_SECONDS` | `1` | Initial reconnect delay |
 | `MORROW_RECONNECT_MAX_SECONDS` | `30` | Maximum reconnect delay |
+
+The global physical speaker volume is stored as `server_settings.speaker_volume` in this SQLite database. The
+first startup defaults to 10%, and subsequent web, voice, or command adjustments survive Server restarts. Display
+brightness is stored per device in `devices.display_brightness`; supported firmware also stores it in device NVS.
 
 ## Firmware URLs
 

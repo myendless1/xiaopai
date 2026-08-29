@@ -118,3 +118,19 @@ class DeviceRegistry:
             item["capabilities"] = json.loads(item.pop("capabilities_json") or "[]")
             devices.append(item)
         return devices
+
+    def set_display_brightness(self, device_id: str, value: int) -> int:
+        """Persist the requested per-device brightness before the next heartbeat."""
+        device_id = str(device_id or "default")
+        brightness = max(1, min(100, int(value)))
+        with self.database.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO devices(device_id, display_brightness)
+                VALUES (?, ?)
+                ON CONFLICT(device_id) DO UPDATE SET
+                  display_brightness=excluded.display_brightness
+                """,
+                (device_id, brightness),
+            )
+        return brightness

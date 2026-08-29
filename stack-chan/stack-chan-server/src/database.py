@@ -50,6 +50,12 @@ class Database:
                       online INTEGER NOT NULL DEFAULT 0
                     );
 
+                    CREATE TABLE IF NOT EXISTS server_settings (
+                      key TEXT PRIMARY KEY,
+                      value TEXT NOT NULL,
+                      updated_at TEXT NOT NULL DEFAULT ''
+                    );
+
                     CREATE TABLE IF NOT EXISTS device_sessions (
                       session_id TEXT PRIMARY KEY,
                       device_id TEXT NOT NULL,
@@ -179,6 +185,33 @@ class Database:
                 conn.commit()
             finally:
                 conn.close()
+
+    def get_setting(self, key: str) -> str | None:
+        key = str(key or "").strip()
+        if not key:
+            raise ValueError("setting key is required")
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM server_settings WHERE key=?",
+                (key,),
+            ).fetchone()
+        return str(row["value"]) if row is not None else None
+
+    def set_setting(self, key: str, value: str | int | float | bool) -> None:
+        key = str(key or "").strip()
+        if not key:
+            raise ValueError("setting key is required")
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO server_settings(key, value, updated_at)
+                VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                ON CONFLICT(key) DO UPDATE SET
+                  value=excluded.value,
+                  updated_at=excluded.updated_at
+                """,
+                (key, str(value)),
+            )
 
     @staticmethod
     def _migrate_devices(conn: sqlite3.Connection) -> None:

@@ -158,6 +158,7 @@ COMMAND_QUEUE_MAX_SIZE = 24
 SPEAKER_VOLUME_MIN = 5
 SPEAKER_VOLUME_MAX = 100
 SPEAKER_VOLUME_DEFAULT = 10
+SPEAKER_VOLUME_SETTING_KEY = "speaker_volume"
 COMMAND_DEFAULT_PRIORITIES = {
     "stop": 100,
     "volume": 90,
@@ -1121,6 +1122,15 @@ def clamp_speaker_volume(value) -> int:
     return max(SPEAKER_VOLUME_MIN, min(SPEAKER_VOLUME_MAX, percent))
 
 
+def load_persisted_speaker_volume(database: Database, fallback=SPEAKER_VOLUME_DEFAULT) -> int:
+    """Load the global hardware volume, creating or repairing its SQLite setting."""
+    stored = database.get_setting(SPEAKER_VOLUME_SETTING_KEY)
+    target = clamp_speaker_volume(fallback if stored is None else stored)
+    if stored != str(target):
+        database.set_setting(SPEAKER_VOLUME_SETTING_KEY, target)
+    return target
+
+
 def apply_global_speaker_volume(command_type: str, payload, speaker_volume) -> None:
     """Attach the Server-owned hardware volume to every command that can speak."""
     percent = clamp_speaker_volume(speaker_volume)
@@ -1160,6 +1170,9 @@ def normalize_server_volume_command(server, payload) -> int:
         else:
             target = clamp_speaker_volume(current + step)
     server.speaker_volume = target
+    database = getattr(server, "v3_database", None)
+    if database is not None:
+        database.set_setting(SPEAKER_VOLUME_SETTING_KEY, target)
     payload["mode"] = "set"
     payload["value"] = target
     payload.pop("direction", None)
@@ -2657,6 +2670,11 @@ class Handler(BaseHTTPRequestHandler):
             coalesce_key=coalesce_key,
         )
         queued = self._enqueue_command(device_id, command)
+        if queued and command_wire_type in ("brightness", "display_brightness") and isinstance(payload, dict):
+            self.server.device_registry.set_display_brightness(
+                device_id,
+                int(payload.get("value") or 70),
+            )
         self._send_json({"type": "queued" if queued else "dropped", "device_id": device_id, "command": command})
 
     def _handle_face_shortcut(self, query: dict, expression: str, action_only: bool = False):
@@ -4806,8 +4824,8 @@ def main():
     parser.add_argument(
         "--speaker-volume",
         type=int,
-        default=int(os.environ.get("STACKCHAN_SPEAKER_VOLUME", str(SPEAKER_VOLUME_DEFAULT))),
-        help="Global Xiaopai hardware speaker volume percent attached to every speech command.",
+        default=SPEAKER_VOLUME_DEFAULT,
+        help="Initial global hardware volume used only when SQLite has no saved value.",
     )
     parser.add_argument("--speech-rate", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_SPEECH_RATE", "0")))
     parser.add_argument("--pitch-rate", type=int, default=int(os.environ.get("STACKCHAN_ALIYUN_PITCH_RATE", "0")))
@@ -5082,7 +5100,6 @@ def main():
     httpd.asr_sample_rate = args.asr_sample_rate
     httpd.sample_rate = args.sample_rate
     httpd.volume = args.volume
-    httpd.speaker_volume = clamp_speaker_volume(args.speaker_volume)
     httpd.speech_rate = args.speech_rate
     httpd.pitch_rate = args.pitch_rate
     httpd.max_sentence_chars = args.max_sentence_chars
@@ -5093,6 +5110,10 @@ def main():
     httpd.tts_tail_silence_ms = args.tts_tail_silence_ms
     httpd.command_queue_max_size = args.command_queue_max_size
     httpd.v3_database = Database(args.database_path)
+    httpd.speaker_volume = load_persisted_speaker_volume(
+        httpd.v3_database,
+        args.speaker_volume,
+    )
     httpd.command_store = CommandStore(httpd.v3_database)
     recovered_boot_commands = httpd.command_store.expire_inactive_boot_commands()
     if recovered_boot_commands:
