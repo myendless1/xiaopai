@@ -54,6 +54,12 @@ class WebRemoteControlTest(unittest.TestCase):
         self.assertIn("/command/brightness?${query}", self.page)
         self.assertIn("设置会保存在设备上", self.page)
 
+    def test_shared_conversation_is_refreshed_automatically(self):
+        self.assertIn("async function syncSharedSession()", self.page)
+        self.assertIn("renderHistory(historyMessages(payload), force);", self.page)
+        self.assertIn("setInterval(syncSharedSession, 1000);", self.page)
+        self.assertIn("if (busy || sessionSyncing) return;", self.page)
+
 
 if __name__ == "__main__":
     unittest.main()

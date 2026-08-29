@@ -509,6 +509,8 @@
     let busy = false;
     let activeMode = '';
     let sessionRevision = -1;
+    let conversationFingerprint = '';
+    let sessionSyncing = false;
     let availableModes = [];
     let adminTimer = null;
     let adminLoading = false;
@@ -567,7 +569,7 @@
       const title = document.createElement('h2');
       title.textContent = '今天想聊些什么？';
       const text = document.createElement('p');
-      text.textContent = '这里的消息会发送给当前配置的 Morrow。点击“新聊天”可以创建一段完全独立的会话。';
+      text.textContent = '网页和所有小派共享当前 Morrow 对话。点击“新聊天”会为所有入口共同清空上下文。';
       box.append(symbol, title, text);
       els.conversation.append(box);
     }
@@ -640,6 +642,16 @@
         }
       }
       return messages;
+    }
+
+    function renderHistory(messages, force = false) {
+      const fingerprint = JSON.stringify(messages);
+      if (!force && fingerprint === conversationFingerprint) return false;
+      conversationFingerprint = fingerprint;
+      els.conversation.replaceChildren();
+      if (!messages.length) showWelcome();
+      else messages.forEach(message => addMessage(message.role, message.text));
+      return true;
     }
 
     async function api(path, options = {}) {
@@ -1135,15 +1147,13 @@
       history.replaceState(null, '', url);
     }
 
-    async function loadSession(id) {
-      els.conversation.replaceChildren();
+    async function loadSession(id, { force = false, quiet = false } = {}) {
       try {
         const payload = await api(`/web/api/sessions/${encodeURIComponent(id)}`);
         selectSession(payload.session_id || id);
-        const messages = historyMessages(payload);
-        if (!messages.length) showWelcome();
-        else messages.forEach(message => addMessage(message.role, message.text));
+        renderHistory(historyMessages(payload), force);
       } catch (error) {
+        if (quiet) return;
         showWelcome();
         addMessage('assistant', `暂时无法读取这段会话：${error.message}`, 'error');
       }
@@ -1162,7 +1172,7 @@
           return;
         }
         setStatus('online', `已连接 · ${modeLabel()}`);
-        await loadSession(status.default_session || 'default');
+        await loadSession(status.default_session || 'default', { force: true });
       } catch (error) {
         setStatus('offline', '服务不可用');
         showWelcome();
@@ -1239,20 +1249,25 @@
     }
 
     async function syncSharedSession() {
-      if (busy) return;
+      if (busy || sessionSyncing) return;
+      sessionSyncing = true;
       try {
         const status = await api('/web/api/status');
         if (!status.connected || status.switching) return;
         const revision = Number(status.session_revision || 0);
         const nextSession = status.default_session || 'default';
         const nextMode = status.active_mode || activeMode;
-        if (revision === sessionRevision && nextSession === sessionId && nextMode === activeMode) return;
+        const sharedStateChanged = revision !== sessionRevision || nextSession !== sessionId || nextMode !== activeMode;
         sessionRevision = revision;
-        populateModes(status.modes, nextMode);
-        setStatus('online', `已连接 · ${modeLabel()}`);
-        await loadSession(nextSession);
+        if (sharedStateChanged) {
+          populateModes(status.modes, nextMode);
+          setStatus('online', `已连接 · ${modeLabel()}`);
+        }
+        await loadSession(nextSession, { force: sharedStateChanged, quiet: true });
       } catch (_error) {
         // The normal status UI will recover on the next successful poll.
+      } finally {
+        sessionSyncing = false;
       }
     }
 
@@ -1318,7 +1333,7 @@
     });
 
     initialise();
-    setInterval(syncSharedSession, 3000);
+    setInterval(syncSharedSession, 1000);
   </script>
 </body>
 </html>

@@ -226,7 +226,8 @@ http://<server-ip>:8091/web
 
 The page and every connected Xiaopai device share the server's active Morrow session. Web messages enter the same
 serialized coordinator queue as device speech, and **New chat** resets that shared context and retires queued speech
-for every known device. Morrow's port (3000 by default) can remain private. The page uses
+for every known device. The page refreshes the shared history once per second, so conversations started by a device
+or another browser appear automatically. Morrow's port (3000 by default) can remain private. The page uses
 `MORROW_BASE_URL`, `MORROW_SESSION`, `MORROW_AUTH_TOKEN`, and the existing Morrow timeout settings.
 
 The mode selector exposes the allowlisted configurations as **General Q&A** (`nolark`) and **Feishu Office
