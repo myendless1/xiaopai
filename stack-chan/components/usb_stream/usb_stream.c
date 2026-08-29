@@ -38,6 +38,37 @@
 
 static const char *TAG = "USB_STREAM";
 
+typedef struct {
+    TickType_t last_report_tick;
+    uint32_t bad_packet_count;
+    int last_status;
+    bool initialized;
+} usb_iso_error_limiter_t;
+
+static usb_iso_error_limiter_t s_mic_iso_errors;
+static usb_iso_error_limiter_t s_spk_iso_errors;
+
+IRAM_ATTR static void report_bad_iso_packet(usb_iso_error_limiter_t *limiter,
+                                            const char *stream, int status)
+{
+    const TickType_t now = xTaskGetTickCount();
+    limiter->bad_packet_count++;
+    limiter->last_status = status;
+    if (!limiter->initialized) {
+        limiter->initialized = true;
+        limiter->last_report_tick = now;
+        ESP_LOGW(TAG, "%s bad ISO packets=1 last_status=%d", stream, status);
+        limiter->bad_packet_count = 0;
+        return;
+    }
+    if (now - limiter->last_report_tick >= pdMS_TO_TICKS(1000)) {
+        ESP_LOGW(TAG, "%s bad ISO packets=%" PRIu32 " last_status=%d",
+                 stream, limiter->bad_packet_count, limiter->last_status);
+        limiter->bad_packet_count = 0;
+        limiter->last_report_tick = now;
+    }
+}
+
 static BaseType_t usb_stream_task_create(TaskFunction_t fn, const char *name, uint32_t stack,
                                          void *arg, UBaseType_t prio, TaskHandle_t *out, BaseType_t core)
 {
@@ -2384,7 +2415,8 @@ IRAM_ATTR static void _processing_mic_pipe(hcd_pipe_handle_t pipe_hdl, mic_callb
 
     for (size_t i = 0; i < urb_done->transfer.num_isoc_packets; i++) {
         if (urb_done->transfer.isoc_packet_desc[i].status != USB_TRANSFER_STATUS_COMPLETED) {
-            ESP_LOGW(TAG, "line:%u bad iso transit status %d", __LINE__, urb_done->transfer.isoc_packet_desc[i].status);
+            report_bad_iso_packet(&s_mic_iso_errors, "mic",
+                                  urb_done->transfer.isoc_packet_desc[i].status);
             continue;
         } else {
             int actual_num_bytes = urb_done->transfer.isoc_packet_desc[i].actual_num_bytes;
@@ -2470,7 +2502,8 @@ IRAM_ATTR static void _processing_spk_pipe(hcd_pipe_handle_t pipe_hdl, bool if_d
         }
         for (size_t i = 0; i < urb_done->transfer.num_isoc_packets; i++) {
             if (urb_done->transfer.isoc_packet_desc[i].status != USB_TRANSFER_STATUS_COMPLETED) {
-                ESP_LOGW(TAG, "line:%u bad iso transit status %d", __LINE__, urb_done->transfer.isoc_packet_desc[i].status);
+                report_bad_iso_packet(&s_spk_iso_errors, "speaker",
+                                      urb_done->transfer.isoc_packet_desc[i].status);
                 break;
             } else {
                 xfered_size += urb_done->transfer.isoc_packet_desc[i].actual_num_bytes;

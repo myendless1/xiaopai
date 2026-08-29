@@ -419,6 +419,18 @@
       </section>
 
       <section class="admin-section">
+        <div class="section-title"><h3>Network Debug</h3></div>
+        <div class="control-card">
+          <div class="volume-top">
+            <select class="device-select" id="networkDebugDevice" aria-label="Network Debug 设备"></select>
+            <output class="volume-value" id="networkDebugState">OFF</output>
+          </div>
+          <button class="apply-button" id="toggleNetworkDebug" type="button">开启</button>
+          <div class="control-message" id="networkDebugMessage">默认关闭；开启后上传 INFO 日志，关闭后恢复 WARN。</div>
+        </div>
+      </section>
+
+      <section class="admin-section">
         <div class="section-title"><h3>硬件连接</h3></div>
         <div class="device-list" id="deviceList"><div class="empty-devices">正在读取设备…</div></div>
       </section>
@@ -452,6 +464,10 @@
       volumeValue: document.getElementById('volumeValue'),
       volumeMessage: document.getElementById('volumeMessage'),
       applyVolume: document.getElementById('applyVolume'),
+      networkDebugDevice: document.getElementById('networkDebugDevice'),
+      networkDebugState: document.getElementById('networkDebugState'),
+      networkDebugMessage: document.getElementById('networkDebugMessage'),
+      toggleNetworkDebug: document.getElementById('toggleNetworkDebug'),
       remoteConnectionDot: document.getElementById('remoteConnectionDot'),
       remoteDeviceSummary: document.getElementById('remoteDeviceSummary'),
       remoteDevice: document.getElementById('remoteDevice'),
@@ -479,6 +495,8 @@
     let remoteBusy = false;
     let remoteAvailable = false;
     let onlineRemoteDevices = [];
+    let networkDebugDevices = [];
+    let networkDebugBusy = false;
 
     const REHEARSAL_REPLY = '我看你站在这里好久啦，有什么需要帮助的吗？';
 
@@ -689,6 +707,39 @@
           || candidates.find(device => device.device_id === defaultDeviceId)?.device_id
           || candidates[0].device_id;
       els.volumeDevice.value = preferred;
+
+      const debugSelected = els.networkDebugDevice.value;
+      els.networkDebugDevice.replaceChildren();
+      for (const device of candidates) {
+        const option = document.createElement('option');
+        option.value = device.device_id;
+        option.textContent = `${device.online ? '在线' : '离线'} · ${device.device_id}`;
+        els.networkDebugDevice.append(option);
+      }
+      els.networkDebugDevice.value = candidates.some(device => device.device_id === debugSelected)
+        ? debugSelected : preferred;
+      networkDebugDevices = candidates;
+      updateNetworkDebugControl();
+    }
+
+    function updateNetworkDebugControl() {
+      const device = networkDebugDevices.find(item => item.device_id === els.networkDebugDevice.value);
+      const capable = Boolean(device?.capabilities?.includes('network_debug'));
+      const enabled = Boolean(device?.network_debug);
+      els.networkDebugState.textContent = enabled ? 'ON' : 'OFF';
+      els.toggleNetworkDebug.textContent = enabled ? '关闭' : '开启';
+      els.networkDebugDevice.disabled = networkDebugBusy;
+      els.toggleNetworkDebug.disabled = networkDebugBusy || !device?.online || !capable;
+      if (!networkDebugBusy) {
+        els.networkDebugMessage.className = 'control-message';
+        els.networkDebugMessage.textContent = !device?.online
+          ? '设备离线，不能切换。'
+          : !capable
+            ? '当前固件不支持 Network Debug 动态开关。'
+            : enabled
+              ? '正在上传 INFO 日志；关闭后恢复 WARN。'
+              : '当前不捕获、不上传网络日志，运行级别为 WARN。';
+      }
     }
 
     function updateRemoteControlState() {
@@ -961,6 +1012,32 @@
       }
     }
 
+    async function toggleNetworkDebug() {
+      const device = networkDebugDevices.find(item => item.device_id === els.networkDebugDevice.value);
+      if (!device || networkDebugBusy) return;
+      const enabled = !Boolean(device.network_debug);
+      networkDebugBusy = true;
+      updateNetworkDebugControl();
+      els.networkDebugMessage.textContent = enabled ? '正在开启…' : '正在关闭…';
+      try {
+        const query = new URLSearchParams({
+          device_id: device.device_id,
+          enabled: String(enabled)
+        });
+        await api(`/command/network_debug?${query}`);
+        els.networkDebugMessage.className = 'control-message success';
+        els.networkDebugMessage.textContent = '命令已下发，等待设备心跳确认实际状态。';
+        setTimeout(loadAdmin, 1500);
+      } catch (error) {
+        els.networkDebugMessage.className = 'control-message error';
+        els.networkDebugMessage.textContent = `设置失败：${error.message}`;
+      } finally {
+        networkDebugBusy = false;
+        els.networkDebugDevice.disabled = false;
+        els.toggleNetworkDebug.disabled = !device.online || !device.capabilities?.includes('network_debug');
+      }
+    }
+
     function selectSession(id) {
       sessionId = id;
       els.sessionLabel.textContent = id;
@@ -1094,6 +1171,8 @@
     els.closeAdmin.addEventListener('click', closeAdmin);
     els.refreshAdmin.addEventListener('click', loadAdmin);
     els.applyVolume.addEventListener('click', applyVolume);
+    els.toggleNetworkDebug.addEventListener('click', toggleNetworkDebug);
+    els.networkDebugDevice.addEventListener('change', updateNetworkDebugControl);
     els.remoteSpeak.addEventListener('click', makeXiaopaiSpeak);
     els.remoteFindOwner.addEventListener('click', findOwner);
     els.remoteRehearsal.addEventListener('click', startRehearsal);

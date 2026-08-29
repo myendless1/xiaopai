@@ -42,6 +42,12 @@ class WebRemoteControlTest(unittest.TestCase):
         self.assertIn("els.servoButtons.forEach(button => { button.disabled = remoteBusy || !available; });", self.page)
         self.assertIn("els.servoButtons.forEach(button => button.addEventListener('click'", self.page)
 
+    def test_network_debug_switch_uses_reported_device_state(self):
+        self.assertIn('id="networkDebugState">OFF</output>', self.page)
+        self.assertIn("Boolean(device?.network_debug)", self.page)
+        self.assertIn("/command/network_debug?${query}", self.page)
+        self.assertIn("等待设备心跳确认实际状态", self.page)
+
 
 if __name__ == "__main__":
     unittest.main()

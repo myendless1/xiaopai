@@ -369,15 +369,18 @@ static esp_transport_handle_t open_realtime_websocket(esp_transport_handle_t& pa
     return ws;
 }
 
-static bool send_opus_frame(esp_transport_handle_t ws, void* encoder, const int16_t* pcm, int samples, int outbuf_size)
+static bool send_opus_frame(esp_transport_handle_t ws, void* encoder, const int16_t* pcm, int samples,
+                            uint8_t* outbuf, size_t outbuf_size)
 {
-    std::vector<uint8_t> outbuf(outbuf_size);
+    if (outbuf == nullptr || outbuf_size == 0) {
+        return false;
+    }
     esp_audio_enc_in_frame_t in = {};
     in.buffer = reinterpret_cast<uint8_t*>(const_cast<int16_t*>(pcm));
     in.len = samples * sizeof(int16_t);
     esp_audio_enc_out_frame_t out = {};
-    out.buffer = outbuf.data();
-    out.len = outbuf.size();
+    out.buffer = outbuf;
+    out.len = outbuf_size;
     out.encoded_bytes = 0;
 
     esp_err_t ret = esp_opus_enc_process(encoder, &in, &out);
@@ -505,7 +508,8 @@ private:
 };
 
 static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder, int encoder_frame_samples,
-                                       int encoder_outbuf_size, const int16_t* first_samples, int first_count)
+                                       std::vector<uint8_t>& encoder_buffer, const int16_t* first_samples,
+                                       int first_count)
 {
     LocalVoiceState recognition_return_state = xiaopai_state_get().state;
     std::string start = make_listen_message("start");
@@ -555,7 +559,8 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
                     frame_pos = 0;
                     break;
                 }
-                if (!send_opus_frame(ws, encoder, frame.data(), encoder_frame_samples, encoder_outbuf_size)) {
+                if (!send_opus_frame(ws, encoder, frame.data(), encoder_frame_samples,
+                                     encoder_buffer.data(), encoder_buffer.size())) {
                     return false;
                 }
                 frame_pos = 0;
@@ -610,7 +615,8 @@ static bool run_one_speech_recognition(esp_transport_handle_t ws, void* encoder,
 
     if (!interrupted && !stt_is_final && frame_pos > 0) {
         memset(frame.data() + frame_pos, 0, (encoder_frame_samples - frame_pos) * sizeof(int16_t));
-        if (!send_opus_frame(ws, encoder, frame.data(), encoder_frame_samples, encoder_outbuf_size)) {
+        if (!send_opus_frame(ws, encoder, frame.data(), encoder_frame_samples,
+                             encoder_buffer.data(), encoder_buffer.size())) {
             return false;
         }
     }
@@ -1047,6 +1053,7 @@ static void run_realtime_speech_loop()
         }
         return;
     }
+    std::vector<uint8_t> encoder_buffer(encoder_outbuf_size);
 
     esp_transport_handle_t parent = nullptr;
     esp_transport_handle_t ws = nullptr;
@@ -1248,7 +1255,7 @@ static void run_realtime_speech_loop()
             if (xiaopai_state_get().state != LocalVoiceState::DialogSleeping) {
                 mark_user_interaction("voice activity");
             }
-            if (!run_one_speech_recognition(ws, encoder, encoder_frame_samples, encoder_outbuf_size, probe.data(),
+            if (!run_one_speech_recognition(ws, encoder, encoder_frame_samples, encoder_buffer, probe.data(),
                                             probe.size())) {
                 ESP_LOGW(TAG, "Speech recognition round failed; reconnecting WebSocket");
                 if (!reconnect_ws("speech recognition round failed")) {

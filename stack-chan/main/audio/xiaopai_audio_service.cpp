@@ -26,6 +26,7 @@
 #include "xiaopai_state.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -124,6 +125,10 @@ static constexpr uint16_t kEs7210MicChannelMask = ESP_CODEC_DEV_MAKE_CHANNEL_MAS
                                                  ESP_CODEC_DEV_MAKE_CHANNEL_MASK(2);
 static constexpr int kHwInputChunkFrames = kHwSampleRate / 100;
 static constexpr int kHwInputChunkSamples = kHwInputChunkFrames * kInputChannels;
+static constexpr size_t kUpstreamInputChunkFrames =
+    (static_cast<uint64_t>(kHwInputChunkFrames) * kUpstreamSampleRate + kHwSampleRate - 1) / kHwSampleRate;
+static constexpr size_t kUpstreamInputChunkSamples = kUpstreamInputChunkFrames * kInputChannels;
+static constexpr size_t kDjiInputChunkSamples = kUpstreamSampleRate / 25;
 static constexpr int kDmaDescNum = 6;
 static constexpr int kDmaFrameNum = 240;
 static constexpr int kPlayQueueDepth = 8;
@@ -469,19 +474,22 @@ static void init_m5_i2c_ctrl(M5I2cCodecCtrl* ctrl, uint8_t addr)
     ctrl->base.open(&ctrl->base, &i2c_cfg, sizeof(i2c_cfg));
 }
 
-static void resample_linear_interleaved(const int16_t* in, size_t in_frames, int channels, int src_rate,
-                                        std::vector<int16_t>& out, int dst_rate)
+static size_t resample_linear_interleaved(const int16_t* in, size_t in_frames, int channels, int src_rate,
+                                          int16_t* out, size_t out_capacity, int dst_rate)
 {
-    if (in == nullptr || in_frames == 0 || channels <= 0 || src_rate <= 0 || dst_rate <= 0) {
-        out.clear();
-        return;
+    if (in == nullptr || out == nullptr || in_frames == 0 || channels <= 0 || src_rate <= 0 || dst_rate <= 0) {
+        return 0;
+    }
+    const size_t out_frames =
+        static_cast<size_t>((static_cast<uint64_t>(in_frames) * dst_rate + src_rate - 1) / src_rate);
+    const size_t out_samples = out_frames * static_cast<size_t>(channels);
+    if (out_samples > out_capacity) {
+        return 0;
     }
     if (src_rate == dst_rate) {
-        out.assign(in, in + in_frames * channels);
-        return;
+        memcpy(out, in, out_samples * sizeof(int16_t));
+        return out_samples;
     }
-    const size_t out_frames = static_cast<size_t>((static_cast<uint64_t>(in_frames) * dst_rate + src_rate - 1) / src_rate);
-    out.resize(out_frames * channels);
     for (size_t i = 0; i < out_frames; ++i) {
         const uint64_t pos_num = static_cast<uint64_t>(i) * src_rate;
         size_t idx = static_cast<size_t>(pos_num / dst_rate);
@@ -500,6 +508,7 @@ static void resample_linear_interleaved(const int16_t* in, size_t in_frames, int
             out[i * channels + ch] = static_cast<int16_t>(std::max<int32_t>(-32768, std::min<int32_t>(32767, sample)));
         }
     }
+    return out_samples;
 }
 
 class XiaopaiAudioCodec {
@@ -1140,7 +1149,7 @@ public:
                     static_cast<XiaopaiAudioService*>(arg)->input_task();
                     vTaskDeleteWithCaps(nullptr);
                 },
-                "audio_input_task", 6144, this, 6, &temp_input, 1);
+                "audio_input_task", 8192, this, 6, &temp_input, 1);
             if (input_ok == pdPASS) {
                 input_task_.store(temp_input);
             }
@@ -1728,10 +1737,9 @@ private:
 
     void input_task()
     {
-        std::vector<int16_t> hw(kHwInputChunkSamples);
-        std::vector<int16_t> in16;
-        std::vector<int16_t> usb16(kUpstreamSampleRate / 25);
-        in16.reserve((kUpstreamSampleRate / 100) * kInputChannels + kInputChannels);
+        std::array<int16_t, kHwInputChunkSamples> hw;
+        std::array<int16_t, kUpstreamInputChunkSamples> in16;
+        std::array<int16_t, kDjiInputChunkSamples> usb16;
 
         while (running_) {
             DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
@@ -1754,7 +1762,7 @@ private:
                     vTaskDelay(pdMS_TO_TICKS(10));
                     continue;
                 }
-                size_t usb_read = try_read_dji_receiver(usb16, dji);
+                size_t usb_read = try_read_dji_receiver(usb16.data(), usb16.size(), dji);
                 if (usb_read > 0) {
                     push_clean_samples(usb16.data(), usb_read);
                 } else {
@@ -1772,27 +1780,33 @@ private:
                 vTaskDelay(pdMS_TO_TICKS(10));
                 continue;
             }
-            resample_linear_interleaved(hw.data(), kHwInputChunkFrames, kInputChannels, kHwSampleRate, in16,
-                                        kUpstreamSampleRate);
+            const size_t in16_samples =
+                resample_linear_interleaved(hw.data(), kHwInputChunkFrames, kInputChannels, kHwSampleRate,
+                                            in16.data(), in16.size(), kUpstreamSampleRate);
+            if (in16_samples == 0) {
+                ESP_LOGE(TAG, "audio input resample buffer is too small");
+                vTaskDelay(pdMS_TO_TICKS(10));
+                continue;
+            }
 #if CONFIG_STACKCHAN_AUDIO_DEVICE_AEC
             if (afe_ready_) {
-                feed_afe(in16);
+                feed_afe(in16.data(), in16_samples);
             } else
 #endif
             {
-                push_mono_from_interleaved(in16.data(), in16.size() / kInputChannels, kInputChannels);
+                push_mono_from_interleaved(in16.data(), in16_samples / kInputChannels, kInputChannels);
             }
         }
         input_task_.store(nullptr);
         ESP_LOGW(TAG, "audio input task stopped");
     }
 
-    size_t try_read_dji_receiver(std::vector<int16_t>& buffer, const DjiMicReceiverStatus& status)
+    size_t try_read_dji_receiver(int16_t* buffer, size_t capacity, const DjiMicReceiverStatus& status)
     {
-        if (!status.capture_ready || !status.identity_confirmed || buffer.empty()) {
+        if (!status.capture_ready || !status.identity_confirmed || buffer == nullptr || capacity == 0) {
             return 0;
         }
-        size_t read = dji_mic_receiver_input_read_16k(buffer.data(), buffer.size(), pdMS_TO_TICKS(2));
+        size_t read = dji_mic_receiver_input_read_16k(buffer, capacity, pdMS_TO_TICKS(2));
         if (read == 0) {
             return 0;
         }
@@ -1931,12 +1945,12 @@ private:
     }
 
 #if CONFIG_STACKCHAN_AUDIO_DEVICE_AEC
-    void feed_afe(const std::vector<int16_t>& input)
+    void feed_afe(const int16_t* input, size_t samples)
     {
-        if (!afe_ready_ || afe_iface_ == nullptr || afe_data_ == nullptr || input.empty()) {
+        if (!afe_ready_ || afe_iface_ == nullptr || afe_data_ == nullptr || input == nullptr || samples == 0) {
             return;
         }
-        afe_feed_buffer_.insert(afe_feed_buffer_.end(), input.begin(), input.end());
+        afe_feed_buffer_.insert(afe_feed_buffer_.end(), input, input + samples);
         while (afe_feed_samples_ > 0 && afe_feed_buffer_.size() >= afe_feed_samples_) {
             afe_iface_->feed(afe_data_, afe_feed_buffer_.data());
             afe_feed_buffer_.erase(afe_feed_buffer_.begin(), afe_feed_buffer_.begin() + afe_feed_samples_);

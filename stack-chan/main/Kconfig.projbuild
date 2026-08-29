@@ -292,6 +292,13 @@ menu "Xiaopai settings"
             Lines that arrive while an HTTP post is in flight are sent together
             on the next immediate upload.
 
+    config STACKCHAN_SERIAL_DEBUG_COMMAND
+        bool "Enable UART JSONL debug command task"
+        default n
+        help
+            Development-only command input on stdin. Keep disabled in deployed
+            firmware to avoid its permanent internal-RAM task stack.
+
     config STACKCHAN_DJI_MIC_LOW_BATTERY_PROTECTION
         bool "Stop DJI Mic and USB VBUS on low battery"
         depends on STACKCHAN_DJI_MIC_USB_INPUT

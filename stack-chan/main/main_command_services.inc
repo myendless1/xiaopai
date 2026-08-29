@@ -119,13 +119,131 @@ static bool execute_command_object(const cJSON* command)
     return execute_command_object_internal(command, false, nullptr);
 }
 
+static constexpr size_t kNetworkDebugLineBytes = 512;
+static constexpr size_t kNetworkDebugJsonFixedBytes = 160;
+static constexpr size_t kNetworkDebugJsonPerLineBytes =
+    ((kNetworkDebugLineBytes - 1) * 6) + 128;
+static constexpr size_t kNetworkDebugJsonCapacity =
+    kNetworkDebugJsonFixedBytes +
+    (static_cast<size_t>(CONFIG_STACKCHAN_NETWORK_DEBUG_BATCH_LINES) *
+     kNetworkDebugJsonPerLineBytes);
+static_assert(CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH > 0,
+              "Network debug queue depth must be positive");
+static_assert(CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH <= UINT16_MAX,
+              "Network debug queue slot index exceeds uint16_t");
+static_assert(CONFIG_STACKCHAN_NETWORK_DEBUG_BATCH_LINES > 0,
+              "Network debug batch size must be positive");
+
+struct NetworkDebugLogRecord {
+    char text[kNetworkDebugLineBytes];
+};
+
 static QueueHandle_t network_debug_log_queue = nullptr;
+static QueueHandle_t network_debug_free_queue = nullptr;
 static TaskHandle_t network_debug_uploader_task_handle = nullptr;
 static vprintf_like_t network_debug_original_vprintf = nullptr;
+static NetworkDebugLogRecord* network_debug_log_pool = nullptr;
+static char* network_debug_json_buffer = nullptr;
+static StaticQueue_t network_debug_log_queue_control;
+static StaticQueue_t network_debug_free_queue_control;
+alignas(4) static uint8_t network_debug_log_queue_storage[
+    CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH * sizeof(uint16_t)];
+alignas(4) static uint8_t network_debug_free_queue_storage[
+    CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH * sizeof(uint16_t)];
 static std::atomic<uint32_t> network_debug_captured_lines{0};
 static std::atomic<uint32_t> network_debug_uploaded_lines{0};
 static std::atomic<uint32_t> network_debug_dropped_lines{0};
 static std::atomic<uint32_t> network_debug_upload_failures{0};
+static std::atomic<bool> network_debug_enabled{false};
+static constexpr char kNetworkDebugNvsNamespace[] = "xiaopai";
+static constexpr char kNetworkDebugNvsKey[] = "net_debug";
+
+static void apply_network_debug_log_level(bool enabled)
+{
+    esp_log_level_set("*", enabled ? ESP_LOG_INFO : ESP_LOG_WARN);
+}
+
+static void load_network_debug_preference()
+{
+#if CONFIG_STACKCHAN_NETWORK_DEBUG
+    uint8_t stored = 0;
+    nvs_handle_t handle = 0;
+    if (nvs_open(kNetworkDebugNvsNamespace, NVS_READONLY, &handle) == ESP_OK) {
+        if (nvs_get_u8(handle, kNetworkDebugNvsKey, &stored) != ESP_OK) {
+            stored = 0;
+        }
+        nvs_close(handle);
+    }
+    const bool enabled = stored != 0;
+    network_debug_enabled.store(enabled, std::memory_order_release);
+    apply_network_debug_log_level(enabled);
+#else
+    network_debug_enabled.store(false, std::memory_order_release);
+    apply_network_debug_log_level(false);
+#endif
+}
+
+static bool persist_network_debug_preference(bool enabled)
+{
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open(kNetworkDebugNvsNamespace, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        return false;
+    }
+    err = nvs_set_u8(handle, kNetworkDebugNvsKey, enabled ? 1 : 0);
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return err == ESP_OK;
+}
+
+static void recycle_network_debug_slot(uint16_t slot)
+{
+    if (network_debug_free_queue == nullptr ||
+        xQueueSend(network_debug_free_queue, &slot, 0) != pdTRUE) {
+        network_debug_dropped_lines.fetch_add(1);
+    }
+}
+
+static void discard_pending_network_debug_logs()
+{
+    if (network_debug_log_queue == nullptr) {
+        return;
+    }
+    uint16_t slot = 0;
+    while (xQueueReceive(network_debug_log_queue, &slot, 0) == pdTRUE) {
+        recycle_network_debug_slot(slot);
+    }
+}
+
+static bool set_network_debug_enabled(bool enabled, bool persist)
+{
+#if !CONFIG_STACKCHAN_NETWORK_DEBUG
+    (void)enabled;
+    (void)persist;
+    return false;
+#else
+    if (persist && !persist_network_debug_preference(enabled)) {
+        ESP_LOGE("NetDebug", "failed to persist network debug setting");
+        return false;
+    }
+    if (!enabled) {
+        network_debug_enabled.store(false, std::memory_order_release);
+        discard_pending_network_debug_logs();
+        ESP_LOGW("NetDebug", "network upload disabled; runtime log level is WARN");
+        apply_network_debug_log_level(false);
+    } else {
+        apply_network_debug_log_level(true);
+        network_debug_enabled.store(true, std::memory_order_release);
+        ESP_LOGI("NetDebug", "network upload enabled; runtime log level is INFO");
+    }
+    if (network_debug_uploader_task_handle != nullptr) {
+        xTaskNotifyGive(network_debug_uploader_task_handle);
+    }
+    return true;
+#endif
+}
 
 static bool network_debug_line_should_upload(const char* line)
 {
@@ -161,91 +279,213 @@ static int network_debug_vprintf(const char* format, va_list args)
     va_end(output_args);
 
 #if CONFIG_STACKCHAN_NETWORK_DEBUG
-    if (network_debug_log_queue != nullptr &&
+    if (network_debug_enabled.load(std::memory_order_acquire) &&
+        network_debug_log_queue != nullptr &&
+        network_debug_free_queue != nullptr &&
+        network_debug_log_pool != nullptr &&
         !xPortInIsrContext() &&
+        // OTA and other Flash writes can suspend the external-memory cache.
+        spi_flash_cache_enabled() &&
         xTaskGetCurrentTaskHandle() != network_debug_uploader_task_handle) {
-        char line[512];
+        uint16_t slot = 0;
+        if (xQueueReceive(network_debug_free_queue, &slot, 0) != pdTRUE) {
+            network_debug_dropped_lines.fetch_add(1);
+            return written;
+        }
+
+        NetworkDebugLogRecord& record = network_debug_log_pool[slot];
         va_list capture_args;
         va_copy(capture_args, args);
-        int length = vsnprintf(line, sizeof(line), format, capture_args);
+        int length = vsnprintf(record.text, sizeof(record.text), format, capture_args);
         va_end(capture_args);
-        if (length > 0 && network_debug_line_should_upload(line)) {
-            const size_t stored = std::min<size_t>(static_cast<size_t>(length), sizeof(line) - 1);
-            char* copy = static_cast<char*>(malloc(stored + 1));
-            if (copy == nullptr) {
-                network_debug_dropped_lines.fetch_add(1);
-            } else {
-                memcpy(copy, line, stored);
-                copy[stored] = '\0';
-                if (xQueueSend(network_debug_log_queue, &copy, 0) == pdTRUE) {
-                    network_debug_captured_lines.fetch_add(1);
-                } else {
-                    free(copy);
-                    network_debug_dropped_lines.fetch_add(1);
-                }
+        if (length > 0 && network_debug_line_should_upload(record.text)) {
+            if (xQueueSend(network_debug_log_queue, &slot, 0) == pdTRUE) {
+                network_debug_captured_lines.fetch_add(1);
+                return written;
             }
+            network_debug_dropped_lines.fetch_add(1);
+        }
+        if (xQueueSend(network_debug_free_queue, &slot, 0) != pdTRUE) {
+            network_debug_dropped_lines.fetch_add(1);
         }
     }
 #endif
     return written;
 }
 
-static bool upload_network_debug_batch(const std::vector<std::string>& lines)
+static bool network_debug_json_append(char** cursor, const char* end, const char* text)
 {
-    if (lines.empty()) {
+    const size_t bytes = strlen(text);
+    if (*cursor > end || static_cast<size_t>(end - *cursor) <= bytes) {
+        return false;
+    }
+    memcpy(*cursor, text, bytes);
+    *cursor += bytes;
+    **cursor = '\0';
+    return true;
+}
+
+static bool network_debug_json_append_escaped(char** cursor, const char* end, const char* text)
+{
+    static constexpr char hex[] = "0123456789abcdef";
+    for (const unsigned char* p = reinterpret_cast<const unsigned char*>(text); *p != '\0'; ++p) {
+        const char* escaped = nullptr;
+        if (*p == '"') {
+            escaped = "\\\"";
+        } else if (*p == '\\') {
+            escaped = "\\\\";
+        } else if (*p == '\n') {
+            escaped = "\\n";
+        } else if (*p == '\r') {
+            escaped = "\\r";
+        } else if (*p == '\t') {
+            escaped = "\\t";
+        }
+        if (escaped != nullptr) {
+            if (!network_debug_json_append(cursor, end, escaped)) {
+                return false;
+            }
+        } else if (*p < 0x20) {
+            if (*cursor > end || static_cast<size_t>(end - *cursor) <= 6) {
+                return false;
+            }
+            *(*cursor)++ = '\\';
+            *(*cursor)++ = 'u';
+            *(*cursor)++ = '0';
+            *(*cursor)++ = '0';
+            *(*cursor)++ = hex[*p >> 4];
+            *(*cursor)++ = hex[*p & 0x0f];
+            **cursor = '\0';
+        } else {
+            if (*cursor >= end || static_cast<size_t>(end - *cursor) <= 1) {
+                return false;
+            }
+            *(*cursor)++ = static_cast<char>(*p);
+            **cursor = '\0';
+        }
+    }
+    return true;
+}
+
+static bool upload_network_debug_batch(const uint16_t* slots, size_t count)
+{
+    if (slots == nullptr || count == 0) {
         return true;
     }
-    cJSON* root = cJSON_CreateObject();
-    cJSON* events = cJSON_AddArrayToObject(root, "events");
-    cJSON_AddStringToObject(root, "device_id", mac_address().c_str());
-    for (const std::string& line : lines) {
-        cJSON* event = cJSON_CreateObject();
-        cJSON_AddStringToObject(event, "type", "log");
-        cJSON_AddStringToObject(event, "source", "esp-log");
-        cJSON_AddNumberToObject(event, "device_ms", M5.millis());
-        cJSON_AddStringToObject(event, "line", line.c_str());
-        cJSON_AddItemToArray(events, event);
+    if (network_debug_log_pool == nullptr || network_debug_json_buffer == nullptr) {
+        return false;
     }
-    char* encoded = cJSON_PrintUnformatted(root);
-    std::string body = encoded != nullptr ? encoded : "{}";
-    if (encoded != nullptr) {
-        cJSON_free(encoded);
+
+    uint8_t mac[6] = {};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char device_id[18] = {};
+    snprintf(device_id, sizeof(device_id), "%02x:%02x:%02x:%02x:%02x:%02x",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    char* cursor = network_debug_json_buffer;
+    const char* end = network_debug_json_buffer + kNetworkDebugJsonCapacity;
+    bool encoded = network_debug_json_append(&cursor, end, "{\"device_id\":\"") &&
+                   network_debug_json_append(&cursor, end, device_id) &&
+                   network_debug_json_append(&cursor, end, "\",\"events\":[");
+    for (size_t i = 0; encoded && i < count; ++i) {
+        if (slots[i] >= CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH) {
+            encoded = false;
+            break;
+        }
+        char prefix[128] = {};
+        snprintf(prefix, sizeof(prefix),
+                 "%s{\"type\":\"log\",\"source\":\"esp-log\",\"device_ms\":%lu,\"line\":\"",
+                 i == 0 ? "" : ",", static_cast<unsigned long>(M5.millis()));
+        encoded = network_debug_json_append(&cursor, end, prefix) &&
+                  network_debug_json_append_escaped(
+                      &cursor, end, network_debug_log_pool[slots[i]].text) &&
+                  network_debug_json_append(&cursor, end, "\"}");
     }
-    cJSON_Delete(root);
-    std::string response;
-    return http_post_json_string(make_server_url("/device/logs"), body, &response, 3000, false);
+    encoded = encoded && network_debug_json_append(&cursor, end, "]}");
+    if (!encoded) {
+        return false;
+    }
+
+    const std::string url = make_server_url("/device/logs");
+    esp_http_client_config_t config = {};
+    config.url = url.c_str();
+    config.method = HTTP_METHOD_POST;
+    config.timeout_ms = 3000;
+    config.buffer_size = kHttpBufferSize;
+    config.buffer_size_tx = kHttpBufferSize;
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == nullptr) {
+        return false;
+    }
+    esp_http_client_set_header(client, "Accept", "application/json");
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_header(client, "X-Device-Id", device_id);
+    esp_http_client_set_post_field(client, network_debug_json_buffer,
+                                   static_cast<int>(cursor - network_debug_json_buffer));
+    const esp_err_t err = esp_http_client_perform(client);
+    const int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+    return err == ESP_OK && status >= 200 && status < 300;
 }
 
 static void network_debug_uploader_task(void*)
 {
     network_debug_uploader_task_handle = xTaskGetCurrentTaskHandle();
-    std::vector<std::string> lines;
-    lines.reserve(CONFIG_STACKCHAN_NETWORK_DEBUG_BATCH_LINES);
+    uint16_t slots[CONFIG_STACKCHAN_NETWORK_DEBUG_BATCH_LINES] = {};
     while (true) {
-        char* first = nullptr;
-        if (xQueueReceive(network_debug_log_queue, &first, portMAX_DELAY) != pdTRUE || first == nullptr) {
+        if (!network_debug_enabled.load(std::memory_order_acquire)) {
+            discard_pending_network_debug_logs();
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             continue;
         }
-        lines.clear();
-        lines.emplace_back(first);
-        free(first);
-        while (lines.size() < static_cast<size_t>(CONFIG_STACKCHAN_NETWORK_DEBUG_BATCH_LINES)) {
-            char* extra = nullptr;
-            if (xQueueReceive(network_debug_log_queue, &extra, 0) != pdTRUE || extra == nullptr) {
+        while (!wifi_is_connected() || !active_server_selected) {
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
+            if (!network_debug_enabled.load(std::memory_order_acquire)) {
                 break;
             }
-            lines.emplace_back(extra);
-            free(extra);
         }
-        while (!wifi_is_connected() || !active_server_selected) {
-            vTaskDelay(pdMS_TO_TICKS(200));
+        if (!network_debug_enabled.load(std::memory_order_acquire)) {
+            continue;
         }
-        if (upload_network_debug_batch(lines)) {
-            network_debug_uploaded_lines.fetch_add(static_cast<uint32_t>(lines.size()));
+
+        size_t count = 0;
+        if (xQueueReceive(network_debug_log_queue, &slots[count], pdMS_TO_TICKS(250)) != pdTRUE) {
+            continue;
+        }
+        ++count;
+        while (count < static_cast<size_t>(CONFIG_STACKCHAN_NETWORK_DEBUG_BATCH_LINES) &&
+               xQueueReceive(network_debug_log_queue, &slots[count], 0) == pdTRUE) {
+            ++count;
+        }
+
+        if (!network_debug_enabled.load(std::memory_order_acquire)) {
+            // OFF must not start another HTTP upload. Any already-running request
+            // is allowed to finish before the task observes the new setting.
+        } else if (upload_network_debug_batch(slots, count)) {
+            network_debug_uploaded_lines.fetch_add(static_cast<uint32_t>(count));
         } else {
             network_debug_upload_failures.fetch_add(1);
         }
+        for (size_t i = 0; i < count; ++i) {
+            recycle_network_debug_slot(slots[i]);
+        }
     }
+}
+
+static void cleanup_network_debug_buffers()
+{
+    if (network_debug_log_queue != nullptr) {
+        vQueueDelete(network_debug_log_queue);
+        network_debug_log_queue = nullptr;
+    }
+    if (network_debug_free_queue != nullptr) {
+        vQueueDelete(network_debug_free_queue);
+        network_debug_free_queue = nullptr;
+    }
+    heap_caps_free(network_debug_json_buffer);
+    network_debug_json_buffer = nullptr;
+    heap_caps_free(network_debug_log_pool);
+    network_debug_log_pool = nullptr;
 }
 
 static void start_network_debug_service()
@@ -254,27 +494,60 @@ static void start_network_debug_service()
     if (network_debug_log_queue != nullptr) {
         return;
     }
-    network_debug_log_queue =
-        xQueueCreate(CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH, sizeof(char*));
-    if (network_debug_log_queue == nullptr) {
-        ESP_LOGE(TAG, "NET_DEBUG failed to allocate log queue");
+
+    network_debug_log_pool = static_cast<NetworkDebugLogRecord*>(heap_caps_calloc(
+        CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH, sizeof(NetworkDebugLogRecord),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    network_debug_json_buffer = static_cast<char*>(
+        heap_caps_malloc(kNetworkDebugJsonCapacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (network_debug_log_pool == nullptr || network_debug_json_buffer == nullptr) {
+        ESP_LOGE(TAG, "NET_DEBUG failed to allocate fixed PSRAM buffers");
+        cleanup_network_debug_buffers();
         return;
     }
+
+    network_debug_log_queue = xQueueCreateStatic(
+        CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH, sizeof(uint16_t),
+        network_debug_log_queue_storage, &network_debug_log_queue_control);
+    network_debug_free_queue = xQueueCreateStatic(
+        CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH, sizeof(uint16_t),
+        network_debug_free_queue_storage, &network_debug_free_queue_control);
+    if (network_debug_log_queue == nullptr || network_debug_free_queue == nullptr) {
+        ESP_LOGE(TAG, "NET_DEBUG failed to create fixed slot queues");
+        cleanup_network_debug_buffers();
+        return;
+    }
+    for (size_t i = 0; i < CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH; ++i) {
+        const uint16_t slot = static_cast<uint16_t>(i);
+        if (xQueueSend(network_debug_free_queue, &slot, 0) != pdTRUE) {
+            ESP_LOGE(TAG, "NET_DEBUG failed to initialize free slot queue");
+            cleanup_network_debug_buffers();
+            return;
+        }
+    }
+
     BaseType_t created = xiaopai_task_create_psram(
-        network_debug_uploader_task, "net_log_up", 6144, nullptr, 3, nullptr, 0);
+        network_debug_uploader_task, "net_log_up", 6144, nullptr, 3,
+        &network_debug_uploader_task_handle, 0);
     if (created != pdPASS) {
         ESP_LOGE(TAG, "NET_DEBUG failed to start immediate log uploader");
-        vQueueDelete(network_debug_log_queue);
-        network_debug_log_queue = nullptr;
+        network_debug_uploader_task_handle = nullptr;
+        cleanup_network_debug_buffers();
         return;
     }
     network_debug_original_vprintf = esp_log_set_vprintf(network_debug_vprintf);
     ESP_LOGI(TAG,
-             "NET_DEBUG ready commands=http-long-poll logs=POST:/device/logs queue=%u uploader=immediate",
-             static_cast<unsigned>(CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH));
+             "NET_DEBUG ready commands=http-long-poll logs=POST:/device/logs queue=%u "
+             "fixed_psram=%u json_psram=%u runtime=%s",
+             static_cast<unsigned>(CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH),
+             static_cast<unsigned>(CONFIG_STACKCHAN_NETWORK_DEBUG_QUEUE_DEPTH *
+                                   sizeof(NetworkDebugLogRecord)),
+             static_cast<unsigned>(kNetworkDebugJsonCapacity),
+             network_debug_enabled.load(std::memory_order_acquire) ? "on" : "off");
 #endif
 }
 
+#if CONFIG_STACKCHAN_SERIAL_DEBUG_COMMAND
 static void log_serial_debug_status()
 {
     const XiaopaiStateSnapshot state = xiaopai_state_get();
@@ -437,6 +710,7 @@ static void start_serial_debug_command_service()
         ESP_LOGE(TAG, "SERIAL_CMD failed to create command task");
     }
 }
+#endif
 
 static bool command_marks_user_interaction(const std::string& type)
 {
@@ -461,6 +735,10 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
         mark_user_interaction("command");
     }
 
+    if (type == "network_debug") {
+        const bool enabled = json_bool_value(payload, "enabled", false);
+        return set_network_debug_enabled(enabled, true);
+    }
     if (type == "debug_status" || type == "diagnostics") {
         const XiaopaiStateSnapshot state = xiaopai_state_get();
         const DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
@@ -819,7 +1097,8 @@ static bool handle_command_response(const std::string& response)
     bool persist_dedupe = cmd_type == "speak" || cmd_type == "sequence" || cmd_type == "motion" ||
                           cmd_type == "move" || cmd_type == "find_owner" || cmd_type == "locate_owner" ||
                           cmd_type == "capture_image" || cmd_type == "camera" || cmd_type == "track_once" ||
-                          cmd_type == "check_ota" || cmd_type == "ota_check" || cmd_type == "firmware_ota";
+                          cmd_type == "check_ota" || cmd_type == "ota_check" || cmd_type == "firmware_ota" ||
+                          cmd_type == "network_debug";
     ESP_LOGI(TAG, "Command received: id=%s type=%s", cmd_id.c_str(), cmd_type.c_str());
     const CommandDedupeEntry* duplicate = command_dedupe_find(cmd_id.c_str());
     if (duplicate != nullptr) {
@@ -1004,7 +1283,8 @@ static bool send_v3_control_heartbeat()
     cJSON_AddNumberToObject(root, "power_state", static_cast<int>(power.state));
     cJSON_AddNumberToObject(root, "brownout_boot_count", power.brownout_boot_count);
     cJSON_AddStringToObject(root, "reset_reason", reset_reason_name(esp_reset_reason()));
-    cJSON_AddBoolToObject(root, "network_debug", CONFIG_STACKCHAN_NETWORK_DEBUG != 0);
+    cJSON_AddBoolToObject(root, "network_debug",
+                          network_debug_enabled.load(std::memory_order_acquire));
     cJSON_AddNumberToObject(root, "network_log_captured", network_debug_captured_lines.load());
     cJSON_AddNumberToObject(root, "network_log_uploaded", network_debug_uploaded_lines.load());
     cJSON_AddNumberToObject(root, "network_log_dropped", network_debug_dropped_lines.load());
@@ -1020,23 +1300,9 @@ static bool send_v3_control_heartbeat()
     return http_post_json_string(make_server_url("/v3/control/heartbeat"), body, &response, 2000, false);
 }
 
-static void log_heap_health(const char* reason)
-{
-    const uint32_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    const uint32_t internal_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    const uint32_t internal_min = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    const uint32_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-
-    ESP_LOGI("Memory", "HEAP reason=%s internal_free=%u internal_largest=%u internal_min=%u psram_free=%u",
-             reason != nullptr ? reason : "", static_cast<unsigned>(internal_free),
-             static_cast<unsigned>(internal_largest), static_cast<unsigned>(internal_min),
-             static_cast<unsigned>(psram_free));
-}
-
 static void run_heartbeat_loop()
 {
     ESP_LOGI(TAG, "Heartbeat task started");
-    uint32_t count = 0;
     uint32_t consecutive_failures = 0;
     while (true) {
         if (wifi_is_connected() && active_server_selected) {
@@ -1056,12 +1322,6 @@ static void run_heartbeat_loop()
             ESP_LOGW(TAG, "CONTROL heartbeat paused: network unavailable failures=%u",
                      static_cast<unsigned>(consecutive_failures));
             consecutive_failures = 0;
-        }
-        if (count % 30 == 0) {
-            log_heap_health("heartbeat");
-        }
-        if (++count % 30 == 0) {
-            audio_service_log_diagnostics();
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }

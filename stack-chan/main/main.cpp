@@ -30,6 +30,7 @@
 #include "esp_netif.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
+#include "esp_private/cache_utils.h"
 #include "esp_system.h"
 #include "esp_transport.h"
 #include "esp_transport_ssl.h"
@@ -102,6 +103,9 @@
 #endif
 #ifndef CONFIG_STACKCHAN_NETWORK_DEBUG_BATCH_LINES
 #define CONFIG_STACKCHAN_NETWORK_DEBUG_BATCH_LINES 8
+#endif
+#ifndef CONFIG_STACKCHAN_SERIAL_DEBUG_COMMAND
+#define CONFIG_STACKCHAN_SERIAL_DEBUG_COMMAND 0
 #endif
 
 #if CONFIG_STACKCHAN_DJI_MIC_UAC_RECORD && CONFIG_STACKCHAN_DJI_MIC_AUTO_START
@@ -423,6 +427,7 @@ static void schedule_dji_mic_after_boot()
 extern "C" void app_main(void)
 {
     ESP_ERROR_CHECK(init_nvs_once());
+    load_network_debug_preference();
     create_realtime_task_early();
 
     // Keep USB Serial/JTAG console until DJI Host actually starts. Switching the
@@ -433,7 +438,8 @@ extern "C" void app_main(void)
              reset_reason_name(reset_reason), static_cast<int>(reset_reason),
              app != nullptr ? app->project_name : "unknown", app != nullptr ? app->version : "unknown",
              app != nullptr ? app->idf_ver : "unknown");
-    ESP_LOGI(TAG, "BOOT console=usb_serial_jtag log_level=info device=%s",
+    ESP_LOGW(TAG, "BOOT console=usb_serial_jtag log_level=%s device=%s",
+             network_debug_enabled.load(std::memory_order_acquire) ? "info" : "warn",
              mac_address().c_str());
     force_core_s3_display_board();
     m5_mutex = xSemaphoreCreateMutex();
@@ -526,7 +532,9 @@ extern "C" void app_main(void)
 
     start_background_services();
     start_network_debug_service();
+#if CONFIG_STACKCHAN_SERIAL_DEBUG_COMMAND
     start_serial_debug_command_service();
+#endif
 
 #if CONFIG_STACKCHAN_DJI_MIC_USB_INPUT && CONFIG_STACKCHAN_DJI_MIC_AUTO_START
     schedule_dji_mic_after_boot();

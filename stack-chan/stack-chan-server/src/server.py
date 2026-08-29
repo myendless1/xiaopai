@@ -1880,11 +1880,18 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_v3_heartbeat(self, payload: dict) -> None:
         device_id = safe_device_id(payload.get("device_id") or self.headers.get("X-Device-Id", "") or "default")
         boot_id = max(0, int(payload.get("boot_id") or 0))
+        network_debug_raw = payload.get("network_debug", False)
+        network_debug = (
+            parse_bool(network_debug_raw)
+            if isinstance(network_debug_raw, str)
+            else bool(network_debug_raw)
+        )
         self._observe_device_boot(device_id, boot_id)
         body = self.server.device_registry.heartbeat(
             device_id,
             boot_id=boot_id,
             last_ack_seq=int(payload.get("last_ack_seq") or 0),
+            network_debug=network_debug,
         )
         self._sync_device_speech_generation(device_id, payload)
         self._mark_device_seen(device_id)
@@ -4540,6 +4547,8 @@ def command_payload_from_query(command_type: str, query: dict):
             "direction": direction,
             "step": int(first_value(query, "step") or "10"),
         }
+    if command_type == "network_debug":
+        return {"enabled": parse_bool(first_value(query, "enabled") or "false")}
     if command_type == "play_audio":
         return {"url": first_value(query, "url")}
     if command_type in ("motion", "move"):
