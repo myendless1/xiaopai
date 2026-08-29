@@ -203,7 +203,7 @@ Queues the full command schema as JSON:
 ASR phrases containing `声音` plus `大` or `小` adjust the Server-owned Xiaopai speaker volume by 10 on a 10-100
 scale. If the phrase also contains `最`, `声音最大` sets 100 and `声音最小` sets 10. The Server converts relative
 changes to an absolute value and attaches it as `speaker_volume` to subsequent speech commands. The device then
-replies `已经将声音调到XXX`.
+replies with the resulting number only, for example `50`.
 
 The `/command/volume` example above sets the Server-owned physical speaker volume to 50%. This is separate from
 the Aliyun TTS `volume` parameter, which only controls synthesis amplitude.

@@ -71,6 +71,7 @@ class DeviceRegistry:
         boot_id: int = 0,
         last_ack_seq: int = 0,
         network_debug: bool = False,
+        display_brightness: int = 70,
     ) -> dict[str, Any]:
         now = utc_now()
         with self.database.connect() as conn:
@@ -78,8 +79,8 @@ class DeviceRegistry:
                 """
                 INSERT INTO devices(
                   device_id, current_boot_id, last_seen_at, last_heartbeat_at,
-                  last_ack_seq, network_debug, online
-                ) VALUES (?, ?, ?, ?, ?, ?, 1)
+                  last_ack_seq, network_debug, display_brightness, online
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
                 ON CONFLICT(device_id) DO UPDATE SET
                   current_boot_id=CASE
                     WHEN devices.current_boot_id=0 AND excluded.current_boot_id > 0
@@ -90,6 +91,7 @@ class DeviceRegistry:
                   last_heartbeat_at=excluded.last_heartbeat_at,
                   last_ack_seq=max(devices.last_ack_seq, excluded.last_ack_seq),
                   network_debug=excluded.network_debug,
+                  display_brightness=excluded.display_brightness,
                   online=1
                 """,
                 (
@@ -99,6 +101,7 @@ class DeviceRegistry:
                     now,
                     int(last_ack_seq or 0),
                     1 if network_debug else 0,
+                    max(1, min(100, int(display_brightness or 70))),
                 ),
             )
         return {"type": "heartbeat_ack", "device_id": device_id, "server_time": now}
@@ -111,6 +114,7 @@ class DeviceRegistry:
             item = dict(row)
             item["online"] = bool(item["online"])
             item["network_debug"] = bool(item.get("network_debug", 0))
+            item["display_brightness"] = max(1, min(100, int(item.get("display_brightness", 70))))
             item["capabilities"] = json.loads(item.pop("capabilities_json") or "[]")
             devices.append(item)
         return devices

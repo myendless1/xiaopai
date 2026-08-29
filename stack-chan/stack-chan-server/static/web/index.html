@@ -419,6 +419,21 @@
       </section>
 
       <section class="admin-section">
+        <div class="section-title"><h3>屏幕亮度</h3></div>
+        <div class="control-card">
+          <div class="volume-top">
+            <select class="device-select" id="brightnessDevice" aria-label="亮度控制设备"></select>
+            <output class="volume-value" id="brightnessValue">70%</output>
+          </div>
+          <div class="range-row">
+            <input id="brightnessRange" type="range" min="10" max="100" step="5" value="70" aria-label="屏幕亮度">
+            <button class="apply-button" id="applyBrightness" type="button">应用</button>
+          </div>
+          <div class="control-message" id="brightnessMessage">默认稳定在 70%，设置会保存在设备上。</div>
+        </div>
+      </section>
+
+      <section class="admin-section">
         <div class="section-title"><h3>Network Debug</h3></div>
         <div class="control-card">
           <div class="volume-top">
@@ -464,6 +479,11 @@
       volumeValue: document.getElementById('volumeValue'),
       volumeMessage: document.getElementById('volumeMessage'),
       applyVolume: document.getElementById('applyVolume'),
+      brightnessDevice: document.getElementById('brightnessDevice'),
+      brightnessRange: document.getElementById('brightnessRange'),
+      brightnessValue: document.getElementById('brightnessValue'),
+      brightnessMessage: document.getElementById('brightnessMessage'),
+      applyBrightness: document.getElementById('applyBrightness'),
       networkDebugDevice: document.getElementById('networkDebugDevice'),
       networkDebugState: document.getElementById('networkDebugState'),
       networkDebugMessage: document.getElementById('networkDebugMessage'),
@@ -492,6 +512,9 @@
     let adminTimer = null;
     let adminLoading = false;
     let volumeDirty = false;
+    let brightnessDirty = false;
+    let brightnessBusy = false;
+    let brightnessDevices = [];
     let remoteBusy = false;
     let remoteAvailable = false;
     let onlineRemoteDevices = [];
@@ -720,6 +743,40 @@
         ? debugSelected : preferred;
       networkDebugDevices = candidates;
       updateNetworkDebugControl();
+
+      const brightnessSelected = els.brightnessDevice.value;
+      els.brightnessDevice.replaceChildren();
+      for (const device of candidates) {
+        const option = document.createElement('option');
+        option.value = device.device_id;
+        option.textContent = `${device.online ? '在线' : '离线'} · ${device.device_id}`;
+        els.brightnessDevice.append(option);
+      }
+      els.brightnessDevice.value = candidates.some(device => device.device_id === brightnessSelected)
+        ? brightnessSelected : preferred;
+      brightnessDevices = candidates;
+      updateBrightnessControl();
+    }
+
+    function updateBrightnessControl() {
+      const device = brightnessDevices.find(item => item.device_id === els.brightnessDevice.value);
+      const capable = Boolean(device?.capabilities?.includes('display_brightness'));
+      const brightness = Math.max(10, Math.min(100, Number(device?.display_brightness || 70)));
+      if (!brightnessDirty) {
+        els.brightnessRange.value = String(brightness);
+        els.brightnessValue.textContent = `${brightness}%`;
+      }
+      els.brightnessDevice.disabled = brightnessBusy;
+      els.brightnessRange.disabled = brightnessBusy || !device?.online || !capable;
+      els.applyBrightness.disabled = brightnessBusy || !device?.online || !capable;
+      if (!brightnessBusy && !brightnessDirty) {
+        els.brightnessMessage.className = 'control-message';
+        els.brightnessMessage.textContent = !device?.online
+          ? '设备离线，不能调节亮度。'
+          : !capable
+            ? '当前固件不支持 Web 亮度调节，请先更新固件。'
+            : `设备当前亮度为 ${brightness}%，设置会持久保存。`;
+      }
     }
 
     function updateNetworkDebugControl() {
@@ -1012,6 +1069,34 @@
       }
     }
 
+    async function applyBrightness() {
+      const value = Number(els.brightnessRange.value);
+      const deviceId = els.brightnessDevice.value;
+      if (!deviceId || brightnessBusy) return;
+      brightnessBusy = true;
+      updateBrightnessControl();
+      els.brightnessMessage.className = 'control-message';
+      els.brightnessMessage.textContent = '正在应用亮度…';
+      try {
+        const query = new URLSearchParams({ device_id: deviceId, value: String(value) });
+        await api(`/command/brightness?${query}`);
+        brightnessDirty = false;
+        els.brightnessMessage.className = 'control-message success';
+        els.brightnessMessage.textContent = `已将 ${deviceId} 的屏幕亮度设为 ${value}%`;
+        setTimeout(loadAdmin, 1500);
+      } catch (error) {
+        els.brightnessMessage.className = 'control-message error';
+        els.brightnessMessage.textContent = `设置失败：${error.message}`;
+      } finally {
+        brightnessBusy = false;
+        els.brightnessDevice.disabled = false;
+        const device = brightnessDevices.find(item => item.device_id === deviceId);
+        const capable = Boolean(device?.capabilities?.includes('display_brightness'));
+        els.brightnessRange.disabled = !device?.online || !capable;
+        els.applyBrightness.disabled = !device?.online || !capable;
+      }
+    }
+
     async function toggleNetworkDebug() {
       const device = networkDebugDevices.find(item => item.device_id === els.networkDebugDevice.value);
       if (!device || networkDebugBusy) return;
@@ -1171,6 +1256,11 @@
     els.closeAdmin.addEventListener('click', closeAdmin);
     els.refreshAdmin.addEventListener('click', loadAdmin);
     els.applyVolume.addEventListener('click', applyVolume);
+    els.applyBrightness.addEventListener('click', applyBrightness);
+    els.brightnessDevice.addEventListener('change', () => {
+      brightnessDirty = false;
+      updateBrightnessControl();
+    });
     els.toggleNetworkDebug.addEventListener('click', toggleNetworkDebug);
     els.networkDebugDevice.addEventListener('change', updateNetworkDebugControl);
     els.remoteSpeak.addEventListener('click', makeXiaopaiSpeak);
@@ -1193,6 +1283,12 @@
       els.volumeValue.textContent = `${els.volumeRange.value}%`;
       els.volumeMessage.className = 'control-message';
       els.volumeMessage.textContent = '点击“应用”后下发到所选设备。';
+    });
+    els.brightnessRange.addEventListener('input', () => {
+      brightnessDirty = true;
+      els.brightnessValue.textContent = `${els.brightnessRange.value}%`;
+      els.brightnessMessage.className = 'control-message';
+      els.brightnessMessage.textContent = '点击“应用”后下发并保存到所选设备。';
     });
     els.adminOverlay.addEventListener('click', event => {
       if (event.target === els.adminOverlay) closeAdmin();

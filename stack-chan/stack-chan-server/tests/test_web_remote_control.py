@@ -48,6 +48,12 @@ class WebRemoteControlTest(unittest.TestCase):
         self.assertIn("/command/network_debug?${query}", self.page)
         self.assertIn("等待设备心跳确认实际状态", self.page)
 
+    def test_brightness_slider_targets_device_and_defaults_to_seventy_percent(self):
+        self.assertIn('id="brightnessRange" type="range" min="10" max="100" step="5" value="70"', self.page)
+        self.assertIn("device?.capabilities?.includes('display_brightness')", self.page)
+        self.assertIn("/command/brightness?${query}", self.page)
+        self.assertIn("设置会保存在设备上", self.page)
+
 
 if __name__ == "__main__":
     unittest.main()

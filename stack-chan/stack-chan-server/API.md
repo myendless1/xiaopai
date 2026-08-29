@@ -182,7 +182,7 @@ The payload is a JSON array. Supported step types:
 
 Voice recognition also maps phrases containing `声音` plus `大` or `小` to a volume command. The firmware stores
 speaker volume as 10-100, maps it to the M5 speaker's 0-255 range, changes it by 10 each time, then replies
-`已经将声音调到XXX`. If the phrase also contains `最`, `声音最大` sets 100 and `声音最小` sets 10.
+with the resulting number only, for example `50`. If the phrase also contains `最`, `声音最大` sets 100 and `声音最小` sets 10.
 
 Example:
 

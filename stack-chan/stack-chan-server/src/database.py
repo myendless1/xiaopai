@@ -46,6 +46,7 @@ class Database:
                       speech_generation INTEGER NOT NULL DEFAULT 0,
                       current_boot_id INTEGER NOT NULL DEFAULT 0,
                       network_debug INTEGER NOT NULL DEFAULT 0,
+                      display_brightness INTEGER NOT NULL DEFAULT 70,
                       online INTEGER NOT NULL DEFAULT 0
                     );
 
@@ -193,6 +194,10 @@ class Database:
         if "network_debug" not in columns:
             conn.execute(
                 "ALTER TABLE devices ADD COLUMN network_debug INTEGER NOT NULL DEFAULT 0"
+            )
+        if "display_brightness" not in columns:
+            conn.execute(
+                "ALTER TABLE devices ADD COLUMN display_brightness INTEGER NOT NULL DEFAULT 70"
             )
         # Older databases already contain the generation on dialogue commands.
         # Backfill it so a Server restart cannot make new speech stale.

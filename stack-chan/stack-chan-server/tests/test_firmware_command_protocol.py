@@ -20,6 +20,7 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         cls.expression_controller = (ROOT / "main" / "expression_controller.cpp").read_text()
         cls.main = (ROOT / "main" / "main.cpp").read_text()
         cls.camera_motion = (ROOT / "main" / "main_camera_motion.inc").read_text()
+        cls.dji_power = (ROOT / "main" / "audio" / "dji_mic_usb_power.cpp").read_text()
 
     def test_tts_uses_post_v3_endpoint_without_legacy_ack_fallback(self):
         self.assertIn('make_server_url("/v3/tts")', self.tts)
@@ -74,6 +75,8 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         apply_volume = volume_command.index("apply_speaker_volume();")
         queue_reply = volume_command.index('enqueue_speak_command("", reply, "", true)')
         self.assertLess(apply_volume, queue_reply)
+        self.assertIn('snprintf(reply, sizeof(reply), "%d", speaker_volume_percent)', volume_command)
+        self.assertNotIn("已经将声音调到", volume_command)
         self.assertNotIn("execute_speak_command", volume_command)
 
     def test_boot_pose_and_find_owner_scan_order(self):
@@ -183,6 +186,18 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         )
         self.assertIn('type == "dji_mic_start"', self.commands)
         self.assertIn('type == "dji_mic_stop"', self.commands)
+
+    def test_display_brightness_defaults_to_seventy_and_is_persistent(self):
+        self.assertIn("kDefaultDisplayBrightnessPercent = 70", self.main)
+        self.assertIn('kDisplayBrightnessNvsKey[] = "brightness"', self.main)
+        self.assertIn("load_display_brightness_preference();", self.main)
+        self.assertIn("set_display_brightness(percent, true)", self.commands)
+        self.assertIn('cJSON_CreateString("display_brightness")', self.commands)
+        self.assertIn('"display_brightness"', self.commands)
+
+    def test_dji_power_sequence_does_not_change_display_brightness(self):
+        self.assertNotIn("setBrightness", self.dji_power)
+        self.assertNotIn("dim_display_for_vbus", self.dji_power)
 
     def test_three_second_screen_press_resets_speech_queue_and_session(self):
         self.assertIn("kSessionResetLongPressMs = 3000", self.touch)

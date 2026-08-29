@@ -203,6 +203,62 @@ static const char* reset_reason_name(esp_reset_reason_t reason)
 #include "main_tts_commands.inc"
 #include "main_head_touch.inc"
 
+namespace {
+constexpr int kDefaultDisplayBrightnessPercent = 70;
+constexpr char kDisplayBrightnessNvsNamespace[] = "xiaopai";
+constexpr char kDisplayBrightnessNvsKey[] = "brightness";
+std::atomic<int> display_brightness_percent{kDefaultDisplayBrightnessPercent};
+
+static int clamp_display_brightness_percent(int percent)
+{
+    return std::max(1, std::min(100, percent));
+}
+
+static uint8_t display_brightness_raw(int percent)
+{
+    return static_cast<uint8_t>((clamp_display_brightness_percent(percent) * 255 + 50) / 100);
+}
+
+static void load_display_brightness_preference()
+{
+    uint8_t stored = kDefaultDisplayBrightnessPercent;
+    nvs_handle_t handle = 0;
+    if (nvs_open(kDisplayBrightnessNvsNamespace, NVS_READONLY, &handle) == ESP_OK) {
+        if (nvs_get_u8(handle, kDisplayBrightnessNvsKey, &stored) != ESP_OK) {
+            stored = kDefaultDisplayBrightnessPercent;
+        }
+        nvs_close(handle);
+    }
+    display_brightness_percent.store(
+        clamp_display_brightness_percent(static_cast<int>(stored)), std::memory_order_release);
+}
+
+static bool set_display_brightness(int percent, bool persist)
+{
+    percent = clamp_display_brightness_percent(percent);
+    if (persist) {
+        nvs_handle_t handle = 0;
+        esp_err_t err = nvs_open(kDisplayBrightnessNvsNamespace, NVS_READWRITE, &handle);
+        if (err != ESP_OK) {
+            return false;
+        }
+        err = nvs_set_u8(handle, kDisplayBrightnessNvsKey, static_cast<uint8_t>(percent));
+        if (err == ESP_OK) {
+            err = nvs_commit(handle);
+        }
+        nvs_close(handle);
+        if (err != ESP_OK) {
+            return false;
+        }
+    }
+    display_brightness_percent.store(percent, std::memory_order_release);
+    M5Lock lock;
+    M5.Display.setBrightness(display_brightness_raw(percent));
+    ESP_LOGI(TAG, "Display brightness set to %d%%", percent);
+    return true;
+}
+}  // namespace
+
 #include "main_command_services.inc"
 
 static void set_demo_lock_enabled(bool enabled)
@@ -428,6 +484,7 @@ extern "C" void app_main(void)
 {
     ESP_ERROR_CHECK(init_nvs_once());
     load_network_debug_preference();
+    load_display_brightness_preference();
     create_realtime_task_early();
 
     // Keep USB Serial/JTAG console until DJI Host actually starts. Switching the
@@ -475,7 +532,7 @@ extern "C" void app_main(void)
     }
     stackchan_power_manager_set_usb_output(false, "boot keep USB-C as input");
 
-    M5.Display.setBrightness(180);
+    set_display_brightness(display_brightness_percent.load(std::memory_order_acquire), false);
     M5.Display.setRotation(1);
     M5.Touch.setHoldThresh(500);
     M5.Touch.setFlickThresh(12);

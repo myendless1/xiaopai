@@ -1257,7 +1257,7 @@ static bool execute_volume_command(const cJSON* payload)
     apply_speaker_volume();
 
     char reply[64];
-    snprintf(reply, sizeof(reply), "已经将声音调到%d", speaker_volume_percent);
+    snprintf(reply, sizeof(reply), "%d", speaker_volume_percent);
     ESP_LOGI(TAG, "Speaker volume adjusted: percent=%d", speaker_volume_percent);
     if (!enqueue_speak_command("", reply, "", true)) {
         ESP_LOGW(TAG, "Speaker volume reply could not be queued after adjustment");

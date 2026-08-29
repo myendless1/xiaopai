@@ -739,6 +739,10 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
         const bool enabled = json_bool_value(payload, "enabled", false);
         return set_network_debug_enabled(enabled, true);
     }
+    if (type == "brightness" || type == "display_brightness") {
+        const int percent = json_int_value(payload, "value", kDefaultDisplayBrightnessPercent);
+        return set_display_brightness(percent, true);
+    }
     if (type == "debug_status" || type == "diagnostics") {
         const XiaopaiStateSnapshot state = xiaopai_state_get();
         const DjiMicReceiverStatus dji = dji_mic_receiver_input_status();
@@ -1210,6 +1214,7 @@ static bool send_v3_control_hello()
 #endif
     cJSON_AddItemToArray(capabilities, cJSON_CreateString("camera"));
     cJSON_AddItemToArray(capabilities, cJSON_CreateString("servo"));
+    cJSON_AddItemToArray(capabilities, cJSON_CreateString("display_brightness"));
 #if CONFIG_STACKCHAN_NETWORK_DEBUG
     cJSON_AddItemToArray(capabilities, cJSON_CreateString("network_debug"));
     cJSON_AddItemToArray(capabilities, cJSON_CreateString("remote_commands"));
@@ -1245,6 +1250,8 @@ static bool send_v3_control_heartbeat()
     cJSON_AddNumberToObject(root, "last_ack_seq", command_ack_seq);
     cJSON_AddNumberToObject(root, "speech_generation", speech_command_generation);
     cJSON_AddBoolToObject(root, "demo_lock", demo_lock_enabled.load());
+    cJSON_AddNumberToObject(root, "display_brightness",
+                            display_brightness_percent.load(std::memory_order_acquire));
     cJSON_AddStringToObject(root, "mode", xiaopai_state_get().name);
     cJSON_AddStringToObject(root, "expression", expression_state_get().name);
     cJSON_AddNumberToObject(root, "free_internal_heap", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));

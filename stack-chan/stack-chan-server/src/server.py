@@ -1892,6 +1892,7 @@ class Handler(BaseHTTPRequestHandler):
             boot_id=boot_id,
             last_ack_seq=int(payload.get("last_ack_seq") or 0),
             network_debug=network_debug,
+            display_brightness=int(payload.get("display_brightness") or 70),
         )
         self._sync_device_speech_generation(device_id, payload)
         self._mark_device_seen(device_id)
@@ -4547,6 +4548,9 @@ def command_payload_from_query(command_type: str, query: dict):
             "direction": direction,
             "step": int(first_value(query, "step") or "10"),
         }
+    if command_type in ("brightness", "display_brightness"):
+        value = int(first_value(query, "value") or "70")
+        return {"value": max(1, min(100, value))}
     if command_type == "network_debug":
         return {"enabled": parse_bool(first_value(query, "enabled") or "false")}
     if command_type == "play_audio":
