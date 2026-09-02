@@ -156,6 +156,12 @@ class MorrowWebGatewayTest(unittest.TestCase):
         self.assertEqual(clean_assistant_text("<surprised>网页上也不显示"), "网页上也不显示")
         self.assertEqual(clean_assistant_text("<nod>好的</nod>"), "好的")
         self.assertEqual(clean_assistant_text("<shy>兼容旧标签"), "兼容旧标签")
+        self.assertEqual(
+            clean_assistant_text(
+                "<nod></think_never_used_51bce0c785ca2f68081bfa7d91973934>已经完成"
+            ),
+            "已经完成",
+        )
         with self.assertRaises(MorrowWebError):
             validate_session_id("../escape")
         with self.assertRaises(MorrowWebError):

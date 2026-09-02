@@ -27,6 +27,12 @@ SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 EXPRESSION_TAG_RE = re.compile(
     r"</?(?:happy|thinking|surprised|shy|calm|nod|shake)>", re.IGNORECASE
 )
+# Some OpenAI-compatible model gateways have leaked this private reasoning
+# delimiter into assistant text.  It is transport metadata, not user-visible
+# content, so remove it at the web boundary as a defensive fallback.
+INTERNAL_THINK_TAG_RE = re.compile(
+    r"</?think_never_used_[A-Za-z0-9_-]+>", re.IGNORECASE
+)
 MORROW_WEB_MODES = {
     "nolark": {
         "id": "nolark",
@@ -57,7 +63,8 @@ def validate_session_id(session_id: str) -> str:
 
 
 def clean_assistant_text(text: str) -> str:
-    return EXPRESSION_TAG_RE.sub("", str(text or "")).strip()
+    cleaned = EXPRESSION_TAG_RE.sub("", str(text or ""))
+    return INTERNAL_THINK_TAG_RE.sub("", cleaned).strip()
 
 
 def latest_turn_error(payload: dict[str, Any]) -> str:

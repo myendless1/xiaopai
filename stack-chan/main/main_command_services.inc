@@ -1186,7 +1186,12 @@ static bool handle_command_response(const std::string& response)
         // after the speech item is safely queued and acknowledged. The TTS
         // worker can start playback while the motion runs, and retries cannot
         // repeat the action because the command has already been deduplicated.
-        if (queued && !text.empty() && segment_index == 0) {
+        // A tag-only reply has no speech segment.  Its reply-end sentinel is
+        // therefore segment zero and must still carry the requested physical
+        // action.  Never execute an action for a cancelled tag-only reply.
+        const bool saved_tag_only_reply =
+            text.empty() && reply_end && !reply_cancelled;
+        if (queued && segment_index == 0 && (!text.empty() || saved_tag_only_reply)) {
             bool action_ok = true;
             if (expression == "nod") {
                 action_ok = run_node_head_command();

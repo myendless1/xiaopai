@@ -1,6 +1,6 @@
 [model]
 base_url = "https://ark.cn-beijing.volces.com/api/coding/v3"
-model = "doubao-seed-2-0-lite"
+model = "deepseek-v4-flash"
 api_key_env = "OPENAI_API_KEY"
 timeout_secs = 120
 

@@ -193,6 +193,17 @@ class CoordinatorTest(unittest.TestCase):
         self.assertTrue(self._wait(lambda: self.ended == [("req-empty", 0, "saved", "calm")]))
         self.assertEqual(self.spoken, [])
 
+    def test_tag_only_reply_carries_action_on_end_control(self):
+        outcome = self.submit("req-nod-only")
+        self.assertTrue(self._wait(lambda: len(self.client.started) == 1))
+        self.client.events.put(
+            event({"type": "agent_event", "data": {"event": {"type": "text_delta", "data": "<nod>"}}})
+        )
+        self.client.events.put(event({"type": "turn_saved", "data": {}}))
+        self.assertTrue(outcome.finished.wait(0.3))
+        self.assertTrue(self._wait(lambda: self.ended == [("req-nod-only", 0, "saved", "nod")]))
+        self.assertEqual(self.spoken, [])
+
     def test_error_before_first_delta_emits_cancel_end_control(self):
         outcome = self.submit("req-error")
         self.assertTrue(self._wait(lambda: len(self.client.started) == 1))
