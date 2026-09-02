@@ -77,7 +77,7 @@ class MorrowCommandStoreTest(unittest.TestCase):
         store = self.make_store()
         segment_sink = command_store_segment_sink(store)
         end_sink = command_store_reply_end_sink(store)
-        request = MorrowRequest("req-1", "问题", "robot-1", "voice", 1, 60, 3, "surprised")
+        request = MorrowRequest("req-1", "问题", "robot-1", "voice", 1, 60, 3, "thinking")
         segment_sink(request, "回复。", 0)
         end_sink(request, 1, "saved")
 
@@ -86,7 +86,7 @@ class MorrowCommandStoreTest(unittest.TestCase):
         ending = store.lease_next_command("robot-1")
 
         self.assertEqual(ending["payload"]["text"], "")
-        self.assertEqual(ending["payload"]["expression"], "surprised")
+        self.assertEqual(ending["payload"]["expression"], "thinking")
         self.assertTrue(ending["payload"]["reply_end"])
         self.assertFalse(ending["payload"]["reply_cancelled"])
         self.assertEqual(ending["payload"]["segment_index"], 1)

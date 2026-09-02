@@ -199,7 +199,7 @@ class MorrowP4NoticesTest(unittest.TestCase):
         notice = {
             "id": "meeting:expression",
             "kind": "meeting_reminder",
-            "text": "<SuRpRiSeD>第一句。<unknown>第二句。",
+            "text": "<HaPpY>第一句。<unknown>第二句。",
         }
         srv_module.save_morrow_notice(self.server, notice)
         self.server.last_seen["device-1"] = srv_module.time.time()
@@ -212,8 +212,8 @@ class MorrowP4NoticesTest(unittest.TestCase):
 
         self.assertEqual(first["payload"]["text"], "第一句。")
         self.assertEqual(second["payload"]["text"], "第二句。")
-        self.assertEqual(first["payload"]["expression"], "surprised")
-        self.assertEqual(second["payload"]["expression"], "surprised")
+        self.assertEqual(first["payload"]["expression"], "happy")
+        self.assertEqual(second["payload"]["expression"], "happy")
         self.assertFalse(first["payload"]["reply_end"])
         self.assertTrue(second["payload"]["reply_end"])
 

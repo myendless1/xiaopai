@@ -65,8 +65,9 @@ class ExpressionTagParserTest(unittest.TestCase):
             ("<happy>你好", ("你好", "happy")),
             ("你好", ("你好", "calm")),
             ("<sad>你好", ("你好", "calm")),
+            ("<surprised>你好", ("你好", "calm")),
             ("<foo><HAPPY>你好", ("你好", "happy")),
-            ("<thinking><surprised>你好", ("你好", "thinking")),
+            ("<thinking><happy>你好", ("你好", "thinking")),
             ("<>你好", ("你好", "calm")),
         )
         for source, expected in cases:
@@ -152,7 +153,7 @@ class CoordinatorTest(unittest.TestCase):
     def test_expression_tag_spans_deltas_and_is_shared_by_all_segments(self):
         outcome = self.submit("req-1")
         self.assertTrue(self._wait(lambda: len(self.client.started) == 1))
-        for delta in ("<thi", "nking>第一句。", "第二句。<surprised>"):
+        for delta in ("<thi", "nking>第一句。", "第二句。<happy>"):
             self.client.events.put(
                 event({"type": "agent_event", "data": {"event": {"type": "text_delta", "data": delta}}})
             )

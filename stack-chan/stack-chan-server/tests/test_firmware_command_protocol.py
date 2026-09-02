@@ -252,6 +252,8 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         self.assertIn("kReplyWatchdogMs = 20000", self.expression_state)
         self.assertIn("reply_session.generation == generation", self.expression_state)
         self.assertIn('show_expression(kDefaultExpression)', self.expression_state)
+        self.assertIn('strcmp(requested, "happy") == 0 || strcmp(requested, "thinking") == 0', self.expression_state)
+        self.assertNotIn('strcmp(requested, "surprised")', self.expression_state)
 
     def test_reply_voice_stays_speaking_between_segments_and_uses_fifo_end(self):
         self.assertIn("enum class ReplyVoicePhase", self.state)

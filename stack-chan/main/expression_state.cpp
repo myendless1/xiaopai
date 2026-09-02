@@ -202,8 +202,7 @@ void expression_state_reply_prepare(const char* turn_id, uint32_t generation, co
     }
     const char* id = turn_id != nullptr ? turn_id : "";
     const char* requested = expression != nullptr ? expression : "";
-    const char* normalized = strcmp(requested, "happy") == 0 || strcmp(requested, "thinking") == 0 ||
-                                     strcmp(requested, "surprised") == 0
+    const char* normalized = strcmp(requested, "happy") == 0 || strcmp(requested, "thinking") == 0
                                  ? requested
                                  : kDefaultExpression;
     bool new_session = false;

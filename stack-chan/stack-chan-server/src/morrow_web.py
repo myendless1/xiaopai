@@ -24,7 +24,7 @@ from morrow_client import MorrowClient
 
 
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-EXPRESSION_TAG_RE = re.compile(r"<(?:happy|thinking|surprised)>", re.IGNORECASE)
+EXPRESSION_TAG_RE = re.compile(r"<(?:happy|thinking|surprised|calm)>", re.IGNORECASE)
 MORROW_WEB_MODES = {
     "nolark": {
         "id": "nolark",
