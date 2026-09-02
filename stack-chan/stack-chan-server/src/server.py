@@ -154,6 +154,8 @@ AVAILABLE_ACTIONS = (
     "happy_squint_dynamic",
     "node_head",
     "nod_head",
+    "shake",
+    "shake_head",
 )
 
 PHYSICAL_ACTIONS = {"node_head", "nod_head"}

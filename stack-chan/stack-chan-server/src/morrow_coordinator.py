@@ -13,7 +13,12 @@ from morrow_protocol import MorrowEvent
 
 
 HARD_PUNCTUATION = frozenset("。！？!?；;\n")
-SUPPORTED_EXPRESSIONS = frozenset({"happy", "thinking", "surprised"})
+# Reply tags may select either a static face or a short physical action. Use
+# opening tags only (do not emit closing tags); closing tags are tolerated and
+# stripped for compatibility. Keep
+# ``nod`` here so it can be used inline like ``<happy>`` while being forwarded
+# in the command's expression field for device-side handling.
+SUPPORTED_EXPRESSIONS = frozenset({"happy", "thinking", "surprised", "nod", "shake"})
 DIALOGUE_COMMAND_PRIORITY = 50
 # Once a segment reaches the device this is its local playback deadline.  Server
 # persistence itself is intentionally unbounded and is cancelled by turn generation.
@@ -57,8 +62,7 @@ class StreamingExpressionTagParser:
 
     def __init__(self) -> None:
         self.expression = "calm"
-        self._leading = True
-        self._selected = False
+        self._saw_text = False
         self._tag_buffer = ""
 
     def feed(self, text: str) -> str:
@@ -79,7 +83,7 @@ class StreamingExpressionTagParser:
 
             output.append(char)
             if not char.isspace():
-                self._leading = False
+                self._saw_text = True
         return "".join(output)
 
     def flush(self) -> str:
@@ -90,9 +94,13 @@ class StreamingExpressionTagParser:
     def _finish_tag(self) -> None:
         tag = self._tag_buffer[1:].strip().lower()
         self._tag_buffer = ""
-        if self._leading and not self._selected and tag in SUPPORTED_EXPRESSIONS:
+        # Accept tags wherever they occur in a reply.  Closing tags (for
+        # example ``</happy>``) are formatting markers and do not change the
+        # active expression.
+        if tag.startswith("/"):
+            return
+        if tag in SUPPORTED_EXPRESSIONS and (self.expression == "calm" or self._saw_text):
             self.expression = tag
-            self._selected = True
 
 
 def parse_expression_tags(text: str) -> tuple[str, str]:

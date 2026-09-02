@@ -868,7 +868,9 @@ static bool move_head_to_tracking_angles(float yaw_deg, float pitch_deg, uint16_
 
 static bool run_node_head_command()
 {
-    static constexpr float kNodeHeadPitchDeltaDeg = 10.0f;
+    // A nod is intentionally subtle: dip 5° and return 5° (relative to the
+    // current pitch), then settle back at the starting angle.
+    static constexpr float kNodeHeadPitchDeltaDeg = 5.0f;
     static constexpr uint16_t kNodeHeadStepMs = 500;
     static constexpr uint16_t kNodeHeadCommandOverheadMs = 240;
     static constexpr uint16_t kNodeHeadStepGapMs = kNodeHeadStepMs > kNodeHeadCommandOverheadMs
@@ -892,6 +894,19 @@ static bool run_node_head_command()
         ok = move_head_to_tracking_angles(tracking_yaw_deg, pitch, kNodeHeadStepMs) && ok;
         vTaskDelay(pdMS_TO_TICKS(kNodeHeadStepGapMs));
     }
+    return ok;
+}
+
+static bool run_shake_head_command()
+{
+    static constexpr float kShakeHeadDeltaDeg = 5.0f;
+    static constexpr uint16_t kShakeHeadStepMs = 350;
+    const float start_yaw = tracking_yaw_deg;
+    const float left = clamp_float(start_yaw - kShakeHeadDeltaDeg, kTrackingYawMinDeg, kTrackingYawMaxDeg);
+    const float right = clamp_float(start_yaw + kShakeHeadDeltaDeg, kTrackingYawMinDeg, kTrackingYawMaxDeg);
+    bool ok = move_head_to_tracking_angles(left, tracking_pitch_deg, kShakeHeadStepMs);
+    ok = move_head_to_tracking_angles(right, tracking_pitch_deg, kShakeHeadStepMs) && ok;
+    ok = move_head_to_tracking_angles(start_yaw, tracking_pitch_deg, kShakeHeadStepMs) && ok;
     return ok;
 }
 
