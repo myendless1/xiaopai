@@ -1181,6 +1181,22 @@ static bool handle_command_response(const std::string& response)
             send_command_ack(cmd_id.c_str(), "received", "", attempt);
             if (persist_dedupe) command_dedupe_mark_persistent(cmd_id.c_str());
         }
+        // Normal Morrow replies take this fast path instead of
+        // execute_command_object_internal(). Run a leading physical action
+        // after the speech item is safely queued and acknowledged. The TTS
+        // worker can start playback while the motion runs, and retries cannot
+        // repeat the action because the command has already been deduplicated.
+        if (queued && !text.empty() && segment_index == 0) {
+            bool action_ok = true;
+            if (expression == "nod") {
+                action_ok = run_node_head_command();
+            } else if (expression == "shake") {
+                action_ok = run_shake_head_command();
+            }
+            if (!action_ok) {
+                ESP_LOGW(TAG, "Dialogue expression action failed: expression=%s", expression.c_str());
+            }
+        }
         ESP_LOG_LEVEL(queued ? ESP_LOG_INFO : ESP_LOG_ERROR, TAG,
                       "COMMAND queued id=%s type=speak result=%s attempt=%u",
                       cmd_id.c_str(), queued ? "ok" : "failed", static_cast<unsigned>(attempt));

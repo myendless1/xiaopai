@@ -35,6 +35,16 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         enqueue = self.commands.index("bool queued = enqueue_speak_command")
         self.assertGreater(received, enqueue)
 
+    def test_morrow_speak_fast_path_runs_leading_physical_action_once(self):
+        start = self.commands.index('if (cmd_type == "speak")')
+        end = self.commands.index('if (cmd_type == "stop")', start)
+        speak_fast_path = self.commands[start:end]
+        self.assertIn('if (queued && !text.empty() && segment_index == 0)', speak_fast_path)
+        self.assertIn('if (expression == "nod")', speak_fast_path)
+        self.assertIn('action_ok = run_node_head_command()', speak_fast_path)
+        self.assertIn('else if (expression == "shake")', speak_fast_path)
+        self.assertIn('action_ok = run_shake_head_command()', speak_fast_path)
+
     def test_speech_item_has_delivery_metadata_and_utf8_capacity(self):
         for field in (
             "attempt",
