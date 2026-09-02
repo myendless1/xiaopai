@@ -899,7 +899,9 @@ static bool run_node_head_command()
 
 static bool run_shake_head_command()
 {
-    static constexpr float kShakeHeadDeltaDeg = 5.0f;
+    // Sweep 10 degrees to either side (20 degrees edge to edge) so the
+    // negative gesture remains clearly visible at normal viewing distance.
+    static constexpr float kShakeHeadDeltaDeg = 10.0f;
     static constexpr uint16_t kShakeHeadStepMs = 350;
     const float start_yaw = tracking_yaw_deg;
     const float left = clamp_float(start_yaw - kShakeHeadDeltaDeg, kTrackingYawMinDeg, kTrackingYawMaxDeg);

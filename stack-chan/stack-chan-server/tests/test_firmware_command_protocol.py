@@ -49,6 +49,11 @@ class FirmwareCommandProtocolTest(unittest.TestCase):
         self.assertIn('else if (expression == "shake")', speak_fast_path)
         self.assertIn('action_ok = run_shake_head_command()', speak_fast_path)
 
+    def test_shake_head_uses_visible_twenty_degree_sweep(self):
+        self.assertIn('kShakeHeadDeltaDeg = 10.0f', self.camera_motion)
+        self.assertIn('start_yaw - kShakeHeadDeltaDeg', self.camera_motion)
+        self.assertIn('start_yaw + kShakeHeadDeltaDeg', self.camera_motion)
+
     def test_speech_item_has_delivery_metadata_and_utf8_capacity(self):
         for field in (
             "attempt",
