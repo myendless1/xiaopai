@@ -68,6 +68,8 @@ class ExpressionTagParserTest(unittest.TestCase):
             ("<surprised>你好", ("你好", "calm")),
             ("<foo><HAPPY>你好", ("你好", "happy")),
             ("<thinking><happy>你好", ("你好", "thinking")),
+            ("<nod>好的", ("好的", "nod")),
+            ("<shake>不行", ("不行", "shake")),
             ("<>你好", ("你好", "calm")),
         )
         for source, expected in cases:

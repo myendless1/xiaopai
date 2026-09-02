@@ -13,9 +13,9 @@ from morrow_protocol import MorrowEvent
 
 
 HARD_PUNCTUATION = frozenset("。！？!?；;\n")
-# Agent protocol: the spoken reply may start with one of these tags.
-# <surprised> is still drawable over HTTP, but is not an agent-facing tag.
-SUPPORTED_EXPRESSIONS = frozenset({"happy", "thinking"})
+# Agent protocol: a spoken reply may start with one static face or physical
+# action tag. Other drawable faces remain available through the HTTP API.
+SUPPORTED_EXPRESSIONS = frozenset({"happy", "thinking", "nod", "shake"})
 DIALOGUE_COMMAND_PRIORITY = 50
 # Once a segment reaches the device this is its local playback deadline.  Server
 # persistence itself is intentionally unbounded and is cancelled by turn generation.

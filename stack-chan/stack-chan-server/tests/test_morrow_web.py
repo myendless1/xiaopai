@@ -154,6 +154,8 @@ class MorrowWebGatewayTest(unittest.TestCase):
         self.assertEqual(validate_session_id("web-1:chat"), "web-1:chat")
         self.assertEqual(clean_assistant_text("<thinking>正在处理"), "正在处理")
         self.assertEqual(clean_assistant_text("<surprised>网页上也不显示"), "网页上也不显示")
+        self.assertEqual(clean_assistant_text("<nod>好的</nod>"), "好的")
+        self.assertEqual(clean_assistant_text("<shy>兼容旧标签"), "兼容旧标签")
         with self.assertRaises(MorrowWebError):
             validate_session_id("../escape")
         with self.assertRaises(MorrowWebError):

@@ -7,6 +7,7 @@ find_idf_path() {
   for candidate in \
     "$PROJECT_DIR/esp-idf" \
     "$PROJECT_DIR/../esp-idf" \
+    "$PROJECT_DIR/../../esp-idf" \
     "$PROJECT_DIR/../../stack-chan/esp-idf"
   do
     if [ -f "$candidate/export.sh" ]; then
@@ -31,6 +32,7 @@ ESP-IDF was not found.
 Looked in these paths relative to this script:
   esp-idf
   ../esp-idf
+  ../../esp-idf
   ../../stack-chan/esp-idf
 
 Set IDF_PATH to an ESP-IDF checkout, or place esp-idf next to env.sh.
@@ -50,17 +52,20 @@ if [ -z "${IDF_TOOLS_PATH:-}" ]; then
   fi
 fi
 if [ -z "${IDF_PYTHON_ENV_PATH:-}" ]; then
-  if [ -d "$PROJECT_DIR/.venv" ] || [ "$IDF_BASE_DIR" = "$PROJECT_DIR" ]; then
+  # Let ESP-IDF select its managed venv when no checkout-local venv exists.
+  if [ -d "$PROJECT_DIR/.venv" ]; then
     export IDF_PYTHON_ENV_PATH="$PROJECT_DIR/.venv"
-  else
+  elif [ -d "$IDF_BASE_DIR/.venv" ]; then
     export IDF_PYTHON_ENV_PATH="$IDF_BASE_DIR/.venv"
   fi
 fi
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$PROJECT_DIR/.uv-cache}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$PROJECT_DIR/.cache}"
 
-export http_proxy="${http_proxy:-http://localhost:7890}"
-export https_proxy="${https_proxy:-http://localhost:7890}"
-export all_proxy="${all_proxy:-socks5://localhost:7891}"
+
+# Use the LAN mixed proxy by default; caller-provided values still take precedence.
+export http_proxy="${http_proxy:-http://10.254.48.24:12001}"
+export https_proxy="${https_proxy:-http://10.254.48.24:12001}"
+export all_proxy="${all_proxy:-http://10.254.48.24:12001}"
 
 . "$IDF_PATH/export.sh"

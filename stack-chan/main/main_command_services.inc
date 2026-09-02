@@ -854,6 +854,13 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
 
     if (type == "face" || type == "expression" || type == "action") {
         std::string expression = command_expression_value(payload);
+        // ``<nod>`` is emitted by the dialogue tag parser as an expression so
+        // it follows the same transport path as faces.  Execute the physical
+        // head motion here instead of treating it as a face animation.
+        if (expression == "nod") {
+            return run_node_head_command();
+        }
+        if (expression == "shake") { return run_shake_head_command(); }
         if (expression == "thinking") {
             xiaopai_state_set(LocalVoiceState::Waiting, "thinking expression command");
         }
@@ -894,6 +901,16 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
     }
     if (type == "speak") {
         std::string text = json_string_value(payload, "text");
+        // Dialogue replies can carry an inline ``<nod>`` tag.  Trigger the
+        // physical nod once for the speech segment while preserving normal
+        // speech handling below.
+        if (command_expression_value(payload) == "nod" && !text.empty() &&
+            json_int_value(payload, "segment_index", 0) == 0) {
+            run_node_head_command();
+        } else if (command_expression_value(payload) == "shake" && !text.empty() &&
+                   json_int_value(payload, "segment_index", 0) == 0) {
+            run_shake_head_command();
+        }
         std::string cache_name = json_string_value(payload, "cache_name");
         std::string voice = json_string_value(payload, "voice");
         int sample_rate = json_int_value(payload, "sample_rate", 0);

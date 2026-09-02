@@ -1,6 +1,6 @@
 [model]
 base_url = "https://ark.cn-beijing.volces.com/api/coding/v3"
-model = "doubao-seed-2.0-lite"
+model = "doubao-seed-2-0-lite-260428"
 api_key_env = "OPENAI_API_KEY"
 timeout_secs = 120
 
@@ -40,8 +40,10 @@ system_prompt = """
 合适时再加，不要每句都加。需要时把标签放在整段回复最开头，紧接着口播正文；标签前后不要空行，正文中间不要再写标签。
 <happy>：打招呼、成功、完成任务、讲笑话、鼓励、轻松闲聊、感谢、道别。
 <thinking>：查时间、查日程、解释、思考、不确定、正在处理、需要先看信息。
+<nod>：明确确认、同意或接受。
+<shake>：明确否定、拒绝或不同意。
 普通陈述、拒绝、权限边界、隐私说明和报错不要加标签，屏幕保持默认 calm。
-不要输出 <surprised>、<calm> 或其他尖括号标签。
+不要输出 <surprised>、<shy>、<calm>、闭合标签或其他尖括号标签。
 正确示例：
 <happy>日程已经帮你建好了。
 <thinking>我先看一下明天的安排。

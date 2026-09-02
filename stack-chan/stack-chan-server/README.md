@@ -28,6 +28,10 @@ ALIYUN_NLS_APPKEY='your-nls-appkey'
 MORROW_BASE_URL='http://127.0.0.1:3000'
 MORROW_SESSION='default'
 MORROW_AUTH_TOKEN=''
+# Optional Feishu web OAuth
+# FEISHU_CLIENT_ID='cli_xxx'
+# FEISHU_CLIENT_SECRET='...'
+# FEISHU_REDIRECT_URI='https://your-domain.example/web/api/feishu/callback'
 EOF
 ./start.sh
 ```
@@ -233,6 +237,8 @@ or another browser appear automatically. Morrow's port (3000 by default) can rem
 The mode selector exposes the allowlisted configurations as **General Q&A** (`nolark`) and **Feishu Office
 Assistant** (`lark`). Switching runs the workspace `start_morrow.sh` controller, creates one fresh shared session,
 and switches the web page and all devices together so context from different tool configurations is never mixed.
+
+The web header includes a Feishu account button backed by the existing `lark-cli` identity. It reads `lark-cli auth status --json`, starts device-flow login with `lark-cli auth login --recommend --no-wait --json`, and logs out with `lark-cli auth logout --json`. The button redirects to the dynamic `verification_url` returned by the CLI.
 
 The **Xiaopai Management** drawer uses the existing `/health`, `/devices`, `/v3/devices`, and `/command/volume`
 interfaces to show service/Morrow/realtime status, distinguish live hardware heartbeats from stale registry records,

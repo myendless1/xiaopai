@@ -17,6 +17,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import zlib
+from http.cookies import SimpleCookie
 from collections.abc import Callable
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
@@ -39,6 +40,9 @@ from yunet_service import YunetFaceService
 from command_store import CommandStore
 from database import Database
 from device_registry import DeviceRegistry
+from feishu_auth import FeishuOAuth, SESSION_COOKIE
+
+FEISHU_STATE_COOKIE = "xiaopai_feishu_oauth_state"
 from schemas import CommandEnvelope, DEFAULT_LEASE_MS, PROTOCOL_VERSION
 
 
@@ -150,6 +154,8 @@ AVAILABLE_ACTIONS = (
     "happy_squint_dynamic",
     "node_head",
     "nod_head",
+    "shake",
+    "shake_head",
 )
 
 PHYSICAL_ACTIONS = {"node_head", "nod_head"}
@@ -1428,6 +1434,7 @@ class AliyunVoiceServer(ThreadingHTTPServer):
     morrow_notice_stop_event: threading.Event
     morrow_notice_thread: threading.Thread | None
     morrow_web_gateway: MorrowWebGateway
+    feishu_oauth: FeishuOAuth
     debug_log: bool
     device_lock: threading.Lock
     face_detector_backend: str
@@ -1510,6 +1517,15 @@ class Handler(BaseHTTPRequestHandler):
         path, query = self._path_query()
         if path in ("/web", "/web/"):
             self._handle_web_page()
+            return
+        if path == "/web/api/feishu/auth":
+            self._handle_feishu_auth_status()
+            return
+        if path == "/web/api/feishu/login":
+            self._handle_feishu_login()
+            return
+        if path == "/web/api/feishu/callback":
+            self._handle_feishu_callback(query)
             return
         if path == "/web/api/status":
             self._send_json(self.server.morrow_web_gateway.status())
@@ -1707,6 +1723,9 @@ class Handler(BaseHTTPRequestHandler):
         path, query = self._path_query()
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length) if length > 0 else b""
+        if path == "/web/api/feishu/logout":
+            self._handle_feishu_logout()
+            return
         if path == "/web/api/morrow/mode":
             try:
                 payload = json.loads(body.decode("utf-8")) if body else {}
@@ -1793,6 +1812,65 @@ class Handler(BaseHTTPRequestHandler):
     def _path_query(self):
         parsed = urllib.parse.urlparse(self.path)
         return parsed.path, urllib.parse.parse_qs(parsed.query)
+
+    def _feishu_session_id(self) -> str:
+        cookies = SimpleCookie()
+        cookies.load(self.headers.get("Cookie", ""))
+        morsel = cookies.get(SESSION_COOKIE)
+        return morsel.value if morsel is not None else ""
+
+    def _handle_feishu_auth_status(self) -> None:
+        self._send_json(self.server.feishu_oauth.status(self._feishu_session_id()))
+
+    def _handle_feishu_login(self) -> None:
+        oauth = self.server.feishu_oauth
+        if not oauth.configured:
+            self._send_json({
+                "configured": False,
+                "authenticated": False,
+                "message": "Feishu OAuth is not configured; set FEISHU_CLIENT_ID, FEISHU_CLIENT_SECRET and FEISHU_REDIRECT_URI.",
+            }, HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+        authorization_url = oauth.authorization_url()
+        state = urllib.parse.parse_qs(urllib.parse.urlparse(authorization_url).query).get("state", [""])[0]
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", authorization_url)
+        self.send_header("Set-Cookie", f"{FEISHU_STATE_COOKIE}={state}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def _handle_feishu_callback(self, query: dict[str, list[str]]) -> None:
+        oauth = self.server.feishu_oauth
+        if query.get("error"):
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", "/web?feishu_error=access_denied")
+            self.end_headers()
+            return
+        callback_state = query.get("state", [""])[0]
+        cookies = SimpleCookie()
+        cookies.load(self.headers.get("Cookie", ""))
+        expected_state = cookies.get(FEISHU_STATE_COOKIE)
+        if expected_state is None or expected_state.value != callback_state:
+            self._send_json({"type": "error", "message": "invalid Feishu OAuth state"}, HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            session_id = oauth.callback(query.get("code", [""])[0], callback_state)
+        except ValueError as exc:
+            self._send_json({"type": "error", "message": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            return
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", "/web")
+        self.send_header("Set-Cookie", f"{SESSION_COOKIE}={session_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800")
+        self.send_header("Set-Cookie", f"{FEISHU_STATE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def _handle_feishu_logout(self) -> None:
+        self.server.feishu_oauth.logout(self._feishu_session_id())
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Set-Cookie", f"{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
 
     def _handle_web_page(self) -> None:
         page_path = os.path.join(self.server.static_dir, "web", "index.html")
@@ -5214,6 +5292,7 @@ def main():
         reconnect_min=args.morrow_reconnect_min,
         reconnect_max=args.morrow_reconnect_max,
     ) if args.morrow_base_url else None
+    httpd.feishu_oauth = FeishuOAuth(cli_path=os.environ.get("LARK_CLI_PATH", "lark-cli"))
     httpd.morrow_web_gateway = MorrowWebGateway(
         base_url=args.morrow_base_url,
         default_session=args.morrow_session,
