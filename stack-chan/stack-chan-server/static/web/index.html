@@ -113,7 +113,7 @@
     .mode-picker select:focus { border-color: rgba(25, 131, 93, .45); box-shadow: 0 0 0 3px rgba(25, 131, 93, .08); }
     .mode-picker select:disabled { opacity: .55; cursor: wait; }
 
-    .new-chat, .admin-button {
+    .new-chat, .admin-button, .account-button {
       border: 1px solid rgba(17, 104, 72, .18);
       border-radius: 13px;
       padding: 10px 15px;
@@ -124,9 +124,13 @@
       transition: transform .16s ease, background .16s ease, box-shadow .16s ease;
     }
 
-    .new-chat:hover, .admin-button:hover { transform: translateY(-1px); background: #dcf2e8; box-shadow: 0 8px 22px rgba(31, 115, 81, .12); }
-    .new-chat:disabled, .admin-button:disabled { opacity: .5; cursor: wait; transform: none; }
+    .new-chat:hover, .admin-button:hover, .account-button:hover { transform: translateY(-1px); background: #dcf2e8; box-shadow: 0 8px 22px rgba(31, 115, 81, .12); }
+    .new-chat:disabled, .admin-button:disabled, .account-button:disabled { opacity: .5; cursor: wait; transform: none; }
     .admin-button { display: flex; align-items: center; justify-content: center; gap: 7px; color: #35463e; background: rgba(255, 255, 255, .68); border-color: var(--line); }
+    .account-button { display: flex; align-items: center; justify-content: center; gap: 7px; max-width: 180px; overflow: hidden; }
+    .account-button.signed-in { color: var(--accent-dark); background: var(--accent-soft); }
+    .account-icon { font-size: 15px; line-height: 1; }
+    .account-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .admin-icon { font-size: 16px; line-height: 1; }
 
     main { min-height: 0; overflow-y: auto; scroll-behavior: smooth; }
@@ -252,8 +256,8 @@
       .session { max-width: 150px; }
       .header-actions { gap: 6px; }
       .mode-picker select { min-width: 116px; width: 116px; padding-left: 10px; font-size: 12px; }
-      .admin-button { width: 42px; height: 40px; padding: 0; }
-      .admin-label { display: none; }
+      .admin-button, .account-button { width: 42px; height: 40px; padding: 0; }
+      .admin-label, .account-label { display: none; }
       .new-chat { padding: 9px 11px; font-size: 13px; }
       .conversation { width: calc(100% - 28px); padding-top: 24px; }
       .message { max-width: 90%; }
@@ -297,6 +301,9 @@
             <option value="">加载模式…</option>
           </select>
         </label>
+        <button class="account-button" id="feishuAccount" type="button" title="登录飞书">
+          <span class="account-icon" aria-hidden="true">◉</span><span class="account-label" id="feishuAccountLabel">登录飞书</span>
+        </button>
         <button class="admin-button" id="openAdmin" type="button" title="小派管理">
           <span class="admin-icon" aria-hidden="true">⚙</span><span class="admin-label">小派管理</span>
         </button>
@@ -462,6 +469,8 @@
       send: document.getElementById('sendButton'),
       newChat: document.getElementById('newChat'),
       openAdmin: document.getElementById('openAdmin'),
+      feishuAccount: document.getElementById('feishuAccount'),
+      feishuAccountLabel: document.getElementById('feishuAccountLabel'),
       closeAdmin: document.getElementById('closeAdmin'),
       adminOverlay: document.getElementById('adminOverlay'),
       refreshAdmin: document.getElementById('refreshAdmin'),
@@ -523,6 +532,7 @@
     let onlineRemoteDevices = [];
     let networkDebugDevices = [];
     let networkDebugBusy = false;
+    let feishuAuthState = { authenticated: false, configured: false, user: null };
 
     const REHEARSAL_REPLY = '我看你站在这里好久啦，有什么需要帮助的吗？';
 
@@ -537,6 +547,47 @@
       els.send.disabled = value || !els.input.value.trim();
       els.newChat.disabled = value;
       els.modeSelect.disabled = value || !availableModes.length;
+    }
+
+    function renderFeishuAccount(state) {
+      feishuAuthState = state && typeof state === 'object' ? state : { authenticated: false, configured: false, user: null };
+      const user = feishuAuthState.user || {};
+      const name = user.name || user.en_name || user.email || user.enterprise_email || '';
+      const authenticated = Boolean(feishuAuthState.authenticated);
+      els.feishuAccount.classList.toggle('signed-in', authenticated);
+      els.feishuAccountLabel.textContent = authenticated ? (name || '飞书账号') : '登录飞书';
+      els.feishuAccount.title = authenticated ? `已登录飞书：${name}，点击退出` : (feishuAuthState.configured ? '使用飞书账号登录' : '尚未配置飞书 OAuth');
+      els.feishuAccount.setAttribute('aria-label', els.feishuAccount.title);
+    }
+
+    async function loadFeishuAuth() {
+      try {
+        renderFeishuAccount(await api('/web/api/feishu/auth'));
+      } catch (_) {
+        renderFeishuAccount({ authenticated: false, configured: false });
+      }
+    }
+
+    async function handleFeishuAccount() {
+      if (feishuAuthState.authenticated) {
+        try {
+          await api('/web/api/feishu/logout', { method: 'POST', body: '{}' });
+          renderFeishuAccount({ authenticated: false, configured: feishuAuthState.configured });
+        } catch (error) {
+          setStatus('offline', `退出飞书失败：${error.message}`);
+        }
+        return;
+      }
+      try {
+        const status = await api('/web/api/feishu/auth');
+        if (status.login_url) {
+          window.location.assign(status.login_url);
+          return;
+        }
+        setStatus('offline', '请先配置飞书 OAuth 应用');
+      } catch (error) {
+        setStatus('offline', `飞书登录不可用：${error.message}`);
+      }
     }
 
     function modeLabel(modeId = activeMode) {
@@ -1162,6 +1213,7 @@
     async function initialise() {
       setBusy(true);
       try {
+        await loadFeishuAuth();
         const status = await api('/web/api/status');
         populateModes(status.modes, status.active_mode);
         sessionRevision = Number(status.session_revision || 0);
@@ -1280,6 +1332,7 @@
     els.composer.addEventListener('submit', event => { event.preventDefault(); sendMessage(); });
     els.newChat.addEventListener('click', createNewChat);
     els.openAdmin.addEventListener('click', openAdmin);
+    els.feishuAccount.addEventListener('click', handleFeishuAccount);
     els.closeAdmin.addEventListener('click', closeAdmin);
     els.refreshAdmin.addEventListener('click', loadAdmin);
     els.applyVolume.addEventListener('click', applyVolume);
