@@ -399,6 +399,16 @@
           <div class="remote-action">
             <div class="remote-action-head">
               <div>
+                <div class="remote-action-title">切换 Wi‑Fi</div>
+                <div class="remote-action-detail">清除开机自动连接的 Wi‑Fi 配置并重启，重启后需重新配网。</div>
+              </div>
+              <button class="remote-button" id="remoteWifiReset" type="button" disabled>重新配置 Wi‑Fi</button>
+            </div>
+          </div>
+
+          <div class="remote-action">
+            <div class="remote-action-head">
+              <div>
                 <div class="remote-action-title">展示排练</div>
                 <div class="remote-action-detail">先寻找并面向现场的人，找到后说“我看你站在这里好久啦，有什么需要帮助的吗？”</div>
               </div>
@@ -505,6 +515,7 @@
       remoteSpeak: document.getElementById('remoteSpeak'),
       remoteFindOwner: document.getElementById('remoteFindOwner'),
       remoteRehearsal: document.getElementById('remoteRehearsal'),
+      remoteWifiReset: document.getElementById('remoteWifiReset'),
       servoButtons: document.querySelectorAll('[data-servo-direction]'),
       remoteMessage: document.getElementById('remoteMessage'),
       deviceList: document.getElementById('deviceList'),
@@ -870,6 +881,7 @@
       els.remoteSpeak.disabled = remoteBusy || !available || !els.remoteSpeech.value.trim();
       els.remoteFindOwner.disabled = remoteBusy || !available;
       els.remoteRehearsal.disabled = remoteBusy || !available;
+      els.remoteWifiReset.disabled = remoteBusy || !available;
       els.servoButtons.forEach(button => { button.disabled = remoteBusy || !available; });
     }
 
@@ -981,6 +993,11 @@
         '…',
         deviceId => `已控制 ${deviceId} 的舵机向${directionNames[direction]}移动 10°`
       );
+    }
+
+    function resetWifi() {
+      if (!confirm('确定清除已保存的 Wi‑Fi 并重启小派吗？重启后需要重新配网。')) return;
+      sendRemoteCommand(els.remoteWifiReset, '/command/wifi_reset', {}, '重启中…', deviceId => `已要求 ${deviceId} 清除 Wi‑Fi 并重启，请连接其配网热点。`);
     }
 
     function startRehearsal() {
@@ -1346,6 +1363,7 @@
     els.remoteSpeak.addEventListener('click', makeXiaopaiSpeak);
     els.remoteFindOwner.addEventListener('click', findOwner);
     els.remoteRehearsal.addEventListener('click', startRehearsal);
+    els.remoteWifiReset.addEventListener('click', resetWifi);
     els.servoButtons.forEach(button => button.addEventListener('click', () => moveServo(button)));
     els.remoteSpeech.addEventListener('input', updateRemoteControlState);
     els.remoteSpeech.addEventListener('keydown', event => {

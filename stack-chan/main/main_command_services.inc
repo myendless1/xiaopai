@@ -735,6 +735,13 @@ static bool execute_command_object_internal(const cJSON* command, bool in_sequen
         mark_user_interaction("command");
     }
 
+    if (type == "wifi_reset" || type == "wifi_reconfigure") {
+        if (!clear_saved_wifi_credentials()) return false;
+        ESP_LOGW(TAG, "WiFi credentials cleared; restarting for provisioning");
+        vTaskDelay(pdMS_TO_TICKS(150));
+        esp_restart();
+        return true;
+    }
     if (type == "network_debug") {
         const bool enabled = json_bool_value(payload, "enabled", false);
         return set_network_debug_enabled(enabled, true);

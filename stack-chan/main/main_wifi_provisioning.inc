@@ -131,6 +131,20 @@ static bool load_saved_wifi_credentials(std::string& ssid, std::string& password
     return true;
 }
 
+static bool clear_saved_wifi_credentials()
+{
+    nvs_handle_t handle = 0;
+    esp_err_t err = nvs_open(kWifiNvsNamespace, NVS_READWRITE, &handle);
+    if (err != ESP_OK) return false;
+    err = nvs_erase_key(handle, kWifiNvsSsidKey);
+    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    esp_err_t pass_err = nvs_erase_key(handle, kWifiNvsPasswordKey);
+    if (pass_err == ESP_ERR_NVS_NOT_FOUND) pass_err = ESP_OK;
+    if (err == ESP_OK && pass_err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    return err == ESP_OK;
+}
+
 static bool load_driver_wifi_credentials(std::string& ssid, std::string& password)
 {
     wifi_config_t wifi_config = {};
